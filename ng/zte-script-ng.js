@@ -20,7 +20,7 @@
  */
 
 (function() {
-  const VERSION = '2025-09-25';
+  const VERSION = '2025-10-17';
 
   // globals
   let currentNetInfo = null;
@@ -60,6 +60,16 @@
 
     const results = req.map(rq => {
       const r = byId.get(rq.id);
+
+      if (r?.error) {
+        if (!omitErrorMsg) {
+          scriptErrorMsg(
+            `ubus call error → id=${rq.id}, code=${r.error.code}, message=${r.error.message}, request=${JSON.stringify(rq)}`
+          );
+        }
+        return { success: false, id: rq.id, data: null, accessDenied: r.error.code === -32002 };
+      }
+
       const code = r?.result?.[0];
       if (code === 0) {
         return { success: true, id: rq.id, data: r.result[1] };
@@ -168,6 +178,31 @@
   }
 
   // --- helpers ---
+
+  // generic retry wrapper for ubus requests
+  // NOTE: ZTE's web server has a bug and sometimes requests fail with 
+  // Access Denied even though they should succeed.
+  async function runWithRetry(fn, maxAttempts = 5, logSuccess = false) {
+    let attempts = 1;
+    let res;
+
+    while (attempts <= maxAttempts) {
+      res = await fn();
+
+      if (!res?.accessDenied) {
+        break;
+      }
+
+      attempts++;
+    }
+
+    if (logSuccess && attempts > 1 && res?.success) {
+      scriptMsg(`Request succeeded after ${attempts} attempts.`);
+    }
+
+    return { res, attempts };
+  }
+
   function showBanner() {
     console.log(`
         ZTE-Script-NG v${VERSION} loaded.
@@ -238,6 +273,413 @@
 
   function is5gBasedNetworkType(type) {
     return type === "SA" || type === "ENDC" || type === "LTE-NSA";
+  }
+
+  // --- Info Window ---
+
+  function ShowInfoWindow(title, htmlContent) {
+    const old = document.getElementById("info-window-overlay");
+    if (old) old.remove();
+
+    const overlay = document.createElement("div");
+    overlay.id = "info-window-overlay";
+    overlay.style.cssText = `
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      background: rgba(0,0,0,0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 2000;
+    `;
+
+    const box = document.createElement("div");
+    box.style.cssText = `
+      background: #fff;
+      border-radius: 8px;
+      padding: 20px;
+      width: 700px;
+      max-height: 80%;
+      overflow-y: auto;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      font-family: sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+    `;
+
+    const header = document.createElement("div");
+    header.style.cssText = `
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    `;
+
+    const h = document.createElement("h3");
+    h.textContent = title;
+    h.style.margin = "0";
+
+    const closeX = document.createElement("button");
+    closeX.textContent = "×";
+    closeX.style.cssText = `
+      border: none;
+      background: transparent;
+      font-size: 26px;
+      line-height: 1;
+      cursor: pointer;
+      color: #000;
+    `;
+    closeX.onclick = () => overlay.remove();
+
+    header.appendChild(h);
+    header.appendChild(closeX);
+
+    const content = document.createElement("div");
+    content.innerHTML = htmlContent;
+    content.style.cssText = `
+      flex: 1;
+    `;
+
+    const footer = document.createElement("div");
+    footer.style.cssText = `
+      text-align: center;
+      margin-top: 16px;
+    `;
+
+    const closeBtn = document.createElement("button");
+    closeBtn.textContent = "Close";
+    closeBtn.style.cssText = `
+      background:#f9f9f9;
+      border:1px solid #ccc;
+      border-radius:4px;
+      padding:6px 12px;
+      font-size:14px;
+      cursor:pointer;
+      transition:background 0.2s, color 0.2s;
+      min-width:140px;
+      color:#000;
+    `;
+    closeBtn.onmouseover = () => {
+      closeBtn.style.background = "#4CAF50";
+      closeBtn.style.color = "#fff";
+    };
+    closeBtn.onmouseout = () => {
+      closeBtn.style.background = "#f9f9f9";
+      closeBtn.style.color = "#000";
+    };
+    closeBtn.onclick = () => overlay.remove();
+
+    footer.appendChild(closeBtn);
+
+    box.appendChild(header);
+    box.appendChild(content);
+    box.appendChild(footer);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    // Close when clicking outside the box
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) {
+        overlay.remove();
+      }
+    });
+  }
+
+  function buildInfoTableForInfoWindow(title, rows) {
+    const tableRows = rows.map(([label, value]) => `
+      <tr>
+        <th>${label}</th>
+        <td>${value ?? "-"}</td>
+      </tr>
+    `).join("");
+
+    return `
+      <div class="info-section">
+        <div class="section-title">${title}</div>
+        <table class="info-table">
+          ${tableRows}
+        </table>
+      </div>
+
+      <style>
+        .info-section {
+          margin-top: 12px;
+          background: #fff;
+          border: 1px solid #ddd;
+          border-radius: 6px;
+          box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+          overflow: hidden;
+        }
+        .info-section .section-title {
+          font-weight: bold;
+          font-size: 14px;
+          padding: 6px 10px;
+          background: #f7f7f7;
+          border-bottom: 1px solid #ddd;
+          text-align: center;
+        }
+        .info-section .info-table {
+          width: 100%;
+          border-collapse: collapse;
+        }
+        .info-section .info-table th,
+        .info-section .info-table td {
+          padding: 6px;
+          border-bottom: 1px solid #eee;
+        }
+        .info-section .info-table th {
+          text-align: left;
+          font-weight: normal;
+          color: #444;
+          width: 40%;
+        }
+        .info-section .info-table td {
+          text-align: right;
+        }
+      </style>
+    `;
+  }
+
+  // --- Info ---
+
+  function buildInfoRowsFromValues(values, { excludeKeys = [], excludePrefixes = [] } = {}) {
+    return Object.entries(values)
+      .filter(([key, val]) => {
+        if (excludeKeys.includes(key)) return false;
+        for (const prefix of excludePrefixes) {
+          if (key.startsWith(prefix)) return false;
+        }
+        if (val === "" || val === null || val === undefined) return false; // skip empty values
+        return true;
+      })
+      .map(([key, val]) => {
+        const words = key.split("_").map(w => {
+          if (w.length <= 3) {
+            return w.toUpperCase();
+          } else {
+            return w.charAt(0).toUpperCase() + w.slice(1);
+          }
+        });
+        const label = words.join(" ");
+        return [label, val];
+      })
+      .sort((a, b) => a[0].localeCompare(b[0]));
+  }
+
+  async function showHwAndSwInfo() {
+    const { res } = await runWithRetry(() =>
+      callUbus({
+        service: "uci",
+        method: "get",
+        params: {
+          config: "zwrt_common_info",
+          section: "common_config"
+        }
+      })
+    );
+
+    if (!res || !res.success || !res.data || !res.data.values) {
+      ShowInfoWindow("HW and SW Info", "<p>No data available</p>");
+      return;
+    }
+
+    const rows = buildInfoRowsFromValues(res.data.values, {
+      excludeKeys: ["imei_sv", "manufacturer"],
+      excludePrefixes: [".", "sv_"]
+    });
+
+    const html = buildInfoTableForInfoWindow("HW and SW Information", rows);
+    ShowInfoWindow("HW and SW Info", html);
+  }
+
+  async function showSimInfo() {
+    const { res } = await runWithRetry(() =>
+      callUbus({
+        service: "zwrt_zte_mdm.api",
+        method: "get_sim_info",
+        params: {}
+      })
+    );
+
+    if (!res || !res.success || !res.data) {
+      ShowInfoWindow("SIM Information", "<p>Failed to retrieve SIM info.</p>");
+      return;
+    }
+
+    const values = res.data;
+
+    const rows = buildInfoRowsFromValues(values, {
+      excludePrefixes: ["."],
+      excludeKeys: ["wlan_mac_address"] // irrelevant hier
+    });
+
+    const html = buildInfoTableForInfoWindow("SIM Information", rows);
+
+    ShowInfoWindow("SIM Information", html);
+  }
+
+  async function showWmsInfo() {
+    const { res } = await runWithRetry(() =>
+      callUbus({
+        service: "zwrt_wms",
+        method: "zwrt_wms_get_wms_capacity",
+        params: {}
+      })
+    );
+
+    if (!res || !res.success || !res.data) {
+      ShowInfoWindow("WMS Information", "<p>Failed to retrieve WMS info.</p>");
+      return;
+    }
+
+    const rows = buildInfoRowsFromValues(res.data, {
+      excludePrefixes: ["."]
+    });
+
+    const html = buildInfoTableForInfoWindow("WMS Information", rows);
+    ShowInfoWindow("WMS Information", html);
+  }
+
+  async function showWifiInfo() {
+    const { res } = await runWithRetry(() =>
+      callUbus([
+        { service: "uci", method: "get", params: { config: "wireless", section: "wifi0" } },
+        { service: "uci", method: "get", params: { config: "wireless", section: "main_2g" } },
+        { service: "uci", method: "get", params: { config: "wireless", section: "wifi1" } }
+      ])
+    );
+
+    if (!Array.isArray(res) || res.length < 2) {
+      ShowInfoWindow("WiFi Information", "<p>Failed to retrieve WiFi info.</p>");
+      return;
+    }
+
+    function filterValues(data) {
+      if (!data?.data?.values) return [];
+      // filter out meta keys (those starting with ".")
+      return Object.entries(data.data.values).filter(([k, _]) => !k.startsWith("."));
+    }
+
+    const wifi0Values = filterValues(res[0]);
+    const wifi1Values = filterValues(res[1]);
+
+    const html = `
+      ${buildInfoTableForInfoWindow("WiFi 2.4 GHz", wifi0Values)}
+      ${buildInfoTableForInfoWindow("WiFi 5 GHz", wifi1Values)}
+    `;
+
+    ShowInfoWindow("WiFi Information", html);
+  }
+
+  async function setWifiParam(paramName, label, validator, formatter = v => v, extraInfoCb = () => "", disclaimer = "") {
+    const { res } = await runWithRetry(() =>
+      callUbus([
+        { service: "uci", method: "get", params: { config: "wireless", section: "wifi0" } },
+        { service: "uci", method: "get", params: { config: "wireless", section: "wifi1" } }
+      ])
+    );
+
+    if (!Array.isArray(res) || res.length < 2) {
+      alert(`Failed to fetch current WiFi ${label} values.`);
+      return;
+    }
+
+    const values24 = res[0]?.data?.values || {};
+    const values5  = res[1]?.data?.values || {};
+
+    const current24 = values24[paramName] || "unknown";
+    const current5  = values5[paramName] || "unknown";
+
+    const extra24 = extraInfoCb(values24);
+    const extra5  = extraInfoCb(values5);
+
+    while (true) {
+      const disclaimerText = disclaimer ? `\n\n${disclaimer}\n` : "";
+
+      const input = prompt(
+        `Enter WiFi ${label} for 2.4 GHz and 5 GHz (e.g. value1,value2)\n` +
+        `Current:\n  2.4 GHz: ${formatter(current24)}${extra24}\n  5 GHz:   ${formatter(current5)}${extra5}` +
+        disclaimerText,
+        `${current24},${current5}`
+      );
+      if (input === null) return;
+
+      const parts = input.split(",").map(p => p.trim());
+
+      let val24, val5;
+
+      if (parts.length === 1) {
+        val24 = parts[0];
+        val5 = val24;
+      } else if (parts.length === 2) {
+        val24 = parts[0];
+        val5 = parts[1];
+      } else {
+        alert(`Invalid format. Enter one ${label} or two values separated by comma.`);
+        continue;
+      }
+
+      if (validator(val24) && validator(val5)) {
+        const result = await runWithUiFeedback(() =>
+          callUbus({
+            service: "zwrt_wlan",
+            method: "set",
+            params: {
+              wifi0: { [paramName]: val24 },
+              wifi1: { [paramName]: val5 }
+            }
+          })
+        );
+
+        if (result?.success) {
+          scriptMsg(`WiFi ${label} set to ${formatter(val24)} (2.4 GHz) and ${formatter(val5)} (5 GHz)`);
+        }
+        return;
+      }
+
+      alert(`Invalid values for ${label}.`);
+    }
+  }
+
+  // TxPower
+  async function setWifiTxPower() {
+    await setWifiParam(
+      "txpowerpercent",
+      "Tx Power Percent",
+      v => {
+        const n = parseInt(v, 10);
+        return !isNaN(n) && n >= 1 && n <= 100;
+      },
+      v => `${v}%`,
+      vals => vals.txpower ? ` (${vals.txpower} dBm)` : ""
+    );
+  }
+
+  // Country
+  async function setWifiCountry() {
+    await setWifiParam(
+      "country",
+      "Country",
+      v => v.length === 2,
+      v => v.toUpperCase(),
+      () => ""
+    , 
+      "⚠️ Wrong settings may be illegal in your country or cause connectivity issues."
+    );
+  }
+
+  async function setWifiMaxClients() {
+    await setWifiParam(
+      "maxassoc",
+      "Max Clients",
+      v => {
+        const n = parseInt(v, 10);
+        return !isNaN(n) && n >= 1 && n <= 512; // limit to a reasonable range
+      },
+      v => v // no formatting, keep number as-is
+    );
   }
 
   // --- Network Signal Parsing ---
@@ -546,45 +988,53 @@
       { service: "zte_nwinfo_api", method: "nwinfo_get_netinfo" },
       { service: "zwrt_bsp.thermal", method: "get_cpu_temp" },
       { service: "zwrt_mc.device.manager", method: "get_device_info" },
-      { service: "zwrt_router.api", method: "router_get_status" }
+      { service: "zwrt_router.api", method: "router_get_status" },
+      { service: "zwrt_data", method: "get_wwandst", params: { "source_module": "web", "cid": 1, "type": 4 } }
     ]);
 
-    if (Array.isArray(res) && res.length === 4) {
+    if (Array.isArray(res) && res.length === 5) {
+      // check if all calls succeeded
+      const allOk = res.every(r => r?.success);
+
+      if (!allOk) {
+        return;
+      }
+
       const netRes = res[0];
       const tempRes = res[1];
       const devRes = res[2];
       const wanRes = res[3];
+      const wanStat = res[4];
       const signal = Signal.parse(netRes.data);
 
-      if (netRes.success && netRes.data) {
-        // store latest netInfo globally
-        currentNetInfo = netRes.data;
+      // store latest netInfo globally
+      currentNetInfo = netRes.data;
 
-        InfoRenderer.render(
-          netRes.data,
-          tempRes.success ? tempRes.data : null,
-          devRes.success ? devRes.data : null,
-          wanRes.success ? wanRes.data : null,
-          signal
-        );
+      InfoRenderer.render(
+        netRes.data,
+        tempRes.data,
+        devRes.data,
+        wanRes.data,
+        signal,
+        wanStat.data
+      );
 
-        highlightBearer(netRes.data.net_select);
+      highlightBearer(netRes.data.net_select);
 
-        if (netRes.data.lte_band_lock) {
-          const maskNum = BigInt(netRes.data.lte_band_lock);
-          setCurrent4gMask(maskNum);
-          update4gBandLockHeader(maskNum);
-        }
-
-        if (netRes.data.nr5g_sa_band_lock) {
-          const activeBands = netRes.data.nr5g_sa_band_lock.split(",").map(b => b.trim());
-          setCurrent5gBands(activeBands);
-          update5gBandLockHeader(activeBands);
-        }
-
-        update5gCellLockUi(netRes.data);
-        update4gCellLockUi(netRes.data);
+      if (netRes.data.lte_band_lock) {
+        const maskNum = BigInt(netRes.data.lte_band_lock);
+        setCurrent4gMask(maskNum);
+        update4gBandLockHeader(maskNum);
       }
+
+      if (netRes.data.nr5g_sa_band_lock) {
+        const activeBands = netRes.data.nr5g_sa_band_lock.split(",").map(b => b.trim());
+        setCurrent5gBands(activeBands);
+        update5gBandLockHeader(activeBands);
+      }
+
+      update5gCellLockUi(netRes.data);
+      update4gCellLockUi(netRes.data);
     }
   }
 
@@ -611,17 +1061,20 @@
 
   async function set5gBandLock(bands) {
     const bandString = bands.join(",");
-    return await callUbus([
+    return await callUbus(
       {
         service: "zte_nwinfo_api",
         method: "nwinfo_set_nrbandlock",
-        params: { nr5g_type: "SA", nr5g_band: bandString }
+        params: { 
+          nr5g_type: "SA", /* This parameter is actually ignored. NSA won't work here. */
+          nr5g_band: bandString
+        }
       }
-    ]);
+    );
   }
 
   async function lock5gCell(pci, earfcn, band) {
-    const res = await callUbus({
+    return await callUbus({
       service: "zte_nwinfo_api",
       method: "nwinfo_lock_nr_cell",
       params: {
@@ -630,11 +1083,14 @@
         lock_nr_cell_band: band.toString()
       }
     });
-    return res && res.success === true;
+  }
+
+  async function unlock5gCell() {
+    return lock5gCell(0, 0, 0);
   }
 
   async function lock4gCell(pci, earfcn) {
-    const res = await callUbus({
+    return await callUbus({
       service: "zte_nwinfo_api",
       method: "nwinfo_lock_lte_cell",
       params: {
@@ -642,7 +1098,6 @@
         lock_lte_earfcn: earfcn.toString()
       }
     });
-    return res && res.success === true;
   }
 
   async function unlock4gCell() {
@@ -680,14 +1135,49 @@
     }, 1000);
   }
 
+  // generic retry wrapper for ubus requests
+  // NOTE: ZTE's web server has a bug and sometimes requests fail even though they should succeed.
+  async function runWithRetry(fn, maxAttempts = 5, logSuccess = false) {
+    let attempts = 1;
+    let res;
+
+    while (attempts <= maxAttempts) {
+      res = await fn();
+
+      // detect accessDenied on single object or inside array
+      const denied = Array.isArray(res)
+        ? res.some(r => r?.accessDenied)
+        : res?.accessDenied;
+
+      if (!denied) {
+        break;
+      }
+
+      attempts++;
+    }
+
+    // only log success if requested
+    const allSucceeded = Array.isArray(res)
+      ? res.every(r => r?.success)
+      : res?.success;
+
+    if (logSuccess && attempts > 1 && allSucceeded) {
+      scriptMsg(`Request succeeded after ${attempts} attempts.`);
+    }
+
+    return { res, attempts };
+  }
+
   async function runWithUiFeedback(fn) {
     try {
-      const res = await fn();
+      const { res } = await runWithRetry(fn, 5, true);
+
       if (!res || res.success === false) {
         showUiFeedback(false);
       } else {
         showUiFeedback(true);
       }
+
       updateDeviceInfo();
       return res;
     } catch (e) {
@@ -698,20 +1188,22 @@
 
   // --- render ---
   class InfoRenderer {
-    static render(netInfo, thermalInfo, deviceInfo, wanInfo, signalInfo) {
+  static render(netInfo, thermalInfo, deviceInfo, wanInfo, signalInfo, wanStat) {
       const netTable = document.getElementById("router-info-table");
       const wanTable = document.getElementById("wan-info-table");
       const sysTable = document.getElementById("system-info-table");
+      const trafTable = document.getElementById("traffic-info-table");
 
-      if (!netTable || !wanTable || !sysTable) return;
+      if (!netTable || !wanTable || !sysTable || !trafTable) return;
 
-      this.renderNetworkInfo(netTable, netInfo, signalInfo);
+      this.renderNetworkInfo(netTable, netInfo, signalInfo, wanStat);
       this.renderSignalInfo(netInfo, signalInfo);
       this.renderWanInfo(wanTable, wanInfo);
       this.renderDeviceInfo(sysTable, thermalInfo, deviceInfo);
+      this.renderTrafficInfo(trafTable, wanStat);
     }
 
-    static renderNetworkInfo(table, netInfo, signalInfo) {
+    static renderNetworkInfo(table, netInfo, signalInfo, wanStat) {
       let bandSummary = "-";
       let totalBandwidth = 0;
 
@@ -771,6 +1263,7 @@
       table.innerHTML = `
         <tr><th>Provider</th><td>${netInfo.network_provider_fullname || "-"}</td></tr>
         <tr><th>Connection</th><td>${connType}</td></tr>
+        <tr><th>Duration</th><td>${formatSeconds(wanStat.real_time || 0)}</td></tr>
         <tr><th>Bands</th><td>${bandSummary}</td></tr>
         <tr><th>BW</th><td>${totalBandwidth > 0 ? totalBandwidth + " MHz" : "-"}</td></tr>
         <tr><th>Cell ID</th><td>${cellIdDisplay}</td></tr>
@@ -849,6 +1342,73 @@
 
         sigContainer.appendChild(grid);
       }
+    }
+
+    static renderTrafficInfo(table, wanStat) {
+      if (!wanStat || !table) return;
+
+      // Toggle whether to show error/drop stats (saves space if false)
+      const show_errors = false;
+
+      function fmtBytes(val) {
+        if (!val || isNaN(val)) return "-";
+        const units = ["B","KB","MB","GB","TB"];
+        let v = Number(val);
+        let i = 0;
+        while (v >= 1024 && i < units.length - 1) {
+          v /= 1024;
+          i++;
+        }
+        return v.toFixed(1) + " " + units[i];
+      }
+
+      function fmtSpeed(val) {
+        if (!val || isNaN(val)) return "-";
+        const mbit = (Number(val) * 8) / 1e6;
+        return mbit.toFixed(2) + " Mbit/s";
+      }
+
+      let rows = "";
+
+      // --- Current (realtime) stats ---
+      rows += `<tr><th colspan="2" class="info-subtitle">Current</th></tr>`;
+      rows += `<tr><th>Time</th><td>${formatSeconds(wanStat.real_time)}</td></tr>`;
+      rows += `<tr><th>DL Speed</th><td>${fmtSpeed(wanStat.real_rx_speed)}</td></tr>`;
+      rows += `<tr><th>UL Speed</th><td>${fmtSpeed(wanStat.real_tx_speed)}</td></tr>`;
+      rows += `<tr><th>DL</th><td>${fmtBytes(wanStat.real_rx_bytes)}</td></tr>`;
+      rows += `<tr><th>UL</th><td>${fmtBytes(wanStat.real_tx_bytes)}</td></tr>`;
+      rows += `<tr><th>DL Packets</th><td>${wanStat.real_rx_packets ?? "-"}</td></tr>`;
+      rows += `<tr><th>UL Packets</th><td>${wanStat.real_tx_packets ?? "-"}</td></tr>`;
+      if (show_errors) {
+        rows += `<tr><th>Errors (DL/UL)</th><td>${wanStat.real_rx_error_packets}/${wanStat.real_tx_error_packets}</td></tr>`;
+        rows += `<tr><th>Drops (DL/UL)</th><td>${wanStat.real_rx_drop_packets}/${wanStat.real_tx_drop_packets}</td></tr>`;
+      }
+
+      // --- Monthly stats ---
+      rows += `<tr><th colspan="2" class="info-subtitle">Monthly</th></tr>`;
+      rows += `<tr><th>Time</th><td>${formatSeconds(wanStat.month_time)}</td></tr>`;
+      rows += `<tr><th>DL</th><td>${fmtBytes(wanStat.month_rx_bytes)}</td></tr>`;
+      rows += `<tr><th>UL</th><td>${fmtBytes(wanStat.month_tx_bytes)}</td></tr>`;
+      rows += `<tr><th>DL Packets</th><td>${wanStat.month_rx_packets ?? "-"}</td></tr>`;
+      rows += `<tr><th>UL Packets</th><td>${wanStat.month_tx_packets ?? "-"}</td></tr>`;
+      if (show_errors) {
+        rows += `<tr><th>Errors (DL/UL)</th><td>${wanStat.month_rx_error_packets}/${wanStat.month_tx_error_packets}</td></tr>`;
+        rows += `<tr><th>Drops (DL/UL)</th><td>${wanStat.month_rx_drop_packets}/${wanStat.month_tx_drop_packets}</td></tr>`;
+      }
+
+      // --- Total stats ---
+      rows += `<tr><th colspan="2" class="info-subtitle">Total</th></tr>`;
+      rows += `<tr><th>Time</th><td>${formatSeconds(wanStat.total_time)}</td></tr>`;
+      rows += `<tr><th>DL</th><td>${fmtBytes(wanStat.total_rx_bytes)}</td></tr>`;
+      rows += `<tr><th>UL</th><td>${fmtBytes(wanStat.total_tx_bytes)}</td></tr>`;
+      rows += `<tr><th>DL Packets</th><td>${wanStat.total_rx_packets ?? "-"}</td></tr>`;
+      rows += `<tr><th>UL Packets</th><td>${wanStat.total_tx_packets ?? "-"}</td></tr>`;
+      if (show_errors) {
+        rows += `<tr><th>Errors (DL/UL)</th><td>${wanStat.total_rx_error_packets}/${wanStat.total_tx_error_packets}</td></tr>`;
+        rows += `<tr><th>Drops (DL/UL)</th><td>${wanStat.total_rx_drop_packets}/${wanStat.total_tx_drop_packets}</td></tr>`;
+      }
+
+      table.innerHTML = rows;
     }
 
     static renderWanInfo(table, wanInfo) {
@@ -1115,22 +1675,26 @@
     const wanChk = document.getElementById("chk-wan-info");
     const devChk = document.getElementById("chk-device-info");
     const sigChk = document.getElementById("chk-signal-info");
+    const trafChk = document.getElementById("chk-traffic-stats");
 
     const netSection = document.getElementById("network-info-section");
     const wanSection = document.getElementById("wan-info-section");
     const devSection = document.getElementById("device-info-section");
     const sigSection = document.getElementById("signal-info-section");
+    const trafSection = document.getElementById("traffic-info-section");
 
     // Load states
     netChk.checked = localStorage.getItem("ScriptCheckBoxNetworkInfo") !== "false"; // default ON
     wanChk.checked = localStorage.getItem("ScriptCheckBoxWanInfo") === "true";      // default OFF
     devChk.checked = localStorage.getItem("ScriptCheckBoxDeviceInfo") === "true";   // default OFF
     sigChk.checked = localStorage.getItem("ScriptCheckBoxSignalInfo") !== "false";  // default ON
+    trafChk.checked = localStorage.getItem("ScriptCheckBoxTrafficInfo") === "true"; // default OFF
 
     netSection.style.display = netChk.checked ? "block" : "none";
     wanSection.style.display = wanChk.checked ? "block" : "none";
     devSection.style.display = devChk.checked ? "block" : "none";
     sigSection.style.display = sigChk.checked ? "block" : "none";
+    trafSection.style.display = trafChk.checked ? "block" : "none";
 
     // Handlers
     netChk.addEventListener("change", () => {
@@ -1152,6 +1716,11 @@
       localStorage.setItem("ScriptCheckBoxSignalInfo", sigChk.checked);
       sigSection.style.display = sigChk.checked ? "block" : "none";
     });
+
+    trafChk.addEventListener("change", () => {
+      localStorage.setItem("ScriptCheckBoxTrafficInfo", trafChk.checked);
+      trafSection.style.display = trafChk.checked ? "block" : "none";
+    });
   }
 
   // --- Global button blur handler ---
@@ -1172,11 +1741,22 @@
 
     const panel = document.createElement("div");
     panel.id = "router-info-panel";
-    panel.style.cssText = "width:100%; margin-bottom:20px;";
+    panel.style.cssText = "width:100%; margin-bottom:20px;"
 
     panel.innerHTML = `
     <div id="router-info-box" class="info-box">
-      <div class="info-title">ZTE-Script-NG v${VERSION}</div>
+      <div class="info-title">
+        <p class="headline">
+          <a href="https://www.lteforum.at/mobilfunk/script-fuer-zte-router.20462/" target="_blank">ZTE-Script-NG v${VERSION}</a>
+        </p>
+        <p class="subtitle tt"
+          data-tooltip="LTEForum.at sponsored a router to support the development of this script.
+
+          However, LTEForum.at is not involved in its development and assumes no liability for its use.">
+          The development of this script is sponsored by
+          <a href="https://www.lteforum.at/" target="_blank">LTEForum.at</a>.
+        </p>
+      </div>
 
       <!-- Network Mode -->
       <div class="section">
@@ -1241,19 +1821,14 @@
       </div>
 
       <!-- Info Checkboxes -->
-      <div class="section" id="info-checkboxes" style="text-align:center; margin-top:12px;">
-        <label style="margin-right:15px;">
-          <input type="checkbox" id="chk-network-info"> Show Network Info
-        </label>
-        <label>
-          <input type="checkbox" id="chk-signal-info"> Show Signal Info
-        </label>
-        <label>
-          <input type="checkbox" id="chk-wan-info"> Show WAN Info
-        </label>
-        <label>
-          <input type="checkbox" id="chk-device-info"> Show Device Info
-        </label>
+      <div class="section" id="info-checkboxes">
+        <div class="checkbox-group">
+          <label><input type="checkbox" id="chk-network-info"> Show Network Info</label>
+          <label><input type="checkbox" id="chk-signal-info"> Show Signal Info</label>
+          <label><input type="checkbox" id="chk-traffic-stats"> Show Traffic Stats</label>
+          <label><input type="checkbox" id="chk-wan-info"> Show WAN Info</label>
+          <label><input type="checkbox" id="chk-device-info"> Show Device Info</label>
+        </div>
       </div>
 
       <!-- Info Table -->
@@ -1263,8 +1838,13 @@
       </div>
 
       <div class="info-section" id="signal-info-section">
-        <div class="section-title">Signal Info</div>
+        <div class="section-title">Signal Info</div> 
         <div id="signal-info-container"></div>
+      </div>
+
+      <div class="info-section" id="traffic-info-section">
+        <div class="section-title">Traffic Stats</div>
+        <table id="traffic-info-table" class="info-table"></table>
       </div>
 
       <div class="info-section" id="wan-info-section">
@@ -1276,9 +1856,157 @@
         <div class="section-title">Device Info</div>
         <table id="system-info-table" class="info-table"></table>
       </div>
+
+      <!-- More Options -->
+      <div class="section" id="more-section">
+        <button id="btn-more">More Options</button>
+
+        <div id="more-options" style="display:none; margin-top:16px;">
+          <div class="option-section">
+            <div class="section-title">General</div>
+            <div class="button-row">
+              <button id="btn-show-hw-sw">Show HW and SW Info</button>
+              <button id="btn-show-sim">Show SIM Info</button>
+              <button id="btn-show-wms">Show WMS Info</button>
+            </div>
+          </div>
+
+          <div class="option-section">
+            <div class="section-title">WiFi</div>
+            <div class="button-row">
+              <button id="btn-show-wifi">Show Info</button>
+              <button id="btn-set-wifi-txpower">Set TX Power</button>
+              <button id="btn-set-wifi-country">Set Country</button>
+              <button id="btn-set-wifi-max-clients" style="display:none;">Set Max Clients</button>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <style>
+      .info-title {
+        font-weight: bold;
+        font-size: 18px;
+        padding: 8px 0;
+        margin-bottom: 12px;
+        border-bottom: 2px solid #ddd;
+        text-align: center;
+      }
+      .info-title .headline a {
+        color: inherit;
+        text-decoration: none;
+      }
+      .info-title .subtitle {
+        font-size: 14px;
+        margin: 4px 0 0;
+      }
+      .info-title .subtitle a {
+        color: #0066cc;
+        text-decoration: none;
+        font-weight: bold;
+      }
+      .info-title .subtitle a:visited {
+        color: #0066cc;
+      }
+      .info-title .subtitle a:hover {
+        text-decoration: underline;
+      }
+      .tt {
+        position: relative;
+        display: inline-block;
+      }
+      .tt::after {
+        content: attr(data-tooltip);
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        top: calc(100% + 10px);
+        width: 380px;
+        background: rgba(47, 47, 47, 0.85);
+        color: #f8f8f8;
+        padding: 10px 14px;
+        border-radius: 6px;
+        font-size: 13px;
+        line-height: 1.45;
+        white-space: pre-line;
+        opacity: 0;
+        visibility: hidden;
+        transition: opacity .15s;
+        z-index: 9999;
+        pointer-events: none;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.35);
+        text-align: left;
+        font-weight: 500;
+      }
+      .tt:hover::after {
+        opacity: 1;
+        visibility: visible;
+      }
+      #more-section .option-section {
+        background: #fafafa;
+        border: 1px solid #ddd;
+        border-radius: 6px;
+        padding: 12px;
+        margin: 16px auto;
+        max-width: 700px;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+      }
+      #more-section .section-title {
+        font-weight: bold;
+        font-size: 14px;
+        margin-bottom: 10px;
+        color: #333;
+        text-align: center;
+      }
+      /* kill the default horizontal line above the section title */
+      #more-section .option-section hr,
+      #more-section .option-section .section-title {
+        border: none;
+      }
+      #more-section .button-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: center;
+      }
+      #more-section button {
+        background:#f9f9f9;
+        border:1px solid #ccc;
+        border-radius:4px;
+        padding:6px 12px;
+        font-size:13px;
+        cursor:pointer;
+        transition:background 0.2s, color 0.2s;
+      }
+      #more-section button:hover {
+        background:#4CAF50;
+        color:#fff;
+      }
+      #btn-more {
+        display: block;
+        margin: 0 auto 12px auto;
+      }
+      #info-checkboxes {
+        margin-top: 12px;
+        display: flex;
+        justify-content: center;
+      }
+      #info-checkboxes .checkbox-group {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(180px, 1fr));
+        justify-items: start;
+        align-items: center;
+        gap: 8px 32px;
+        width: max-content;
+      }
+      #info-checkboxes label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0;
+        white-space: nowrap;
+      }
       .cellid-sep {
         opacity: 0.5;
       }
@@ -1329,14 +2057,6 @@
         margin:0 auto;
         max-width:700px;
         box-shadow:0 2px 5px rgba(0,0,0,0.1);
-      }
-      .info-title {
-        font-weight:bold;
-        font-size:18px;
-        padding:8px 0;
-        margin-bottom:12px;
-        border-bottom:2px solid #ddd;
-        text-align:center;
       }
       .info-section {
         margin-top: 16px;
@@ -1468,7 +2188,7 @@
         return;
       }
 
-      const ok = await runWithUiFeedback(() => lock5gCell(0, 0, 0));
+      const ok = await runWithUiFeedback(() => unlock5gCell());
       if (ok) {
         alert("Reverted 5G Cell Lock. Toggle net mode or reboot the router to go back to your default Cell now.");
       }
@@ -1506,6 +2226,42 @@
       if (ok) {
         alert("Reverted 4G Cell Lock. Toggle net mode or reboot the router to go back to your default Cell now.");
       }
+    });
+
+    // More button toggle
+    document.getElementById("btn-more").addEventListener("click", () => {
+      document.getElementById("btn-more").style.display = "none";
+      document.getElementById("more-options").style.display = "block";
+    });
+
+    // Action for HW/SW info button
+    document.getElementById("btn-show-hw-sw").addEventListener("click", async () => {
+      await showHwAndSwInfo();
+    });
+    // Action for WMS info button
+    document.getElementById("btn-show-sim").addEventListener("click", async () => {
+      await showSimInfo();
+    });
+    // Action for WMS info button
+    document.getElementById("btn-show-wms").addEventListener("click", async () => {
+      await showWmsInfo();
+    });
+
+    // Action for WiFi info button
+    document.getElementById("btn-show-wifi").addEventListener("click", async () => {
+      await showWifiInfo();
+    });
+    // Action for Set WiFi TX Power button
+    document.getElementById("btn-set-wifi-txpower").addEventListener("click", async () => {
+      await setWifiTxPower();
+    });
+    // Action for Set WiFi Country button
+    document.getElementById("btn-set-wifi-country").addEventListener("click", async () => {
+      await setWifiCountry();
+    });
+    // Action for Set WiFi max clients button
+    document.getElementById("btn-set-wifi-max-clients").addEventListener("click", async () => {
+      await setWifiMaxClients();
     });
 
     // auto-refresh
