@@ -493,7 +493,7 @@ function parse_lte_cell_info()
             continue;
 
         lte_cells.push(new LteCaCellInfo(
-            parseInt(scell_info[1], 16), // PCI
+            scell_info[1], // PCI
             "B" + scell_info[3], // Band
             scell_info[4], // Earfcn
             scell_info[5].replace(".0", ""), // Bandwidth
