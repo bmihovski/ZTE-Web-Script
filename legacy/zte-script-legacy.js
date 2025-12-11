@@ -708,8 +708,21 @@ function get_status()
             if (network_provider_fullname != "") $("#provider").show();
             else $("#provider").hide();
 
-            if (cell_id) $("#cell").show();
-            else $("#cell").hide();
+            if (cell_id) {
+                const decimalValue = parseInt(cell_id, 16);
+                // Only show if conversion is valid
+                if (!isNaN(decimalValue)) {
+                    $("#cell_id").text(decimalValue);
+                    $("#cell").show();
+                } else {
+                    console.error("Invalid hex value:", cell_id);
+                    $("#cell").hide();
+                }
+            } else {
+                $("#cell").hide();
+            }
+
+
 
             if (is_5g && nr5g_cell_id) $("#5g_cell").show();
             else $("#5g_cell").hide();
