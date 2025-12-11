@@ -57,7 +57,7 @@
         }
     }
 
-    loadScript("https://cdn.jsdelivr.net/gh/bmihovski/ZTE-Web-Script/legacy/zte-script-legacy.js", function() {
+    loadScript("https://cdn.jsdelivr.net/gh/tpoechtrager/ZTE-Web-Script/legacy/zte-script-legacy.js", function() {
         console.log("ZTE-Web-Script loaded and executed.");
     }, function() {
         alert("Failed to load the ZTE-Web-Script");
