@@ -714,6 +714,8 @@ function get_status()
                 if (!isNaN(decimalValue)) {
                     $("#cell").show();
                     $("#cell_id_decimal").text(decimalValue);
+                    // Also create a global variable in decimal
+                    window.cell_id_decimal = decimalValue.toString();
                 } else {
                     console.error("Invalid hex value:", cell_id);
                     $("#cell").hide();
