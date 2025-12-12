@@ -712,10 +712,9 @@ function get_status()
                 const decimalValue = parseInt(cell_id, 16);
                 // Only show if conversion is valid
                 if (!isNaN(decimalValue)) {
-                    $("#cell_id").text(decimalValue);
                     $("#cell").show();
-                    // Also update the global variable to decimal
-                    window.cell_id = decimalValue.toString();
+                    // Also create a global variable in decimal
+                    window.cell_id_decimal = decimalValue.toString();
                 } else {
                     console.error("Invalid hex value:", cell_id);
                     $("#cell").hide();
@@ -1892,7 +1891,7 @@ function inject_html()
                     </tr>
                     <tr id="cell">
                         <td>CELL:</td>
-                        <td><span id="cell_id"></span></td>
+                        <td><span id="cell_id_decimal"></span></td>
                     </tr>
                     <tr id="5g_cell">
                         <td>5G CELL:</td>
