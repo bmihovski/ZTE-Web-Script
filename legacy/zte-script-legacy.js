@@ -713,8 +713,7 @@ function get_status()
                 // Only show if conversion is valid
                 if (!isNaN(decimalValue)) {
                     $("#cell").show();
-                    // Also create a global variable in decimal
-                    window.cell_id_decimal = decimalValue.toString();
+                    $("#cell_id_decimal").text(decimalValue);
                 } else {
                     console.error("Invalid hex value:", cell_id);
                     $("#cell").hide();
