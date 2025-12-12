@@ -725,7 +725,6 @@ function get_status()
             }
 
 
-
             if (is_5g && nr5g_cell_id) $("#5g_cell").show();
             else $("#5g_cell").hide();
 
