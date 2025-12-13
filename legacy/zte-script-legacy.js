@@ -842,7 +842,7 @@ function get_status()
                         {
                             var cell = ngbr_cells[i];
                             var [earfcn, pci, rsrq, rsrp, rssi] = cell.split(",");
-                            html += "<tr><td>"+ pci + ":</td><td>EARFCN: " + earfcn + " </td>;<td>RSRP: " + rsrp + " dBm&nbsp;</td><td>RSRQ: " + rsrq + " dB</td>;</td><td>RSSI: " + rssi + " dBm</td></tr>";
+                            html += "<tr><td>"+ pci + ":" + earfcn + " </td>;<td>RSRP: " + rsrp + " dBm&nbsp;</td><td>RSRQ: " + rsrq + " dB&nbsp;</td><td>RSSI: " + rssi + " dBm</td></tr>";
                         }
                         html += "</table>";
                     }
