@@ -841,9 +841,8 @@ function get_status()
                         for (var i = 0; i < ngbr_cells.length; i++)
                         {
                             var cell = ngbr_cells[i];
-                            var [freq, pci, rsrq, rsrp, rssi, snr] = cell.split(",");
-                            html += "<tr><td>"+ pci + ":</td><td>RSRP: " + rsrp + " dBm&nbsp;</td><td>RSRQ: " + rsrq + " dB</td>;</td><td>RSSI: " + rssi + " dBm</td>;</td><td>SINR: " + snr + " dB</td></tr>";
-                            html += "<tr><td>" + cell.split(",") + "</td></tr>";
+                            var [earfcn, pci, rsrq, rsrp, rssi] = cell.split(",");
+                            html += "<tr><td>"+ pci + ":</td><td>EARFCN: " + earfcn + " </td>;<td>RSRP: " + rsrp + " dBm&nbsp;</td><td>RSRQ: " + rsrq + " dB</td>;</td><td>RSSI: " + rssi + " dBm</td></tr>";
                         }
                         html += "</table>";
                     }
