@@ -838,11 +838,17 @@ function get_status()
                     if (ngbr_cells.length > 0)
                     {
                         var html = "<table class='ngbr_cell_table'>";
-                        for (var i = 0; i < ngbr_cells.length; i++)
-                        {
+                        for (var i = 0; i < ngbr_cells.length; i++) {
                             var cell = ngbr_cells[i];
-                            var [earfcn, pci, rsrq, rsrp, rssi] = cell.split(",");
-                            html += "<tr><td>"+ pci + ":" + earfcn + " </td><td>RSRP: " + rsrp + " dBm&nbsp;</td><td>RSRQ: " + rsrq + " dB&nbsp;</td><td>RSSI: " + rssi + " dBm</td></tr>";
+                            if (!cell) continue; // Skip empty entries
+                        
+                            var parts = cell.split(",").map(part => part.trim());
+                            if (parts.length === 5) {
+                                var [earfcn, pci, rsrq, rsrp, rssi] = parts;
+                                html += `<tr><td>${pci}:${earfcn}</td><td>RSRP: ${rsrp} dBm&nbsp;</td><td>RSRQ: ${rsrq} dB&nbsp;</td><td>RSSI: ${rssi} dBm</td></tr>`;
+                            } else {
+                                console.error("Invalid cell data format:", cell);
+                            }
                         }
                         html += "</table>";
                     }
