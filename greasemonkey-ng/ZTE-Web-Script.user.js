@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         ZTE-Web-Script
+// @name         ZTE-Web-Script-NG
 // @version      0.3
 // @description  Automatically loading ZTE-Web-Script
 // @match        https://192.168.0.1/*
@@ -61,7 +61,7 @@
         }
     }
 
-    loadScript("https://cdn.jsdelivr.net/gh/tpoechtrager/ZTE-Web-Script/legacy/zte-script-legacy.js", function() {
+    loadScript("https://cdn.jsdelivr.net/gh/tpoechtrager/ZTE-Web-Script/ng/zte-script-ng.js", function() {
         console.log("ZTE-Web-Script loaded and executed.");
     }, function() {
         alert("Failed to load the ZTE-Web-Script");
