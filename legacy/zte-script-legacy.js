@@ -797,6 +797,9 @@ function get_status()
                 if (nr_cells[0].rsrp2 != "") $("#5g_1_rsrp2").show();
                 else $("#5g_1_rsrp2").hide();
 
+                if (nr_cells[0].rsrp != "") $("#5g_1_rsrp").show();
+                else $("#5g_1_rsrp").hide();
+
                 // Not available with NSA
                 if (nr_cells[0].bandwidth != "") $("#5g_1_bandwidth").show();
                 else $("#5g_1_bandwidth").hide();
@@ -1808,9 +1811,9 @@ function inject_html()
                         <td>RSRP2:</td>
                         <td><span id="__nr_signal_0_rsrp2"></span> dBm</td>
                     </tr>
-                    <tr>
+                    <tr id="5g_1_rsrp">
                         <td>GLOBAL RSRP:</td>
-                        <td><span id="__nr_signal_0_rsrp"></span> dBm (< -81 Excellent)</td>
+                        <td><span id="__nr_signal_0_rsrp"></span> dBm < -81 Excellent</td>
                     </tr>
                     <tr>
                         <td>SINR:</td>
