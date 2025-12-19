@@ -514,7 +514,7 @@ function parse_lte_cell_info()
 
 class NrCaCellInfo
 {
-    constructor(pci, band, arfcn, bandwidth, rsrp1, rsrp2, rsrq, sinr)
+    constructor(pci, band, arfcn, bandwidth, rsrp1, rsrp2, rsrq, rsrp, sinr)
     {
         this.pci = pci;
         this.band = band;
