@@ -793,6 +793,9 @@ function get_status()
                 if (nr_cells[0].rsrp2 != "") $("#5g_1_rsrp2").show();
                 else $("#5g_1_rsrp2").hide();
 
+                if (nr_cells[0].Z5g_rsrq != "") $("#5g_1_Z5g_rsrq").show();
+                else $("#5g_1_Z5g_rsrq").hide();
+
                 // Not available with NSA
                 if (nr_cells[0].bandwidth != "") $("#5g_1_bandwidth").show();
                 else $("#5g_1_bandwidth").hide();
