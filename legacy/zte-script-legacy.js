@@ -1813,7 +1813,7 @@ function inject_html()
                     </tr>
                     <tr id="5g_1_rsrp">
                         <td>GLOBAL RSRP:</td>
-                        <td><span id="__nr_signal_0_rsrp"></span> dBm (< -81 Excellent)</td>
+                        <td><span id="__nr_signal_0_rsrp"></span> dBm (> -81 Excellent)</td>
                     </tr>
                     <tr>
                         <td>SINR:</td>
