@@ -875,6 +875,8 @@ function get_status()
 
             if (wan_ipaddr) $("#wanipinfo").show();
             else $("#wanipinfo").hide();
+            if (dns_mode === "manual") $("manual-dns-info").show();
+            else $("manual-dns-info").hide();
 
             if (pm_sensor_ambient || pm_sensor_mdm || pm_sensor_5g || pm_sensor_pa1 || wifi_chip_temp)
             {
@@ -1940,6 +1942,10 @@ function inject_html()
                     <tr id="wanipinfo">
                         <td>WAN IP:</td>
                         <td><span id="wan_ipaddr"></span></td>
+                    </tr>
+                    <tr id="manual-dns-info">
+                        <td>WAN MANUAL DNS:</td>
+                        <td><span id="prefer_dns_manual"></span></td>
                     </tr>
                     <tr id="temperature">
                         <td>TEMP:</td>
