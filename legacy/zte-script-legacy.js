@@ -523,6 +523,7 @@ class NrCaCellInfo
         this.rsrp1 = rsrp1;
         this.rsrp2 = rsrp2;
         this.rsrq = rsrq;
+        this.rsrp = rsrp;
         this.sinr = sinr;
         this.unchanged_updates = 0;
         this.info_text = "";
@@ -571,6 +572,7 @@ function parse_nr_cell_info()
             _5g_rx0_rsrp,
             _5g_rx1_rsrp,
             Z5g_rsrq,
+            Z5g_rsrp,
             Z5g_SINR.replace("-20.0", "?????").replace("-3276.8", "?????")
         ));
 
@@ -600,6 +602,7 @@ function parse_nr_cell_info()
         _5g_rx0_rsrp,
         _5g_rx1_rsrp,
         Z5g_rsrq,
+        Z5g_rsrp,
         Z5g_SINR.replace("-20.0", "?????").replace("-3276.8", "?????")
     ));
 
@@ -628,6 +631,7 @@ function parse_nr_cell_info()
             cell_data[4], // Arfcn
             cell_data[5].replace("MHz", ""),
             cell_data[7], // RSRP
+            "",
             "",
             cell_data[8], // RSRQ
             cell_data[9].replace("0.0", "?????") // SINR
@@ -792,9 +796,6 @@ function get_status()
             {
                 if (nr_cells[0].rsrp2 != "") $("#5g_1_rsrp2").show();
                 else $("#5g_1_rsrp2").hide();
-
-                if (nr_cells[0].Z5g_rsrq != "") $("#5g_1_Z5g_rsrq").show();
-                else $("#5g_1_Z5g_rsrq").hide();
 
                 // Not available with NSA
                 if (nr_cells[0].bandwidth != "") $("#5g_1_bandwidth").show();
@@ -1807,9 +1808,9 @@ function inject_html()
                         <td>RSRP2:</td>
                         <td><span id="__nr_signal_0_rsrp2"></span> dBm</td>
                     </tr>
-                    <tr id="5g_1_Z5g_rsrq">
+                    <tr>
                         <td>GLOBAL RSRP:</td>
-                        <td><span id="__nr_signal_0_Z5g_rsrq"></span> dBm (< -81 Excellent)</td>
+                        <td><span id="__nr_signal_0_rsrp"></span> dBm (< -81 Excellent)</td>
                     </tr>
                     <tr>
                         <td>SINR:</td>
