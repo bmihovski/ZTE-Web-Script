@@ -1597,6 +1597,10 @@ function inject_html()
                         <td colspan='2'>BW:</td>
                         <td colspan='2'><span id="__lte_signal_0_bandwidth"></span> MHz</td>
                     </tr>
+                    <tr>
+                        <td colspan='2'>3G/4G ECIO/SINR</td>
+                        <td colspan='2'><span id="lte_snr"></span> dB</td>
+                    </tr>
                 </table>
                 <div class="spacing"></div>
             </div>
