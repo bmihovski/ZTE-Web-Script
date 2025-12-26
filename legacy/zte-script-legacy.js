@@ -21,7 +21,7 @@ siginfo =
     "bandwidth," +
     "tx_power," +
 
-    "rscp_1,ecio_1,rscp_2,ecio_2,rscp_3,ecio_3,rscp_4,ecio_4," +
+    "rscp_1,ecio_1,rscp_2,ecio_2,rscp_3,ecio_3,rscp_4,ecio_4,ecio," +
 
     "ngbr_cell_info," +
     "lte_multi_ca_scell_info,lte_multi_ca_scell_sig_info," +
@@ -1598,7 +1598,7 @@ function inject_html()
                         <td colspan='2'><span id="__lte_signal_0_bandwidth"></span> MHz</td>
                     </tr>
                     <tr>
-                        <td colspan='2'>3G/4G ECIO/SINR</td>
+                        <td colspan='2'>4G SINR</td>
                         <td colspan='2'><span id="lte_snr"></span> dB</td>
                     </tr>
                 </table>
@@ -1795,6 +1795,10 @@ function inject_html()
                         <td><span id="rscp_4"></span> dBm</td>
                         <td>ECIO4:</td>
                         <td>-<span id="ecio_4"></span> dB</td>
+                    </tr>
+                    <tr>
+                        <td colspan='2'>3G ECIO</td>
+                        <td colspan='2'><span id="ecio"></span> dB</td>
                     </tr>
                 </table>
                 <div class="spacing"></div>
