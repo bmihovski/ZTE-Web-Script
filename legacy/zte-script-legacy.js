@@ -1826,6 +1826,10 @@ function inject_html()
                         <td><span id="__nr_signal_0_rsrp"></span> dBm (> -81 Excellent)</td>
                     </tr>
                     <tr>
+                        <td>RSRQ:</td>
+                        <td><span id="__nr_signal_0_rsrq"></span> dB</td>
+                    </tr>
+                    <tr>
                         <td>SINR:</td>
                         <td><span id="__nr_signal_0_sinr"></span> dB</td>
                     </tr>
@@ -1859,6 +1863,10 @@ function inject_html()
                         <td><span id="__nr_signal_1_rsrp1"></span> dBm</td>
                     </tr>
                     <tr>
+                        <td>RSRQ:</td>
+                        <td><span id="__nr_signal_1_rsrq"></span> dB</td>
+                    </tr>
+                    <tr>
                         <td>SINR:</td>
                         <td><span id="__nr_signal_1_sinr"></span> dB</td>
                     </tr>
@@ -1889,6 +1897,10 @@ function inject_html()
                     <tr>
                         <td>RSRP:</td>
                         <td><span id="__nr_signal_2_rsrp1"></span> dBm</td>
+                    </tr>
+                    <tr>
+                        <td>RSRQ:</td>
+                        <td><span id="__nr_signal_2_rsrq"></span> dB</td>
                     </tr>
                     <tr>
                         <td>SINR:</td>
