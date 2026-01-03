@@ -1611,7 +1611,7 @@ function inject_html()
                     </tr>
                     <tr>
                         <td colspan='2'>BW:</td>
-                        <td colspan='2'><span id="bandwidth"></span> MHz</td>
+                        <td colspan='2'><span id="bandwidth"></span></td>
                     </tr>
                 </table>
                 <div class="spacing"></div>
