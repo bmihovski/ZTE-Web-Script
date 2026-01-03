@@ -1594,24 +1594,24 @@ function inject_html()
                         <td colspan='2'><span id="__lte_signal_0_pci"></span></td>
                     </tr>
                     <tr>
-                        <td colspan='2'>4G RSRP</td>
+                        <td colspan='2'>4G RSRP:</td>
                         <td colspan='2'><span id="lte_rsrp"></span> dB</td>
                     </tr>
                     <tr>
-                        <td colspan='2'>4G RSSI</td>
+                        <td colspan='2'>4G RSSI:</td>
                         <td colspan='2'><span id="lte_rssi"></span> dB</td>
                     </tr>
                     <tr>
-                        <td colspan='2'>4G RSRQ</td>
+                        <td colspan='2'>4G RSRQ:</td>
                         <td colspan='2'><span id="lte_rsrq"></span> dB</td>
                     </tr>
                     <tr>
-                        <td colspan='2'>4G SINR</td>
+                        <td colspan='2'>4G SINR:</td>
                         <td colspan='2'><span id="lte_snr"></span> dB</td>
                     </tr>
                     <tr>
                         <td colspan='2'>BW:</td>
-                        <td colspan='2'><span id="__lte_signal_0_bandwidth"></span> MHz</td>
+                        <td colspan='2'><span id="bandwidth"></span> MHz</td>
                     </tr>
                 </table>
                 <div class="spacing"></div>
