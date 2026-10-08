@@ -1040,10 +1040,10 @@ function align_fast(on)
  * A "new best" is +0.5 dB over the best 3 s average since the tone / reset / mode change.
  */
 var TONE_LEGEND = {
-    dual: "pair of beeps: high = 5G SINR, low = LTE SINR (pitch rises with SINR, faster when the weaker improves). " +
+    dual: "pair of beeps: high = 5G SINR, low = LTE SINR; faster = the one further from its target (5G 15 dB, LTE 6 dB) gets closer; steady tone = both reached. " +
           "Chirp up = 5G best, chirp down = LTE best, 3-note chime = both at best.",
-    balance: "steady tone = rx0/rx1 balanced (2 / 1 / 0.5 dB by resolution). Low beeps = rx0 stronger, high beeps = rx1 stronger; faster = closer to balanced.",
-    metric: "faster and higher = better; double chirp = new best."
+    balance: "target rx0 - rx1 = 0: steady tone = balanced (within 2 / 1 / 0.5 dB by resolution). Low beeps = rx0 stronger, high beeps = rx1 stronger; faster = closer to balanced.",
+    metric: "faster = closer to target (5G SINR 20 dB, LTE SINR 6 dB, RSRQ -10 dB, RSRP -70 dBm); steady tone = target reached; double chirp = new best."
 };
 
 function tone_toggle(on)
@@ -1111,24 +1111,44 @@ function tone_set_res(res)
     if (tools.tone) tools.tone.peaks = {};
 }
 
-// metric mapped to 0..1 over a typical range (SINR -10..30 dB, RSRP -125..-60 dBm, RSRQ -20..-3 dB)
-function tone_level(key)
+/*
+ * Targets: the value at which the tone says "done" (steady tone) and the top of the "closeness" scale.
+ * 5G SINR 20 dB, LTE SINR 6 dB, RSRQ -10 dB, RSRP -70 dBm; in 5G + LTE mode 5G 15 dB / LTE 6 dB; rx0 - rx1 = 0.
+ * Closeness (0..1 from a floor up to the target) drives the beep speed - faster = closer to target.
+ * Pitch: "abs" = closeness; "high"/"vhigh" = change from the reference (Reset start/peak), 2 / 4 semitones per dB,
+ * so even small changes are audible on a weak signal.
+ */
+// [floor, target] per value - edit to taste. LTE SINR is typically several dB below 5G here, so its target is lower.
+var TONE_TARGET = { nr_sinr: [-10, 20], lte_sinr: [-10, 6], rsrq: [-20, -10], rsrp: [-120, -70], dual_nr_sinr: [-10, 15], dual_lte_sinr: [-10, 6] };
+
+function tone_range(key, dual)
 {
-    var m = ALIGN_METRICS.filter(function(x) { return x[0] == key; })[0], v = tools_avg(key, TONE_AVG_MS);
-    if (!m || isNaN(v)) return NaN;
-    var r = m[3] == "dBm" ? [-125, -60] : (m[0].indexOf("rsrq") >= 0 ? [-20, -3] : [-10, 30]);
+    if (key.indexOf("sinr") >= 0) return TONE_TARGET[(dual ? "dual_" : "") + key];
+    return key.indexOf("rsrq") >= 0 ? TONE_TARGET.rsrq : TONE_TARGET.rsrp;
+}
+
+// closeness to target: 0 at the floor, 1 at (or above) the target
+function tone_level(key, dual)
+{
+    var v = tools_avg(key, TONE_AVG_MS), r = tone_range(key, dual);
+    if (isNaN(v)) return NaN;
     return Math.min(1, Math.max(0, (v - r[0]) / (r[1] - r[0])));
 }
 
-// one voice: frequency between lo..hi Hz and a 0..1 "goodness" that drives the beep speed
-function tone_voice(key, lo, hi)
+// one voice: pitch between lo..hi Hz, x = closeness to target (beep speed), done = target reached
+function tone_voice(key, lo, hi, dual)
 {
     var v = tools_avg(key, TONE_AVG_MS), r = TONE_RES[tools.tone_res];
     if (isNaN(v)) return null;
-    if (!r.k) { var x = tone_level(key); return { f: lo + x * (hi - lo), x: x }; }
-    var ref = tools.base[key] === undefined ? v : tools.base[key];
-    var semis = Math.max(-24, Math.min(24, (v - ref) * r.k));              // +-2 octaves around the middle pitch
-    return { f: Math.sqrt(lo * hi) * Math.pow(2, semis / 12), x: 0.5 + semis / 48 };
+    var x = tone_level(key, dual), f;
+    if (!r.k) f = lo + x * (hi - lo);
+    else
+    {
+        var ref = tools.base[key] === undefined ? v : tools.base[key];
+        var semis = Math.max(-18, Math.min(18, (v - ref) * r.k));            // +-1.5 octaves around the middle pitch
+        f = Math.sqrt(lo * hi) * Math.pow(2, semis / 12);
+    }
+    return { f: f, x: x, done: v >= tone_range(key, dual)[1] };
 }
 
 function tone_loop()
@@ -1141,7 +1161,7 @@ function tone_loop()
     {
         var d = tools_avg("nr_rx0", TONE_AVG_MS) - tools_avg("nr_rx1", TONE_AVG_MS);
         if (isNaN(d)) tone_hold(0);
-        else if (Math.abs(d) <= r.thr) { tone_hold(660); next = 200; }
+        else if (Math.abs(d) <= r.thr) { tone_hold(660); next = 200; }       // target: difference 0 (within window)
         else
         {
             tone_hold(0);
@@ -1152,17 +1172,25 @@ function tone_loop()
     }
     else if (mode == "dual")
     {
-        tone_hold(0);
-        var v5 = tone_voice("nr_sinr", 700, 1600), v4 = tone_voice("lte_sinr", 250, 650);
-        if (v5) tone_beep(v5.f, now, 0.06);            // 5G: high voice
-        if (v4) tone_beep(v4.f, now + 0.09, 0.06);     // LTE: low voice
-        if (v5 || v4) next = Math.max(250, 1000 - Math.min(v5 ? v5.x : 1, v4 ? v4.x : 1) * 750);
+        var v5 = tone_voice("nr_sinr", 700, 1600, true), v4 = tone_voice("lte_sinr", 250, 650, true);
+        if (v5 && v4 && v5.done && v4.done) { tone_hold(880); next = 200; }   // 5G >= 15 dB and LTE >= 6 dB
+        else
+        {
+            tone_hold(0);
+            if (v5) tone_beep(v5.f, now, 0.06);            // 5G: high voice
+            if (v4) tone_beep(v4.f, now + 0.09, 0.06);     // LTE: low voice
+            if (v5 || v4) next = Math.max(250, 1000 - Math.min(v5 ? v5.x : 1, v4 ? v4.x : 1) * 750);
+        }
     }
     else
     {
-        tone_hold(0);
-        var v = tone_voice(mode.substr(2), 400, 1200);
-        if (v) { tone_beep(v.f, now, 0.06); next = 1000 - v.x * 880; }   // 1 .. ~8 beeps/s
+        var v = tone_voice(mode.substr(2), 400, 1200, false);
+        if (v && v.done) { tone_hold(880); next = 200; }                      // target reached
+        else
+        {
+            tone_hold(0);
+            if (v) { tone_beep(v.f, now, 0.06); next = 1000 - v.x * 880; }   // 1 .. ~8 beeps/s
+        }
     }
     t.timer = window.setTimeout(tone_loop, next);
 }
