@@ -705,7 +705,7 @@ function arfcn_to_band(arfcn, nr)
 
 var NGBR_COLUMNS = [["rat","RAT"],["band","BAND"],["arfcn","ARFCN"],["pci","PCI"],["rsrp","RSRP","dBm, latest"],["avg","AVG","dBm, RSRP mean of last 60 s"],
     ["range","MIN/MAX","dBm, RSRP over last 60 s (hover: samples)"],["rsrq","RSRQ","dB"],["sinr","SINR","dB"],["rssi","RSSI","dBm"],["dist","DIST","serving cell timing advance"],
-    ["enb","CELL","eNB-sector learned while connected to this cell"],["note","NOTE"]];
+    ["enb","CELL","Cell identifier (ECI) learned while connected to this cell; hover a value for eNB-sector"],["note","NOTE"]];
 var ngbr_sort = { key: "band", dir: 1 };
 
 function ngbr_sort_value(c, key)
@@ -880,7 +880,9 @@ function render_ngbr_cells(raw)
     html += "<th>LOCK</th></tr>";
     cells.forEach(function(c) {
         var age = Math.round((now - c.t) / 1000);
-        var cellid = c.eci === undefined ? "" : (c.nr ? String(c.eci) : Math.floor(c.eci / 256) + "-" + (c.eci % 256));
+        // full cell identifier (what CellMapper searches by); eNB-sector in the tooltip
+        var cellid = c.eci === undefined ? "" : String(c.eci);
+        var celltip = c.eci === undefined ? "" : (c.nr ? "NCI " + c.eci : "eNB " + Math.floor(c.eci / 256) + ", sector " + (c.eci % 256));
         html += "<tr title='" + c.raw + "' style='opacity:" + (age > 3 ? 0.5 : 1) + "'>" +
             "<td>" + (c.nr ? "NR" : "LTE") + "</td><td>" + c.band + "</td>" +
             "<td>" + c.arfcn + "</td><td>" + c.pci + "</td>" +
@@ -890,7 +892,7 @@ function render_ngbr_cells(raw)
             "<td>" + c.rsrq + "</td><td>" + c.sinr + "</td>" +
             "<td>" + (c.rssi || c.extra) + "</td>" +
             "<td" + (c.dist === "" ? ">" : " title='Serving cell timing advance (TA " + ta + ", &plusmn;39 m)'>~" + c.dist + "&nbsp;m") + "</td>" +
-            "<td" + (c.eci === undefined ? "" : " title='ECI " + c.eci + "'") + ">" + cellid + "</td>" +
+            "<td" + (celltip ? " title='" + celltip + "'" : "") + ">" + cellid + "</td>" +
             "<td><b>" + c.mark + "</b>" +
                 (c.better ? "<b style='color:#5c5'>BETTER +" + c.better.toFixed(1) + "</b>" : "") +
                 (age > 3 ? " " + age + "s" : "") + "</td>" +
