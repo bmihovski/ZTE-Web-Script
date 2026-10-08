@@ -732,9 +732,9 @@ function ngbr_lock(nr, arfcn, pci, band)
     nr_cell_lock(false, pci + "," + arfcn + "," + (known ? b : "") + "," + scs, !known);
 }
 
-function sinr_or_unknown(v)
+function sinr_or_unknown(v, scell = false)
 {
-    return (v == "-20.0" || v == "-3276.8" || v == "0.0") ? "?" : (v || "");
+    return (v == "-20.0" || v == "-3276.8" || (scell && v == "0.0")) ? "?" : (v || "");
 }
 
 // PCell + LTE SCells (lte_multi_ca_scell_info/_sig_info) + NR PCell/SCells, same order as the signal panels
@@ -755,12 +755,12 @@ function connected_cells()
 
     if (is_5g && (!is_5g_nsa || is_5g_nsa_active) && nr5g_action_channel && Z5g_rsrp)
         cells.push({ nr: true, arfcn: nr5g_action_channel, pci: String(parseInt(nr5g_pci, 16)),
-                     rsrp: Z5g_rsrp, rsrq: Z5g_rsrq, sinr: sinr_or_unknown(Z5g_SINR), rssi: (Z5g_rssi || "").replace(".0", "") });
+                     rsrp: Z5g_rsrp, rsrq: Z5g_rsrq, sinr: sinr_or_unknown(Z5g_SINR), rssi: Z5g_rssi || "" });
 
     (nr_multi_ca_scell_info || "").split(";").filter(Boolean).forEach(function(info) {
         var d = info.split(",");  // 0,PCI,1,n75,ARFCN,BW,0,RSRP,RSRQ,SINR
         if (d.length < 10) return;
-        cells.push({ nr: true, arfcn: d[4], pci: d[1], rsrp: d[7], rsrq: d[8], sinr: sinr_or_unknown(d[9]), rssi: "" });
+        cells.push({ nr: true, arfcn: d[4], pci: d[1], rsrp: d[7], rsrq: d[8], sinr: sinr_or_unknown(d[9], true), rssi: "" });
     });
     return cells;
 }
