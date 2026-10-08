@@ -7,7 +7,7 @@
  * 
  */
 
-console.log("Loading ZTE Script v" + "2026-10-08-#2");
+console.log("Loading ZTE Script v" + "2025-04-17-#1");
 
 siginfo =
     "wan_active_band,wan_active_channel,wan_lte_ca,wan_apn,wan_ipaddr," +
@@ -24,8 +24,6 @@ siginfo =
     "rscp_1,ecio_1,rscp_2,ecio_2,rscp_3,ecio_3,rscp_4,ecio_4,ecio," +
 
     "ngbr_cell_info," +
-    "nr5g_nsa_bandwidth,Z5g_rssi,lte_ta,system_uptime,realtime_rx_thrpt,realtime_tx_thrpt,pm_modem_5g," +
-    "signal_quality,total_rx_bytes,total_tx_bytes,total_time," +
     "lte_multi_ca_scell_info,lte_multi_ca_scell_sig_info," +
     "lte_band,lte_rsrp,lte_rsrq," +
     "lte_rsrq,lte_rssi,lte_rsrp,lte_snr," +
@@ -134,7 +132,6 @@ function wait_for_log_in()
 
             inject_html();
             get_status();
-            load_device_extras();
 
             show_logout_and_shutdown_buttons_i = 0;
             show_logout_and_shutdown_buttons_timer_id = window.setInterval(function() {
@@ -571,7 +568,7 @@ function parse_nr_cell_info()
             parseInt(nr5g_pci, 16),
             nr_band,
             nr5g_action_channel,
-            (is_5g_nsa ? (nr5g_nsa_bandwidth || "") : bandwidth).replace("MHz", ""),
+            is_5g_nsa ? "" : bandwidth.replace("MHz", ""),
             _5g_rx0_rsrp,
             _5g_rx1_rsrp,
             Z5g_rsrq,
@@ -601,7 +598,7 @@ function parse_nr_cell_info()
         parseInt(nr5g_pci, 16),
         "n" + pcc_band,
         pcc_freq,
-        (is_5g_nsa ? (nr5g_nsa_bandwidth || "") : bandwidth).replace("MHz", ""),
+        bandwidth == "" ? "" : bandwidth.replace("MHz", ""),
         _5g_rx0_rsrp,
         _5g_rx1_rsrp,
         Z5g_rsrq,
@@ -675,102 +672,6 @@ function get_band_info(cells)
     return bands;
 }
 
-/*
- * Neighbour cells.
- * ngbr_cell_info = "arfcn,pci,rsrq,rsrp,rssi;..." - PCI is DECIMAL here
- * (unlike lte_pci / nr5g_pci which are hex). The router rotates the
- * entries, so we keep everything seen in the last NGBR_KEEP_MS.
- * In ENDC (NSA) the firmware reports LTE neighbours only - no NR
- * neighbour data is exposed by the API (probed ~500 key names, MC889 B11).
- */
-var ngbr_seen = {};
-var NGBR_KEEP_MS = 60000;
-
-var LTE_BANDS = [[0,599,"B1"],[1200,1949,"B3"],[2750,3449,"B7"],[3450,3799,"B8"],[6150,6449,"B20"],
-    [9210,9659,"B28"],[9920,10359,"B32"],[37750,38249,"B38"],[38650,39649,"B40"],[41590,43589,"B42"],[43590,45589,"B43"]];
-var NR_BANDS = [[422000,434000,"n1"],[361000,376000,"n3"],[524000,538000,"n7"],[185000,192000,"n8"],
-    [158200,160600,"n20/n28"],[160601,164200,"n20"],[151600,158199,"n28"],[514000,523999,"n38"],
-    [286400,303400,"n75"],[620000,653333,"n78"]];
-
-function arfcn_to_band(arfcn, nr)
-{
-    var a = parseInt(arfcn);
-    var t = nr ? NR_BANDS : LTE_BANDS;
-    for (var i = 0; i < t.length; i++)
-        if (a >= t[i][0] && a <= t[i][1]) return t[i][2];
-    return "?";
-}
-
-function render_ngbr_cells(raw)
-{
-    var now = Date.now();
-    raw.split(";").forEach(function(cell) {
-        var p = cell.split(",").map(function(x) { return x.trim(); });
-        if (p.length < 4 || p[0] === "") return;
-        // ponytail: NR = ARFCN above LTE range; never seen in NSA, kept in case firmware adds it
-        var nr = parseInt(p[0]) > 65535;
-        ngbr_seen[(nr ? "nr" : "lte") + ":" + p[0] + ":" + p[1]] = {
-            nr: nr, arfcn: p[0], pci: p[1], rsrq: p[2], rsrp: p[3],
-            rssi: nr ? "" : (p[4] || ""), extra: nr ? p.slice(4).join(",") : p.slice(5).join(","),
-            raw: cell, t: now
-        };
-    });
-
-    var ca = {};
-    (lte_multi_ca_scell_info || "").split(";").forEach(function(c) {
-        var d = c.split(",");
-        if (d.length >= 5) ca[d[4] + ":" + d[1]] = true;
-    });
-    var lte_serving = wan_active_channel + ":" + parseInt(lte_pci, 16);
-    var nr_serving = nr5g_action_channel + ":" + parseInt(nr5g_pci, 16);
-
-    var cells = [];
-    for (var k in ngbr_seen)
-    {
-        if (now - ngbr_seen[k].t > NGBR_KEEP_MS) delete ngbr_seen[k];
-        else cells.push(ngbr_seen[k]);
-    }
-    cells.sort(function(a, b) {
-        return (a.nr - b.nr) || (parseInt(a.arfcn) - parseInt(b.arfcn)) || (parseFloat(b.rsrp) - parseFloat(a.rsrp));
-    });
-
-    var html = "<table class='ngbr_cell_table'><tr><td>RAT</td><td>BAND</td><td>ARFCN</td><td>PCI</td><td>RSRP</td><td>RSRQ</td><td>RSSI/EXTRA</td><td></td></tr>";
-    cells.forEach(function(c) {
-        var key = c.arfcn + ":" + c.pci;
-        var mark = c.nr ? (key == nr_serving ? "SERVING" : "")
-                        : (key == lte_serving ? "SERVING" : (ca[key] ? "CA" : ""));
-        var age = Math.round((now - c.t) / 1000);
-        html += "<tr title='" + c.raw + "' style='opacity:" + (age > 3 ? 0.5 : 1) + "'>" +
-            "<td>" + (c.nr ? "NR" : "LTE") + "</td><td>" + arfcn_to_band(c.arfcn, c.nr) + "</td>" +
-            "<td>" + c.arfcn + "</td><td>" + c.pci + "</td>" +
-            "<td>" + c.rsrp + "&nbsp;dBm&nbsp;</td><td>" + c.rsrq + "&nbsp;dB&nbsp;</td>" +
-            "<td>" + (c.rssi ? c.rssi + "&nbsp;dBm" : c.extra) + "</td>" +
-            "<td><b>" + mark + "</b>" + (age > 3 ? " " + age + "s ago" : "") + "</td></tr>";
-    });
-    return html + "</table>";
-}
-
-/*
- * IMSI and router GPS position are AES-GCM encrypted by the API with a
- * per-session key; the stock service module decrypts them for us.
- */
-function load_device_extras()
-{
-    if (typeof require !== "function") return;
-    require(["service"], function(service) {
-        try {
-            var di = service.getDeviceInfo();
-            var html = "IMEI: " + di.imei + "&nbsp;&nbsp;IMSI: " + di.imsi;
-            if (di.gps_lat && di.gps_lon)
-                html += "&nbsp;&nbsp;GPS: <a target='_blank' href='https://www.openstreetmap.org/?mlat=" +
-                    di.gps_lat + "&mlon=" + di.gps_lon + "#map=16/" + di.gps_lat + "/" + di.gps_lon + "'>" +
-                    di.gps_lat + ", " + di.gps_lon + "</a>";
-            $("#device_extras").html(html);
-            $("#device_extras_row").show();
-        } catch (e) { console.log("device extras unavailable", e); }
-    });
-}
-
 function get_status()
 {
     $.ajax({
@@ -790,16 +691,16 @@ function get_status()
                 window[(!isNaN(v[0]) ? "_" : "" ) + v] = a[v];
             }
 
-            is_umts = (network_type == "HSPA" || network_type == "HSDPA" || network_type == "HSUPA" || network_type == "HSPA+" || network_type == "DC-HSPA+" || network_type == "WCDMA" || network_type == "DC" || network_type == "DC-HSPA" || network_type == "CDMA2000" || 
+            is_umts = (network_type == "HSPA" || network_type == "HSDPA" || network_type == "HSUPA" || network_type == "HSPA+" || network_type == "DC-HSPA+" || 
                        network_type == "UMTS" || network_type == "CDMA" || network_type == "CDMA_EVDO" || network_type == "EVDO_EHRPD" || network_type == "TDSCDMA");
 
             // MC801 = EN-DC, MC801A = ENDC
-            is_lte = (network_type == "LTE" || network_type == "ENDC" || network_type == "EN-DC" || network_type == "LTE-NSA" || network_type == "LTE_NSA");
+            is_lte = (network_type == "LTE" || network_type == "ENDC" || network_type == "EN-DC" || network_type == "LTE-NSA");
             is_lte_plus = (wan_lte_ca && (wan_lte_ca == "ca_activated" || wan_lte_ca == "ca_deactivated"));
 
             is_5g_sa = (network_type == "SA");
-            is_5g_nsa = (network_type == "ENDC" || network_type == "EN-DC" || network_type == "LTE-NSA" || network_type == "LTE_NSA");
-            is_5g_nsa_active = is_5g_nsa && network_type != "LTE-NSA" && network_type != "LTE_NSA";
+            is_5g_nsa = (network_type == "ENDC" || network_type == "EN-DC" || network_type == "LTE-NSA");
+            is_5g_nsa_active = is_5g_nsa && network_type != "LTE-NSA";
             is_5g = is_5g_sa || is_5g_nsa;
 
             if (is_umts) $("#umts_signal_container").show();
@@ -936,9 +837,35 @@ function get_status()
             if (is_umts && lte_ca_pcell_band)
                 $("#umts_signal_table_main_band").html(" (" + lte_ca_pcell_band + ")");
 
-            if (ngbr_cell_info || Object.keys(ngbr_seen).length > 0)
+            if (ngbr_cell_info)
             {
-                ngbr_cell_info = render_ngbr_cells(ngbr_cell_info || "");
+                if (is_lte)
+                {
+                    var ngbr_cells = ngbr_cell_info.split(";");
+                    if (ngbr_cells.length > 0)
+                    {
+                        var html = "<table class='ngbr_cell_table'>";
+                        for (var i = 0; i < ngbr_cells.length; i++) {
+                            var cell = ngbr_cells[i];
+                            if (!cell) continue; // Skip empty entries
+                        
+                            var parts = cell.split(",").map(part => part.trim());
+                            if (parts.length === 5) {
+                                var [earfcn, pci, rsrq, rsrp, rssi] = parts;
+                                html += `<tr><td>${pci}:${earfcn}</td><td>RSRP: ${rsrp} dBm&nbsp;</td><td>RSRQ: ${rsrq} dB&nbsp;</td><td>RSSI: ${rssi} dBm</td></tr>`;
+                            } else {
+                                console.error("Invalid cell data format:", cell);
+                            }
+                        }
+                        html += "</table>";
+                    }
+                    ngbr_cell_info = html;
+                }
+                else
+                {
+                    ngbr_cell_info = ngbr_cell_info.replace(";", "<br>");
+                }
+
                 $("#ngbr_cells").show();
             }
             else
@@ -946,43 +873,17 @@ function get_status()
                 $("#ngbr_cells").hide();
             }
 
-            // Timing advance -> distance to serving LTE cell (1 TA = 16 Ts ~ 78 m one-way)
-            if (lte_ta !== "" && lte_ta !== undefined && is_lte && !isNaN(lte_ta))
-            {
-                lte_ta = lte_ta + " (~" + Math.round(parseInt(lte_ta) * 78.12) + " m)";
-                $("#ta_row").show();
-            }
-            else $("#ta_row").hide();
-
-            if (system_uptime)
-            {
-                var up = parseInt(system_uptime);
-                system_uptime = Math.floor(up / 86400) + "d " + new Date(up * 1000).toISOString().substr(11, 8);
-            }
-
-            // signal_quality: firmware's own grade, as shown by ZTE's installer app (0..4)
-            var SQ = ["Poor", "Medium", "Good", "Excellent", "Excellent+"];
-            if (signal_quality !== "" && SQ[signal_quality]) signal_quality = signal_quality + "/4 (" + SQ[signal_quality] + ")";
-
-            total_rx_bytes = (parseInt(total_rx_bytes || 0) / 1e9).toFixed(1);
-            total_tx_bytes = (parseInt(total_tx_bytes || 0) / 1e9).toFixed(1);
-            if (total_time) total_time = Math.round(parseInt(total_time) / 3600) + " h";
-
-            realtime_rx_thrpt = (parseInt(realtime_rx_thrpt || 0) * 8 / 1e6).toFixed(2);
-            realtime_tx_thrpt = (parseInt(realtime_tx_thrpt || 0) * 8 / 1e6).toFixed(2);
-
             if (wan_ipaddr) $("#wanipinfo").show();
             else $("#wanipinfo").hide();
             if (dns_mode === "manual") $("manual-dns-info").show();
             else $("manual-dns-info").hide();
 
-            if (pm_sensor_ambient || pm_sensor_mdm || pm_sensor_5g || pm_sensor_pa1 || wifi_chip_temp || pm_modem_5g)
+            if (pm_sensor_ambient || pm_sensor_mdm || pm_sensor_5g || pm_sensor_pa1 || wifi_chip_temp)
             {
                 var temp = "";
                 if (pm_sensor_ambient && pm_sensor_ambient > -40) temp += (temp ? "&nbsp;&nbsp;" : "") + "A:&nbsp;" + pm_sensor_ambient + "°c";
                 if (pm_sensor_mdm && pm_sensor_mdm > -40) temp += (temp ? "&nbsp;&nbsp;" : "") + "M:&nbsp;" + pm_sensor_mdm + "°c";
-                if (pm_sensor_5g && pm_sensor_5g > -40) temp += (temp ? "&nbsp;&nbsp;" : "") + "5G:&nbsp;" + pm_sensor_5g + "°c";
-                if (pm_modem_5g && pm_modem_5g > -40) temp += (temp ? "&nbsp;&nbsp;" : "") + "M5G:&nbsp;" + pm_modem_5g + "°c";
+                if (pm_sensor_5g && pm_sensor_5g > -40) temp += (temp ? "&nbsp;&nbsp;" : "") + "5G:&nbsp;" + pm_sensor_mdm + "°c";
                 if (pm_sensor_pa1 && pm_sensor_pa1 > -40) temp += (temp ? "&nbsp;&nbsp;" : "") + "P:&nbsp;" + pm_sensor_pa1 + "°c";
                 if (wifi_chip_temp && wifi_chip_temp > -40) temp += (temp ? "&nbsp;&nbsp;" : "") + "W:&nbsp;" + wifi_chip_temp + "°c";
                 $("#temps").html(temp);
@@ -2052,10 +1953,6 @@ function inject_html()
                         <td>NGBR:</td>
                         <td><span id="ngbr_cell_info"></span></td>
                     </tr>
-                    <tr id="ta_row">
-                        <td>LTE TA:</td>
-                        <td><span id="lte_ta"></span></td>
-                    </tr>
                     <tr id="txp">
                         <td>TX POWER:</td>
                         <td><span id="tx_power"></span></td>
@@ -2085,26 +1982,6 @@ function inject_html()
                     <tr id="temperature">
                         <td>TEMP:</td>
                         <td id="temps"></td>
-                    </tr>
-                    <tr>
-                        <td>TRAFFIC:</td>
-                        <td>&darr;&nbsp;<span id="realtime_rx_thrpt"></span>&nbsp;Mbit/s&nbsp;&nbsp;&uarr;&nbsp;<span id="realtime_tx_thrpt"></span>&nbsp;Mbit/s</td>
-                    </tr>
-                    <tr>
-                        <td>QUALITY:</td>
-                        <td><span id="signal_quality"></span></td>
-                    </tr>
-                    <tr>
-                        <td>TOTAL TRAFFIC:</td>
-                        <td>&darr;&nbsp;<span id="total_rx_bytes"></span>&nbsp;GB&nbsp;&nbsp;&uarr;&nbsp;<span id="total_tx_bytes"></span>&nbsp;GB&nbsp;&nbsp;(<span id="total_time"></span>)</td>
-                    </tr>
-                    <tr>
-                        <td>UPTIME:</td>
-                        <td><span id="system_uptime"></span></td>
-                    </tr>
-                    <tr id="device_extras_row" style="display:none">
-                        <td>DEVICE:</td>
-                        <td id="device_extras"></td>
                     </tr>
                 </table>
             </div>
@@ -2166,18 +2043,6 @@ function inject_html()
             <div class="spacing_links"></div>
 
             <a onclick="make_hidden_settings_visible()">Show hidden device settings</a>
-            <div class="spacing_links"></div>
-
-            Hidden pages:
-            [
-                <a href="#debug_page">Debug</a> |
-                <a href="#network_info">Network Info</a> |
-                <a href="#ant_settings">Antenna</a> |
-                <a href="#temp_status">Temperatures</a> |
-                <a href="#bsp_tc_settings">Thermal Thresholds</a> |
-                <a href="#rf_mmw">mmWave Modules</a> |
-                <a href="#developer_login">Developer</a>
-            ]
             <div class="spacing_links"></div>
 
             <a onclick="enable_automatic_login()">Enable Automatic Login</a> | <a onclick="version_info()">Version Info</a>
