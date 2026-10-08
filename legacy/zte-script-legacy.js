@@ -701,7 +701,7 @@ function arfcn_to_band(arfcn, nr)
     return "?";
 }
 
-var NGBR_COLUMNS = [["rat","RAT"],["band","BAND"],["arfcn","ARFCN"],["pci","PCI"],["rsrp","RSRP"],["rsrq","RSRQ"],["sinr","SINR"],["rssi","RSSI"],["note","NOTE"]];
+var NGBR_COLUMNS = [["rat","RAT"],["band","BAND"],["arfcn","ARFCN"],["pci","PCI"],["rsrp","RSRP"],["rsrq","RSRQ"],["sinr","SINR"],["rssi","RSSI"],["dist","DIST"],["note","NOTE"]];
 var ngbr_sort = { key: "band", dir: 1 };
 
 function ngbr_sort_value(c, key)
@@ -711,6 +711,7 @@ function ngbr_sort_value(c, key)
         case "rat":  return c.nr ? 1 : 0;
         case "band": return (c.nr ? 1000 : 0) + (parseInt(c.band.replace(/^\D+/, "")) || 999);  // B1 < B3 < B7 < B20 < n1 ...
         case "note": return c.mark == "SERVING" ? 0 : (c.mark == "CA" ? 1 : 2);
+        case "dist": return c.dist === "" ? 99999 : c.dist;
         default:     return parseFloat(c[key]) || -9999;  // arfcn, pci, rsrp, rsrq, rssi
     }
 }
@@ -801,6 +802,11 @@ function render_ngbr_cells(raw)
     var lte_serving = (lte_ca_pcell_freq || wan_active_channel) + ":" + parseInt(lte_pci, 16);
     var nr_serving = nr5g_action_channel + ":" + parseInt(nr5g_pci, 16);
 
+    // 1 TA step = 16 Ts = 78.12 m one-way; parseInt also works once get_status has formatted lte_ta as "2 (~156 m)"
+    var ta = is_lte ? parseInt(lte_ta) : NaN;
+    if (isNaN(ta)) ta = -1;
+    var serving_pci = String(parseInt(lte_pci, 16));
+
     var cells = [];
     for (var k in ngbr_seen)
     {
@@ -810,6 +816,7 @@ function render_ngbr_cells(raw)
         c.mark = c.nr ? (key == nr_serving ? "SERVING" : (nr_ca[key] ? "CA" : ""))
                       : (key == lte_serving ? "SERVING" : (ca[key] ? "CA" : ""));
         c.band = arfcn_to_band(c.arfcn, c.nr);
+        c.dist = (!c.nr && ta >= 0 && c.pci == serving_pci) ? Math.round(ta * 78.12) : "";
         cells.push(c);
     }
 
@@ -834,6 +841,7 @@ function render_ngbr_cells(raw)
             "<td>" + (c.rsrp ? c.rsrp + "&nbsp;dBm" : "") + "</td><td>" + (c.rsrq ? c.rsrq + "&nbsp;dB" : "") + "</td>" +
             "<td>" + (c.sinr ? c.sinr + "&nbsp;dB" : "") + "</td>" +
             "<td>" + (c.rssi ? c.rssi + "&nbsp;dBm" : c.extra) + "</td>" +
+            "<td" + (c.dist === "" ? ">" : " title='Same site as serving cell (TA " + ta + ", &plusmn;39 m)'>~" + c.dist + "&nbsp;m") + "</td>" +
             "<td><b>" + c.mark + "</b>" + (age > 3 ? " " + age + "s ago" : "") + "</td>" +
             "<td><a style='cursor:pointer' title='Lock to this cell (reboot required)' onclick=\"ngbr_lock(" +
                 c.nr + ",'" + c.arfcn + "','" + c.pci + "','" + c.band + "')\">lock</a></td></tr>";
