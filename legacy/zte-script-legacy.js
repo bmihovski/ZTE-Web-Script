@@ -7,7 +7,7 @@
  * 
  */
 
-console.log("Loading ZTE Script v" + "2026-10-08-#2");
+console.log("Loading ZTE Script v" + "2026-10-08-#3");
 
 siginfo =
     "wan_active_band,wan_active_channel,wan_lte_ca,wan_apn,wan_ipaddr," +
@@ -247,10 +247,11 @@ function prepare_1()
 
 function make_hidden_settings_visible()
 {
+    if (window.hidden_settings_timer_id) return;
     alert("This option makes hidden device settings visible.\n" +
           "Hidden settings are marked with a '[hidden option]' suffix");
 
-    window.setInterval(function() {
+    window.hidden_settings_timer_id = window.setInterval(function() {
         Array.from(document.querySelectorAll('*')).forEach(el => {
             // $(el).hide();
             // $(el).show();
@@ -474,8 +475,7 @@ function parse_lte_cell_info()
         lte_snr_4
     ));
 
-    // Only MC888 seems to have lte_multi_ca_scell_sig_info so far.
-    // MC889 doesn't have it.
+    // lte_multi_ca_scell_sig_info: "rsrp,rsrq,sinr,rssi,?,?;" per SCell (MC888, MC889 B11)
 
     var scell_infos = lte_multi_ca_scell_info.split(";").filter(n => n);
     var scell_sig_infos = lte_multi_ca_scell_sig_info.split(";").filter(n => n);
@@ -501,7 +501,7 @@ function parse_lte_cell_info()
             scell_info[4], // Earfcn
             scell_info[5].replace(".0", ""), // Bandwidth
             "", // RSSI
-            (have_scell_sig_info ? scell_sig_info[0] : "").replace("-44.0", "?????"), // RSRP
+            (have_scell_sig_info ? (scell_sig_info[0] == "-44.0" ? "?????" : scell_sig_info[0]) : ""), // RSRP
             "",
             "",
             "",
@@ -576,7 +576,7 @@ function parse_nr_cell_info()
             _5g_rx1_rsrp,
             Z5g_rsrq,
             Z5g_rsrp,
-            Z5g_SINR.replace("-20.0", "?????").replace("-3276.8", "?????")
+            (Z5g_SINR == "-20.0" || Z5g_SINR == "-3276.8" ? "?????" : Z5g_SINR)
         ));
 
         previous_nr_cells = nr_cells;
@@ -606,7 +606,7 @@ function parse_nr_cell_info()
         _5g_rx1_rsrp,
         Z5g_rsrq,
         Z5g_rsrp,
-        Z5g_SINR.replace("-20.0", "?????").replace("-3276.8", "?????")
+        (Z5g_SINR == "-20.0" || Z5g_SINR == "-3276.8" ? "?????" : Z5g_SINR)
     ));
 
     nr_multi_ca_scell_info.split(";").forEach(cell => {
@@ -637,7 +637,7 @@ function parse_nr_cell_info()
             "",
             "",
             cell_data[8], // RSRQ
-            cell_data[9].replace("0.0", "?????") // SINR
+            (cell_data[9] == "0.0" ? "?????" : cell_data[9]) // SINR
         ));
     });
 
@@ -734,7 +734,7 @@ function render_ngbr_cells(raw)
         return (a.nr - b.nr) || (parseInt(a.arfcn) - parseInt(b.arfcn)) || (parseFloat(b.rsrp) - parseFloat(a.rsrp));
     });
 
-    var html = "<table class='ngbr_cell_table'><tr><td>RAT</td><td>BAND</td><td>ARFCN</td><td>PCI</td><td>RSRP</td><td>RSRQ</td><td>RSSI/EXTRA</td><td></td></tr>";
+    var html = "<table class='ngbr_cell_table'><tr><th>RAT</th><th>BAND</th><th>ARFCN</th><th>PCI</th><th>RSRP</th><th>RSRQ</th><th>RSSI</th><th>NOTE</th></tr>";
     cells.forEach(function(c) {
         var key = c.arfcn + ":" + c.pci;
         var mark = c.nr ? (key == nr_serving ? "SERVING" : "")
@@ -828,6 +828,7 @@ function get_status()
             }
 
 
+            if (is_5g && nr5g_cell_id && !isNaN(parseInt(nr5g_cell_id, 16))) nr5g_cell_id = parseInt(nr5g_cell_id, 16).toString();
             if (is_5g && nr5g_cell_id) $("#5g_cell").show();
             else $("#5g_cell").hide();
 
@@ -973,8 +974,8 @@ function get_status()
 
             if (wan_ipaddr) $("#wanipinfo").show();
             else $("#wanipinfo").hide();
-            if (dns_mode === "manual") $("manual-dns-info").show();
-            else $("manual-dns-info").hide();
+            if (dns_mode === "manual") $("#manual-dns-info").show();
+            else $("#manual-dns-info").hide();
 
             if (pm_sensor_ambient || pm_sensor_mdm || pm_sensor_5g || pm_sensor_pa1 || wifi_chip_temp || pm_modem_5g)
             {
@@ -1084,9 +1085,9 @@ function lte_cell_lock(reset = false) {
             return;
         }
 
-        var inputValues = cellLockDetails.split(",");
-        var pciIsValid = !isNaN(inputValues[0]) && Number.isInteger(parseFloat(inputValues[0]));
-        var earfcnIsValid = !isNaN(inputValues[1]) && Number.isInteger(parseFloat(inputValues[1]));
+        var inputValues = cellLockDetails.split(",").map(v => v.trim());
+        var pciIsValid = /^\d+$/.test(inputValues[0]) && parseInt(inputValues[0]) <= 503;
+        var earfcnIsValid = /^\d+$/.test(inputValues[1]) && parseInt(inputValues[1]) <= 68935;
 
         if (!pciIsValid || !earfcnIsValid) {
             alert("Invalid input. Please ensure all values are correctly formatted.");
@@ -1160,17 +1161,18 @@ function nr_cell_lock(reset = false) {
         if (cellLockDetails === null || cellLockDetails.trim() === "") {
             return;
         } else {
-            var inputValues = cellLockDetails.split(",");
+            var inputValues = cellLockDetails.split(",").map(v => v.trim().replace(/^n/i, ""));
 
-            var pciIsValid = !isNaN(inputValues[0]) && Number.isInteger(parseFloat(inputValues[0]));
-            var arfcnIsValid = !isNaN(inputValues[1]) && Number.isInteger(parseFloat(inputValues[1]));
-            var bandIsValid = !isNaN(inputValues[2]) && Number.isInteger(parseFloat(inputValues[2]));
+            var pciIsValid = /^\d+$/.test(inputValues[0]) && parseInt(inputValues[0]) <= 1007;
+            var arfcnIsValid = /^\d+$/.test(inputValues[1]);
+            var bandIsValid = /^\d+$/.test(inputValues[2]);
             var scsIsValid = ["15", "30", "60", "120", "240"].includes(inputValues[3]);
 
             if (!pciIsValid || !arfcnIsValid || !bandIsValid || !scsIsValid) {
                 alert("Invalid input. Please ensure all values are correctly formatted.");
                 return;
             }
+            cellLockDetails = inputValues.slice(0, 4).join(",");
         }
     }
 
@@ -1220,6 +1222,7 @@ function nr_cell_lock(reset = false) {
 function lte_band_selection(a = null, nested_attempt_with_dev_login = false)
 {
     a = a || prompt("Please input LTE bands number, separated by + char (example 1+3+20). If you want to use every supported band, write 'AUTO'.", "AUTO");
+    var bands_input = a;
 
     var had_admin_password_hash = have_admin_password_hash();
 
@@ -1235,9 +1238,14 @@ function lte_band_selection(a = null, nested_attempt_with_dev_login = false)
         }
         else
         {
-            for (var l = 0; l < e.length; l++) n += Math.pow(2, parseInt(e[l]) - 1);
-            n = n.toString(16);
-            n = "0x" + (Math.pow(10, 11 - n.length) + n + "").substr(1);
+            var bands = Array.from(new Set(e.map(b => parseInt(b.trim().replace(/^b/, "")))));
+            if (bands.some(b => isNaN(b) || b < 1 || b > 52))
+            {
+                alert("Invalid LTE band list: " + a);
+                return;
+            }
+            bands.forEach(b => n += Math.pow(2, b - 1));
+            n = "0x" + n.toString(16).padStart(11, "0");
         }
 
         $.ajax({
@@ -1292,7 +1300,7 @@ function lte_band_selection(a = null, nested_attempt_with_dev_login = false)
                                 perform_login(
                                     function() {
                                         logged_in_as_developer = true;
-                                        lte_band_selection(a, true);
+                                        lte_band_selection(bands_input, true);
                                     }, true);
                             }
                             else
@@ -1313,8 +1321,14 @@ function nr_band_selection(a)
     var e;
     var a = a || prompt("Please input 5G bands number, separated by + char (example 3+78). If you want to use every supported band, write 'AUTO'.", "AUTO");
 
-    null != a && "" !== a && (e = a.split("+").join(","));
-    "AUTO" === a.toUpperCase() && (e = "1,2,3,5,7,8,20,28,38,41,50,51,66,70,71,74,75,76,77,78,79,80,81,82,83,84");
+    if (a == null || a.trim() === "") return;
+    e = a.split("+").map(b => b.trim().replace(/^n/i, "")).join(",");
+    "AUTO" === a.trim().toUpperCase() && (e = "1,2,3,5,7,8,20,28,38,41,50,51,66,70,71,74,75,76,77,78,79,80,81,82,83,84");
+    if (!/^\d+(,\d+)*$/.test(e))
+    {
+        alert("Invalid 5G band list: " + a);
+        return;
+    }
 
     $.ajax({
             type: "GET",
@@ -1340,6 +1354,7 @@ function nr_band_selection(a)
                     success: function(a)
                     {
                         console.log(a);
+                        if (JSON.parse(a).result != "success") alert("5G band locking failed.");
                     },
                     error: err
                 })
@@ -1377,6 +1392,7 @@ function bridge_mode(enable)
                 success: function(a)
                 {
                     console.log(a);
+                    if (JSON.parse(a).result != "success") { alert("Bridge mode change failed."); return; }
                     alert("Successfully " + (enable ? "enabled" : "disabled") + " bridge mode! Rebooting ..." +
                           (enable ? "\n\nIf your device has multiple LAN port then the lower one\nis the WAN/bridge port!" : ""));
                     reboot(true);
@@ -1416,6 +1432,7 @@ function arp_proxy(enable)
                 success: function(a)
                 {
                     console.log(a);
+                    if (JSON.parse(a).result != "success") { alert("ARP proxy change failed (not supported by this firmware?)."); return; }
                     alert((enable ? "Enabled" : "Disabled") + " ARP proxy!");
                     reboot(true);
                 },
@@ -1601,14 +1618,24 @@ function inject_html()
         border-radius: 20px;
     }
 
+    .ngbr_wrap {
+        overflow-x: auto;
+        margin-top: 5px;
+    }
+
     .ngbr_cell_table {
         all: revert;
         border: none;
+        width: 100%;
+        border-collapse: collapse;
     }
 
-    .ngbr_cell_table td {
+    .ngbr_cell_table td, .ngbr_cell_table th {
         all: revert;
         border: none;
+        padding: 2px 8px 2px 0;
+        white-space: nowrap;
+        text-align: left;
     }
 
     .signal_table {
@@ -2049,8 +2076,7 @@ function inject_html()
                         <td><span id="nr5g_cell_id"></span></td>
                     </tr>
                     <tr id="ngbr_cells">
-                        <td>NGBR:</td>
-                        <td><span id="ngbr_cell_info"></span></td>
+                        <td colspan="2">NGBR:<div class="ngbr_wrap"><span id="ngbr_cell_info"></span></div></td>
                     </tr>
                     <tr id="ta_row">
                         <td>LTE TA:</td>
