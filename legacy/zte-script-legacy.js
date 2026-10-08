@@ -7,7 +7,7 @@
  * 
  */
 
-console.log("Loading ZTE Script v" + "2026-10-08-#3");
+console.log("Loading ZTE Script v" + "2026-10-08-#4");
 
 siginfo =
     "wan_active_band,wan_active_channel,wan_lte_ca,wan_apn,wan_ipaddr," +
@@ -33,7 +33,7 @@ siginfo =
     "lte_ca_scell_band,lte_ca_scell_bandwidth," +
     "lte_rsrp_1,lte_rsrp_2,lte_rsrp_3,lte_rsrp_4," +
     "lte_snr_1,lte_snr_2,lte_snr_3,lte_snr_4," +
-    "lte_pci,lte_pci_lock,lte_earfcn_lock," +
+    "lte_pci,lte_pci_lock,lte_earfcn_lock,lte_band_lock,nr5g_cell_lock," +
 
     "5g_rx0_rsrp,5g_rx1_rsrp,Z5g_rsrp,Z5g_rsrq,Z5g_SINR," +
     "nr5g_cell_id,nr5g_pci," +
@@ -135,6 +135,8 @@ function wait_for_log_in()
             inject_html();
             get_status();
             load_device_extras();
+            positions_render();
+            exp_render();
 
             show_logout_and_shutdown_buttons_i = 0;
             show_logout_and_shutdown_buttons_timer_id = window.setInterval(function() {
@@ -701,7 +703,9 @@ function arfcn_to_band(arfcn, nr)
     return "?";
 }
 
-var NGBR_COLUMNS = [["rat","RAT"],["band","BAND"],["arfcn","ARFCN"],["pci","PCI"],["rsrp","RSRP"],["rsrq","RSRQ"],["sinr","SINR"],["rssi","RSSI"],["dist","DIST"],["note","NOTE"]];
+var NGBR_COLUMNS = [["rat","RAT"],["band","BAND"],["arfcn","ARFCN"],["pci","PCI"],["rsrp","RSRP","dBm, latest"],["avg","AVG","dBm, RSRP mean of last 60 s"],
+    ["range","MIN/MAX","dBm, RSRP over last 60 s (hover: samples)"],["rsrq","RSRQ","dB"],["sinr","SINR","dB"],["rssi","RSSI","dBm"],["dist","DIST","serving cell timing advance"],
+    ["enb","CELL","eNB-sector learned while connected to this cell"],["note","NOTE"]];
 var ngbr_sort = { key: "band", dir: 1 };
 
 function ngbr_sort_value(c, key)
@@ -710,8 +714,11 @@ function ngbr_sort_value(c, key)
     {
         case "rat":  return c.nr ? 1 : 0;
         case "band": return (c.nr ? 1000 : 0) + (parseInt(c.band.replace(/^\D+/, "")) || 999);  // B1 < B3 < B7 < B20 < n1 ...
-        case "note": return c.mark == "SERVING" ? 0 : (c.mark == "CA" ? 1 : 2);
+        case "note": return c.mark == "SERVING" ? 0 : (c.mark == "CA" ? 1 : (c.better ? 2 : 3));
         case "dist": return c.dist === "" ? 99999 : c.dist;
+        case "range": return c.n ? c.max - c.min : 99999;           // most stable first
+        case "enb":  return c.eci === undefined ? 1e12 : c.eci;
+        case "avg":  return isNaN(c.avg) ? -9999 : c.avg;
         default:     return parseFloat(c[key]) || -9999;  // arfcn, pci, rsrp, rsrq, rssi
     }
 }
@@ -719,8 +726,8 @@ function ngbr_sort_value(c, key)
 // click same header again to reverse; signal columns start strongest-first
 function ngbr_sort_by(key)
 {
-    ngbr_sort = { key: key, dir: ngbr_sort.key == key ? -ngbr_sort.dir : (["rsrp", "rsrq", "sinr", "rssi"].includes(key) ? -1 : 1) };
-    $("#ngbr_cell_info").html(render_ngbr_cells(""));
+    ngbr_sort = { key: key, dir: ngbr_sort.key == key ? -ngbr_sort.dir : (["rsrp", "avg", "rsrq", "sinr", "rssi"].includes(key) ? -1 : 1) };
+    $("#ngbr_cell_info").html(render_ngbr_cells(null));
 }
 
 // lock straight from a NGBR row; SCS: 30 kHz for TDD mid-band (n38/n41/n77/n78/n79), else 15 kHz
@@ -766,10 +773,16 @@ function connected_cells()
     return cells;
 }
 
+var ngbr_hist = {};                                   // key -> [{t, v}] RSRP samples, last NGBR_KEEP_MS
+var cell_ids = tools_store("zte_cell_ids", {});
+var cell_id_streak = {};       // "lte:earfcn:pci" -> ECI (decimal), learned while connected
+
+// raw === null: re-render only (sort click) - no new samples
 function render_ngbr_cells(raw)
 {
     var now = Date.now();
-    raw.split(";").forEach(function(cell) {
+    var refresh = raw !== null;
+    (raw || "").split(";").forEach(function(cell) {
         var p = cell.split(",").map(function(x) { return x.trim(); });
         if (p.length < 4 || p[0] === "") return;
         // ponytail: NR = ARFCN above LTE range; never seen in NSA, kept in case firmware adds it
@@ -782,7 +795,7 @@ function render_ngbr_cells(raw)
     });
 
     // connected cells: neighbour list has no SINR, so overwrite them with the serving/CA measurements
-    connected_cells().forEach(function(c) {
+    if (refresh) connected_cells().forEach(function(c) {
         c.t = now;
         c.extra = "";
         c.raw = "connected: " + [c.arfcn, c.pci, c.rsrq, c.rsrp, c.sinr, c.rssi].join(",");
@@ -802,6 +815,19 @@ function render_ngbr_cells(raw)
     var lte_serving = (lte_ca_pcell_freq || wan_active_channel) + ":" + parseInt(lte_pci, 16);
     var nr_serving = nr5g_action_channel + ":" + parseInt(nr5g_pci, 16);
 
+    // learn cell id of the cell we are actually connected to (get_status already made cell_id decimal)
+    if (refresh)
+    {
+        var learned = false;
+        [["lte:" + lte_serving, is_lte ? cell_id : ""], ["nr:" + nr_serving, is_5g ? nr5g_cell_id : ""]].forEach(function(x) {
+            var id = parseInt(x[1]);
+            if (isNaN(id)) return;
+            var st = cell_id_streak[x[0]] = (cell_id_streak[x[0]] && cell_id_streak[x[0]].id == id) ? { id: id, n: cell_id_streak[x[0]].n + 1 } : { id: id, n: 1 };
+            if (st.n >= 3 && cell_ids[x[0]] != id) { cell_ids[x[0]] = id; learned = true; }
+        });
+        if (learned) tools_save("zte_cell_ids", cell_ids);
+    }
+
     // 1 TA step = 16 Ts = 78.12 m one-way; parseInt also works once get_status has formatted lte_ta as "2 (~156 m)"
     var ta = is_lte ? parseInt(lte_ta) : NaN;
     if (isNaN(ta)) ta = -1;
@@ -810,14 +836,33 @@ function render_ngbr_cells(raw)
     for (var k in ngbr_seen)
     {
         var c = ngbr_seen[k];
-        if (now - c.t > NGBR_KEEP_MS) { delete ngbr_seen[k]; continue; }
+        if (now - c.t > NGBR_KEEP_MS) { delete ngbr_seen[k]; delete ngbr_hist[k]; continue; }
         var key = c.arfcn + ":" + c.pci;
         c.mark = c.nr ? (key == nr_serving ? "SERVING" : (nr_ca[key] ? "CA" : ""))
                       : (key == lte_serving ? "SERVING" : (ca[key] ? "CA" : ""));
         c.band = arfcn_to_band(c.arfcn, c.nr);
         c.dist = (!c.nr && ta >= 0 && key == lte_serving) ? Math.round(ta * 78.12) : "";
+        c.eci = cell_ids[k];
+
+        // per-cell RSRP statistics over the last minute (only fresh readings are sampled)
+        var h = ngbr_hist[k] = ngbr_hist[k] || [];
+        var v = parseFloat(c.rsrp);
+        if (c.t == now && !isNaN(v)) h.push({ t: now, v: v });
+        while (h.length && now - h[0].t > NGBR_KEEP_MS) h.shift();
+        c.n = h.length;
+        c.avg = c.n ? h.reduce(function(s, x) { return s + x.v; }, 0) / c.n : NaN;
+        c.min = c.n ? Math.min.apply(null, h.map(function(x) { return x.v; })) : NaN;
+        c.max = c.n ? Math.max.apply(null, h.map(function(x) { return x.v; })) : NaN;
         cells.push(c);
     }
+
+    // "better cell" hint: a neighbour on the same carrier whose 60 s mean RSRP beats the connected cell by >= 3 dB
+    var connected_avg = {};
+    cells.forEach(function(c) { if (c.mark && !isNaN(c.avg)) connected_avg[(c.nr ? "nr:" : "lte:") + c.arfcn] = c.avg; });
+    cells.forEach(function(c) {
+        var ref = connected_avg[(c.nr ? "nr:" : "lte:") + c.arfcn];
+        c.better = (!c.mark && ref !== undefined && c.n >= 3 && c.avg - ref >= 3) ? c.avg - ref : 0;
+    });
 
     // clicked column first, then RAT / ARFCN / strongest RSRP as tie-breakers
     cells.sort(function(a, b) {
@@ -829,19 +874,26 @@ function render_ngbr_cells(raw)
     var html = "<table class='ngbr_cell_table'><tr>";
     NGBR_COLUMNS.forEach(function(col) {
         var arrow = ngbr_sort.key == col[0] ? (ngbr_sort.dir > 0 ? "&nbsp;&#9650;" : "&nbsp;&#9660;") : "";
-        html += "<th style='cursor:pointer' onclick=\"ngbr_sort_by('" + col[0] + "')\">" + col[1] + arrow + "</th>";
+        html += "<th style='cursor:pointer'" + (col[2] ? " title='" + col[2] + "'" : "") +
+                " onclick=\"ngbr_sort_by('" + col[0] + "')\">" + col[1] + arrow + "</th>";
     });
     html += "<th>LOCK</th></tr>";
     cells.forEach(function(c) {
         var age = Math.round((now - c.t) / 1000);
+        var cellid = c.eci === undefined ? "" : (c.nr ? String(c.eci) : Math.floor(c.eci / 256) + "-" + (c.eci % 256));
         html += "<tr title='" + c.raw + "' style='opacity:" + (age > 3 ? 0.5 : 1) + "'>" +
             "<td>" + (c.nr ? "NR" : "LTE") + "</td><td>" + c.band + "</td>" +
             "<td>" + c.arfcn + "</td><td>" + c.pci + "</td>" +
-            "<td>" + (c.rsrp ? c.rsrp + "&nbsp;dBm" : "") + "</td><td>" + (c.rsrq ? c.rsrq + "&nbsp;dB" : "") + "</td>" +
-            "<td>" + (c.sinr ? c.sinr + "&nbsp;dB" : "") + "</td>" +
-            "<td>" + (c.rssi ? c.rssi + "&nbsp;dBm" : c.extra) + "</td>" +
+            "<td>" + c.rsrp + "</td>" +
+            "<td>" + (c.n ? c.avg.toFixed(1) : "") + "</td>" +
+            "<td title='" + c.n + " samples'>" + (c.n ? c.min + "/" + c.max : "") + "</td>" +
+            "<td>" + c.rsrq + "</td><td>" + c.sinr + "</td>" +
+            "<td>" + (c.rssi || c.extra) + "</td>" +
             "<td" + (c.dist === "" ? ">" : " title='Serving cell timing advance (TA " + ta + ", &plusmn;39 m)'>~" + c.dist + "&nbsp;m") + "</td>" +
-            "<td><b>" + c.mark + "</b>" + (age > 3 ? " " + age + "s ago" : "") + "</td>" +
+            "<td" + (c.eci === undefined ? "" : " title='ECI " + c.eci + "'") + ">" + cellid + "</td>" +
+            "<td><b>" + c.mark + "</b>" +
+                (c.better ? "<b style='color:#5c5'>BETTER +" + c.better.toFixed(1) + "</b>" : "") +
+                (age > 3 ? " " + age + "s" : "") + "</td>" +
             "<td><a style='cursor:pointer' title='Lock to this cell (reboot required)' onclick=\"ngbr_lock(" +
                 c.nr + ",'" + c.arfcn + "','" + c.pci + "','" + c.band + "')\">lock</a></td></tr>";
     });
@@ -868,6 +920,289 @@ function load_device_extras()
         } catch (e) { console.log("device extras unavailable", e); }
     });
 }
+
+/*
+ * ===== Alignment & cell tools =====
+ * Uses only values the router reports. Positions, learned cell ids and
+ * experiment results live in this browser's localStorage.
+ */
+var TOOLS_HISTORY_MS = 5 * 60 * 1000;    // sparkline window
+var TOOLS_AVG_MS = 3000;                 // smoothing window for "now" (router values jump)
+var ALIGN_CMD = "Z5g_rsrp,Z5g_rsrq,Z5g_SINR,5g_rx0_rsrp,5g_rx1_rsrp,lte_rsrp,lte_rsrq,lte_snr,lte_rsrp_1,lte_rsrp_2,lte_rsrp_3,lte_rsrp_4," +
+                "network_type,wan_active_channel,lte_ca_pcell_freq,lte_pci,nr5g_action_channel,nr5g_pci,realtime_rx_thrpt,realtime_tx_thrpt";
+// [key, router field, label, unit]
+var ALIGN_METRICS = [
+    ["nr_sinr", "Z5g_SINR", "5G SINR", "dB"], ["nr_rsrp", "Z5g_rsrp", "5G RSRP", "dBm"], ["nr_rsrq", "Z5g_rsrq", "5G RSRQ", "dB"],
+    ["nr_rx0", "5g_rx0_rsrp", "5G RSRP rx0", "dBm"], ["nr_rx1", "5g_rx1_rsrp", "5G RSRP rx1", "dBm"],
+    ["lte_sinr", "lte_snr", "LTE SINR", "dB"], ["lte_rsrp", "lte_rsrp", "LTE RSRP", "dBm"], ["lte_rsrq", "lte_rsrq", "LTE RSRQ", "dB"],
+    ["lte_p1", "lte_rsrp_1", "LTE RSRP port 1", "dBm"], ["lte_p2", "lte_rsrp_2", "LTE RSRP port 2", "dBm"],
+    ["lte_p3", "lte_rsrp_3", "LTE RSRP port 3", "dBm"], ["lte_p4", "lte_rsrp_4", "LTE RSRP port 4", "dBm"]
+];
+var tools = { hist: {}, base: {}, peak: {}, fast_timer: null, tone: null, tone_metric: "nr_sinr" };
+
+function tools_store(name, def) { try { var v = JSON.parse(localStorage.getItem(name)); return v === null ? def : v; } catch (e) { return def; } }
+function tools_save(name, v) { try { localStorage.setItem(name, JSON.stringify(v)); } catch (e) { console.log("localStorage unavailable", e); } }
+
+function tools_num(field, v)
+{
+    if (v === undefined || v === "") return NaN;
+    if (field == "Z5g_SINR" && (v == "-20.0" || v == "-3276.8")) return NaN;  // router's "no value" markers
+    return parseFloat(v);
+}
+
+function tools_avg(key, ms)
+{
+    var h = tools.hist[key] || [], now = Date.now(), s = 0, n = 0;
+    for (var i = h.length - 1; i >= 0 && now - h[i].t <= (ms || TOOLS_AVG_MS); i--) { s += h[i].v; n++; }
+    return n ? s / n : NaN;
+}
+
+// fed by get_status (1 s) and by the fast alignment poll (0.5 s)
+function tools_feed(a)
+{
+    var now = Date.now();
+    ALIGN_METRICS.forEach(function(m) {
+        var v = tools_num(m[1], a[m[1]]);
+        if (isNaN(v)) return;
+        var h = tools.hist[m[0]] = tools.hist[m[0]] || [];
+        h.push({ t: now, v: v });
+        while (h.length && now - h[0].t > TOOLS_HISTORY_MS) h.shift();
+        var avg = tools_avg(m[0]);
+        if (tools.base[m[0]] === undefined) tools.base[m[0]] = avg;
+        if (tools.peak[m[0]] === undefined || avg > tools.peak[m[0]].v) tools.peak[m[0]] = { v: avg, t: now };
+    });
+    exp_tick(a, now);
+    tools_render();
+    tone_update();
+}
+
+function sparkline(key)
+{
+    var h = tools.hist[key] || [];
+    if (h.length < 2) return "";
+    // x axis grows with the data until the 5 min window is full
+    var w = 160, ht = 24, now = Date.now(), t0 = Math.max(h[0].t, now - TOOLS_HISTORY_MS), tspan = (now - t0) || 1;
+    var vs = h.map(function(p) { return p.v; }), lo = Math.min.apply(null, vs), hi = Math.max.apply(null, vs), span = (hi - lo) || 1;
+    var pts = h.map(function(p) {
+        return ((p.t - t0) / tspan * w).toFixed(1) + "," + (hi == lo ? ht / 2 : ht - 2 - (p.v - lo) / span * (ht - 4)).toFixed(1);
+    }).join(" ");
+    return "<svg width='" + w + "' height='" + ht + "'><title>" + lo + " .. " + hi + "</title>" +
+           "<polyline fill='none' stroke='#40adf5' stroke-width='1.5' points='" + pts + "'/></svg>";
+}
+
+function branch_warning()
+{
+    var w = [];
+    var r0 = tools_avg("nr_rx0"), r1 = tools_avg("nr_rx1");
+    if (!isNaN(r0) && !isNaN(r1) && Math.abs(r0 - r1) > 6) w.push("5G rx0/rx1 differ by " + Math.abs(r0 - r1).toFixed(1) + " dB");
+    var p = ["lte_p1", "lte_p2", "lte_p3", "lte_p4"].map(function(k) { return tools_avg(k); }).filter(function(v) { return !isNaN(v); });
+    if (p.length > 1 && Math.max.apply(null, p) - Math.min.apply(null, p) > 6)
+        w.push("LTE ports differ by " + (Math.max.apply(null, p) - Math.min.apply(null, p)).toFixed(1) + " dB");
+    return w.length ? "<b style='color:#f90'>" + w.join("; ") + "</b> - try rotating / repositioning" : "balanced (&le; 6 dB)";
+}
+
+function tools_render()
+{
+    $(".branch_warn").html(branch_warning());
+    if (!$("#align_table").length) return;
+    var html = "<tr><th>METRIC</th><th>NOW (3 s)</th><th>&Delta; START</th><th>PEAK</th><th>LAST 5 MIN</th></tr>";
+    ALIGN_METRICS.forEach(function(m) {
+        var now = tools_avg(m[0]);
+        if (isNaN(now)) return;
+        var d = now - tools.base[m[0]], pk = tools.peak[m[0]];
+        html += "<tr><td>" + m[2] + "</td><td><b>" + now.toFixed(1) + "</b>&nbsp;" + m[3] + "</td>" +
+                "<td style='color:" + (d >= 0 ? "#5c5" : "#e66") + "'>" + (d >= 0 ? "+" : "") + d.toFixed(1) + "</td>" +
+                "<td title='" + new Date(pk.t).toLocaleTimeString() + "'>" + pk.v.toFixed(1) + "</td>" +
+                "<td>" + sparkline(m[0]) + "</td></tr>";
+    });
+    $("#align_table").html(html);
+}
+
+function tools_reset() { tools.base = {}; tools.peak = {}; }
+
+function align_fast(on)
+{
+    window.clearInterval(tools.fast_timer);
+    tools.fast_timer = on ? window.setInterval(function() {
+        $.getJSON("/goform/goform_get_cmd_process", { cmd: ALIGN_CMD, multi_data: "1" }, tools_feed);
+    }, 500) : null;
+}
+
+// audio pitch follows the chosen metric (computer speakers); off by default
+function tone_toggle(on)
+{
+    if (tools.tone) { tools.tone.osc.stop(); tools.tone.ctx.close(); tools.tone = null; }
+    if (!on) return;
+    var ctx = new (window.AudioContext || window.webkitAudioContext)();
+    var osc = ctx.createOscillator(), gain = ctx.createGain();
+    gain.gain.value = 0;
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    tools.tone = { ctx: ctx, osc: osc, gain: gain };
+    tone_update();
+}
+
+function tone_update()
+{
+    if (!tools.tone) return;
+    var m = ALIGN_METRICS.filter(function(x) { return x[0] == tools.tone_metric; })[0], v = tools_avg(tools.tone_metric);
+    if (!m || isNaN(v)) { tools.tone.gain.gain.value = 0; return; }
+    tools.tone.gain.gain.value = 0.04;  // quiet
+    var r = m[3] == "dBm" ? [-120, -60] : (m[0].indexOf("rsrq") >= 0 ? [-20, -3] : [-5, 30]);
+    var x = Math.min(1, Math.max(0, (v - r[0]) / (r[1] - r[0])));
+    tools.tone.osc.frequency.setTargetAtTime(200 + x * 1300, tools.tone.ctx.currentTime, 0.1);
+}
+
+/* ---- lock / band status ---- */
+var LTE_ALL_BANDS = "0xA3E2AB0908DF";
+function lte_mask_to_bands(mask)
+{
+    if (!mask || !/^0x[0-9a-f]+$/i.test(mask)) return "";
+    var n = BigInt(mask), out = [];
+    if (n == BigInt(LTE_ALL_BANDS)) return "all supported";
+    for (var b = 1; b <= 64; b++) if ((n >> BigInt(b - 1)) & BigInt(1)) out.push("B" + b);
+    return out.join(" ");
+}
+
+function lock_status_html()
+{
+    var parts = [];
+    var lte_locked = lte_pci_lock && lte_pci_lock != "0" && lte_earfcn_lock && lte_earfcn_lock != "0";
+    parts.push("LTE cell: " + (lte_locked ? "<b style='color:#f90'>PCI " + lte_pci_lock + " @ " + lte_earfcn_lock + "</b>" : "none"));
+    var nl = (nr5g_cell_lock || "").split(",");
+    var nr_locked = nl.length >= 2 && nl[0] !== "" && nl[0] != "0";
+    parts.push("5G cell: " + (nr_locked ? "<b style='color:#f90'>PCI " + nl[0] + " @ " + nl[1] +
+               (nl[2] ? " n" + nl[2] : "") + (nl[3] ? " SCS " + nl[3] : "") + "</b>" : "none"));
+    var lb = lte_mask_to_bands(lte_band_lock);
+    if (lb) parts.push("LTE bands: " + lb);
+    var nb = is_5g_nsa ? nr5g_nsa_band_lock : nr5g_sa_band_lock;
+    if (nb) parts.push("5G " + (is_5g_nsa ? "NSA" : "SA") + " bands: " + nb.split(",").map(function(x) { return "n" + x; }).join(" "));
+    return parts.join("<br>");
+}
+
+/* ---- saved positions ---- */
+var POSITION_COLS = ["nr_sinr", "nr_rsrp", "nr_rsrq", "nr_rx0", "nr_rx1", "lte_sinr", "lte_rsrp", "lte_rsrq"];
+
+function position_save()
+{
+    var list = tools_store("zte_positions", []);
+    var label = prompt("Label for this antenna position (e.g. window left, +30 deg)", "#" + (list.length + 1));
+    if (label === null) return;
+    var rec = { time: new Date().toLocaleString(), label: label };
+    ALIGN_METRICS.forEach(function(m) { var v = tools_avg(m[0], 5000); if (!isNaN(v)) rec[m[0]] = +v.toFixed(1); });
+    list.push(rec);
+    tools_save("zte_positions", list);
+    positions_render();
+}
+
+function records_table(list, cols, del_fn)
+{
+    var best = {};
+    cols.forEach(function(c) { list.forEach(function(r) { if (typeof r[c] == "number" && (best[c] === undefined || r[c] > best[c])) best[c] = r[c]; }); });
+    var html = "<tr><th>TIME</th><th>LABEL</th>" + cols.map(function(c) {
+        var m = ALIGN_METRICS.filter(function(x) { return x[0] == c; })[0];
+        return "<th>" + (m ? m[2].replace("RSRP ", "") : c.toUpperCase()) + "</th>";
+    }).join("") + "<th></th></tr>";
+    list.forEach(function(r, i) {
+        html += "<tr><td>" + r.time + "</td><td>" + r.label + "</td>" + cols.map(function(c) {
+            var v = r[c] === undefined ? "" : r[c];
+            return "<td>" + (v !== "" && v === best[c] && list.length > 1 ? "<b style='color:#5c5'>" + v + "</b>" : v) + "</td>";
+        }).join("") + "<td><a style='cursor:pointer' onclick='" + del_fn + "(" + i + ")'>x</a></td></tr>";
+    });
+    return html;
+}
+
+function positions_render() { $("#positions_table").html(records_table(tools_store("zte_positions", []), POSITION_COLS, "position_delete")); }
+function position_delete(i) { var l = tools_store("zte_positions", []); l.splice(i, 1); tools_save("zte_positions", l); positions_render(); }
+
+function csv_export(name, filename)
+{
+    var list = tools_store(name, []);
+    if (!list.length) { alert("Nothing to export."); return; }
+    var cols = [];
+    list.forEach(function(r) { Object.keys(r).forEach(function(k) { if (cols.indexOf(k) < 0) cols.push(k); }); });
+    var csv = [cols.join(",")].concat(list.map(function(r) {
+        return cols.map(function(c) { var v = r[c] === undefined ? "" : String(r[c]); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }).join(",");
+    })).join("\n");
+    var a = document.createElement("a");
+    a.href = "data:text/csv;charset=utf-8," + encodeURIComponent(csv);
+    a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+}
+
+function records_clear(name, render) { if (confirm("Delete all saved entries?")) { tools_save(name, []); render(); } }
+
+/* ---- lock experiments / cell evaluation: wait until camped on target, then average 60 s ---- */
+var EXP_COLS = ["lte_rsrp", "lte_sinr", "lte_rsrq", "nr_rsrp", "nr_sinr", "nr_rsrq", "rx_mbit", "tx_mbit"];
+var EXP_FIELDS = [["lte_rsrp", "lte_rsrp"], ["lte_sinr", "lte_snr"], ["lte_rsrq", "lte_rsrq"], ["nr_rsrp", "Z5g_rsrp"],
+                  ["nr_sinr", "Z5g_SINR"], ["nr_rsrq", "Z5g_rsrq"], ["rx_mbit", "realtime_rx_thrpt"], ["tx_mbit", "realtime_tx_thrpt"]];
+var exp_run = null;
+
+function exp_serving(a, nr)
+{
+    return nr ? a.nr5g_action_channel + ":" + parseInt(a.nr5g_pci, 16)
+              : (a.lte_ca_pcell_freq || a.wan_active_channel) + ":" + parseInt(a.lte_pci, 16);
+}
+
+function exp_arm(nr, arfcn, pci, label)
+{
+    tools_save("zte_exp_pending", { nr: nr, target: arfcn + ":" + pci, label: label, armed: Date.now() });
+    exp_run = null;
+}
+
+function exp_measure_now()
+{
+    var label = prompt("Label for this measurement", "LTE PCI " + parseInt(lte_pci, 16) + " @ " + (lte_ca_pcell_freq || wan_active_channel));
+    if (label === null) return;
+    exp_arm(false, lte_ca_pcell_freq || wan_active_channel, parseInt(lte_pci, 16), label);
+}
+
+function exp_tick(a, now)
+{
+    if (a.network_type === undefined) return;
+    var p = tools_store("zte_exp_pending", null);
+    if (!p) return;
+    if (!exp_run)
+    {
+        if (exp_serving(a, p.nr) == p.target) exp_run = { start: now, sums: {}, ns: {} };
+        else if (now - p.armed > 10 * 60 * 1000) exp_finish(p, { result: "not camped on target within 10 min" });
+        else $("#exp_state").html("waiting for " + p.target + " ...");
+        return;
+    }
+    if (exp_serving(a, p.nr) != p.target) { exp_finish(p, { result: "left target cell during measurement" }); return; }
+    EXP_FIELDS.forEach(function(f) {
+        var v = tools_num(f[1], a[f[1]]);
+        if (isNaN(v)) return;
+        if (f[0].indexOf("mbit") > 0) v = v * 8 / 1e6;
+        exp_run.sums[f[0]] = (exp_run.sums[f[0]] || 0) + v;
+        exp_run.ns[f[0]] = (exp_run.ns[f[0]] || 0) + 1;
+    });
+    var secs = Math.round((now - exp_run.start) / 1000);
+    $("#exp_state").html("measuring " + p.label + ": " + secs + "/60 s");
+    if (secs >= 60)
+    {
+        var rec = { result: "ok" };
+        EXP_FIELDS.forEach(function(f) { if (exp_run.ns[f[0]]) rec[f[0]] = +(exp_run.sums[f[0]] / exp_run.ns[f[0]]).toFixed(f[0].indexOf("mbit") > 0 ? 2 : 1); });
+        exp_finish(p, rec);
+    }
+}
+
+function exp_finish(p, rec)
+{
+    rec.time = new Date().toLocaleString();
+    rec.label = p.label + " (" + p.target + ")";
+    var list = tools_store("zte_exp_results", []);
+    list.push(rec);
+    tools_save("zte_exp_results", list);
+    try { localStorage.removeItem("zte_exp_pending"); } catch (e) {}
+    exp_run = null;
+    $("#exp_state").html("last: " + rec.label + " - " + rec.result);
+    exp_render();
+}
+
+function exp_render() { $("#exp_table").html(records_table(tools_store("zte_exp_results", []), EXP_COLS.concat(["result"]), "exp_delete")); }
+function exp_delete(i) { var l = tools_store("zte_exp_results", []); l.splice(i, 1); tools_save("zte_exp_results", l); exp_render(); }
 
 function get_status()
 {
@@ -1070,6 +1405,9 @@ function get_status()
             realtime_rx_thrpt = (parseInt(realtime_rx_thrpt || 0) * 8 / 1e6).toFixed(2);
             realtime_tx_thrpt = (parseInt(realtime_tx_thrpt || 0) * 8 / 1e6).toFixed(2);
 
+            tools_feed(a);
+            $("#lock_status").html(lock_status_html());
+
             if (wan_ipaddr) $("#wanipinfo").show();
             else $("#wanipinfo").hide();
             if (dns_mode === "manual") $("#manual-dns-info").show();
@@ -1220,6 +1558,7 @@ function lte_cell_lock(reset = false, preset = null) {
                 success: function(a) {
                     var response = JSON.parse(a);
                     if (response.result === "success") {
+                        if (!reset) exp_arm(false, lockParameters[1], lockParameters[0], "LTE lock PCI " + lockParameters[0] + " @ " + lockParameters[1]);
 
                         var rebootMessage = 
                             "You have to reboot your Router in order " + 
@@ -1303,6 +1642,7 @@ function nr_cell_lock(reset = false, preset = null, ask = false) {
                 success: function(a) {
                     var response = JSON.parse(a);
                     if (response.result === "success") {
+                        if (!reset) { var lv = cellLockDetails.split(","); exp_arm(true, lv[1], lv[0], "5G lock PCI " + lv[0] + " @ " + lv[1]); }
 
                         var rebootMessage = 
                             "You have to reboot your Router in order " + 
@@ -1733,6 +2073,24 @@ function inject_html()
         border: none;
         width: 100%;
         border-collapse: collapse;
+    }
+
+    .tools_table {
+        all: revert;
+        border-collapse: collapse;
+        margin-top: 5px;
+    }
+
+    .tools_table td, .tools_table th {
+        all: revert;
+        padding: 1px 10px 1px 0;
+        white-space: nowrap;
+        text-align: left;
+    }
+
+    .tools_container summary {
+        cursor: pointer;
+        margin: 4px 0;
     }
 
     .ngbr_cell_table td, .ngbr_cell_table th {
@@ -2183,6 +2541,14 @@ function inject_html()
                     <tr id="ngbr_cells">
                         <td colspan="2">NGBR:<div class="ngbr_wrap"><span id="ngbr_cell_info"></span></div></td>
                     </tr>
+                    <tr>
+                        <td>LOCKS:</td>
+                        <td id="lock_status"></td>
+                    </tr>
+                    <tr>
+                        <td>ANT. BRANCHES:</td>
+                        <td class="branch_warn"></td>
+                    </tr>
                     <tr id="ta_row">
                         <td>LTE TA:</td>
                         <td><span id="lte_ta"></span></td>
@@ -2240,6 +2606,40 @@ function inject_html()
                 </table>
             </div>
 
+        </div>
+
+        <div class="spacing"></div>
+
+        <div class="inner_mod_container mod_border tools_container">
+            <details open>
+                <summary><b>Antenna alignment</b></summary>
+                <label><input type="checkbox" onchange="align_fast(this.checked)"> Fast update (0.5 s)</label>
+                &nbsp;&nbsp;
+                <label><input type="checkbox" onchange="tone_toggle(this.checked)"> Tone</label>
+                <select onchange="tools.tone_metric = this.value">
+                    ${ALIGN_METRICS.slice(0, 8).map(m => "<option value='" + m[0] + "'>" + m[2] + "</option>").join("")}
+                </select>
+                &nbsp;&nbsp;
+                <a onclick="tools_reset()">Reset start/peak</a> | <a onclick="position_save()">Save position</a>
+                <div class="spacing_links"></div>
+                Antenna branches: <span class="branch_warn"></span>
+                <table class="tools_table" id="align_table"></table>
+            </details>
+            <details>
+                <summary><b>Saved positions</b></summary>
+                <a onclick="csv_export('zte_positions', 'zte-positions.csv')">Export CSV</a> |
+                <a onclick="records_clear('zte_positions', positions_render)">Clear</a>
+                <table class="tools_table" id="positions_table"></table>
+            </details>
+            <details>
+                <summary><b>Cell evaluations / lock experiments</b></summary>
+                <a onclick="exp_measure_now()">Measure current cell (60 s)</a> |
+                <a onclick="csv_export('zte_exp_results', 'zte-cell-tests.csv')">Export CSV</a> |
+                <a onclick="records_clear('zte_exp_results', exp_render)">Clear</a>
+                &nbsp; <span id="exp_state"></span>
+                <div style="font-size:11px">Cell locks from this page start a 60 s measurement automatically once the router is camped on the locked cell (after reboot). RX/TX is the traffic flowing at the time, not link capacity - run a speed test during the window to compare.</div>
+                <table class="tools_table" id="exp_table"></table>
+            </details>
         </div>
 
         <div class="spacing"></div>

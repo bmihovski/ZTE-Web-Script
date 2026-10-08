@@ -97,6 +97,7 @@ def main():
             window.run_js(inject)  # run as-is (global scope), the script's onclick handlers need globals
 
     window.events.loaded += on_loaded
+    webview.settings["ALLOW_DOWNLOADS"] = True  # CSV export from the alignment tools
     # persistent cookies -> "Enable Automatic Login" survives restarts
     webview.start(private_mode=False, storage_path=str(Path.home() / "Library/Application Support/ZTE Helper"))
 
