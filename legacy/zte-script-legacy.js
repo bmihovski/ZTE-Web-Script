@@ -805,7 +805,6 @@ function render_ngbr_cells(raw)
     // 1 TA step = 16 Ts = 78.12 m one-way; parseInt also works once get_status has formatted lte_ta as "2 (~156 m)"
     var ta = is_lte ? parseInt(lte_ta) : NaN;
     if (isNaN(ta)) ta = -1;
-    var serving_pci = String(parseInt(lte_pci, 16));
 
     var cells = [];
     for (var k in ngbr_seen)
@@ -816,7 +815,7 @@ function render_ngbr_cells(raw)
         c.mark = c.nr ? (key == nr_serving ? "SERVING" : (nr_ca[key] ? "CA" : ""))
                       : (key == lte_serving ? "SERVING" : (ca[key] ? "CA" : ""));
         c.band = arfcn_to_band(c.arfcn, c.nr);
-        c.dist = (!c.nr && ta >= 0 && c.pci == serving_pci) ? Math.round(ta * 78.12) : "";
+        c.dist = (!c.nr && ta >= 0 && key == lte_serving) ? Math.round(ta * 78.12) : "";
         cells.push(c);
     }
 
@@ -841,7 +840,7 @@ function render_ngbr_cells(raw)
             "<td>" + (c.rsrp ? c.rsrp + "&nbsp;dBm" : "") + "</td><td>" + (c.rsrq ? c.rsrq + "&nbsp;dB" : "") + "</td>" +
             "<td>" + (c.sinr ? c.sinr + "&nbsp;dB" : "") + "</td>" +
             "<td>" + (c.rssi ? c.rssi + "&nbsp;dBm" : c.extra) + "</td>" +
-            "<td" + (c.dist === "" ? ">" : " title='Same site as serving cell (TA " + ta + ", &plusmn;39 m)'>~" + c.dist + "&nbsp;m") + "</td>" +
+            "<td" + (c.dist === "" ? ">" : " title='Serving cell timing advance (TA " + ta + ", &plusmn;39 m)'>~" + c.dist + "&nbsp;m") + "</td>" +
             "<td><b>" + c.mark + "</b>" + (age > 3 ? " " + age + "s ago" : "") + "</td>" +
             "<td><a style='cursor:pointer' title='Lock to this cell (reboot required)' onclick=\"ngbr_lock(" +
                 c.nr + ",'" + c.arfcn + "','" + c.pci + "','" + c.band + "')\">lock</a></td></tr>";
@@ -1705,7 +1704,7 @@ function inject_html()
     }
 
     .inner_mod_container {
-        width: 600px;
+        width: 900px;  /* was 600px; NGBR table has 11 columns */
         margin: 0 auto;
     }
 
