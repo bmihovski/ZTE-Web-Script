@@ -701,6 +701,27 @@ function arfcn_to_band(arfcn, nr)
     return "?";
 }
 
+var NGBR_COLUMNS = [["rat","RAT"],["band","BAND"],["arfcn","ARFCN"],["pci","PCI"],["rsrp","RSRP"],["rsrq","RSRQ"],["rssi","RSSI"],["note","NOTE"]];
+var ngbr_sort = { key: "band", dir: 1 };
+
+function ngbr_sort_value(c, key)
+{
+    switch (key)
+    {
+        case "rat":  return c.nr ? 1 : 0;
+        case "band": return (c.nr ? 1000 : 0) + (parseInt(c.band.replace(/^\D+/, "")) || 999);  // B1 < B3 < B7 < B20 < n1 ...
+        case "note": return c.mark == "SERVING" ? 0 : (c.mark == "CA" ? 1 : 2);
+        default:     return parseFloat(c[key]) || -9999;  // arfcn, pci, rsrp, rsrq, rssi
+    }
+}
+
+// click same header again to reverse; signal columns start strongest-first
+function ngbr_sort_by(key)
+{
+    ngbr_sort = { key: key, dir: ngbr_sort.key == key ? -ngbr_sort.dir : (["rsrp", "rsrq", "rssi"].includes(key) ? -1 : 1) };
+    $("#ngbr_cell_info").html(render_ngbr_cells(""));
+}
+
 function render_ngbr_cells(raw)
 {
     var now = Date.now();
@@ -727,25 +748,36 @@ function render_ngbr_cells(raw)
     var cells = [];
     for (var k in ngbr_seen)
     {
-        if (now - ngbr_seen[k].t > NGBR_KEEP_MS) delete ngbr_seen[k];
-        else cells.push(ngbr_seen[k]);
+        var c = ngbr_seen[k];
+        if (now - c.t > NGBR_KEEP_MS) { delete ngbr_seen[k]; continue; }
+        var key = c.arfcn + ":" + c.pci;
+        c.mark = c.nr ? (key == nr_serving ? "SERVING" : "")
+                      : (key == lte_serving ? "SERVING" : (ca[key] ? "CA" : ""));
+        c.band = arfcn_to_band(c.arfcn, c.nr);
+        cells.push(c);
     }
+
+    // clicked column first, then RAT / ARFCN / strongest RSRP as tie-breakers
     cells.sort(function(a, b) {
-        return (a.nr - b.nr) || (parseInt(a.arfcn) - parseInt(b.arfcn)) || (parseFloat(b.rsrp) - parseFloat(a.rsrp));
+        var va = ngbr_sort_value(a, ngbr_sort.key), vb = ngbr_sort_value(b, ngbr_sort.key);
+        var d = typeof va == "string" ? va.localeCompare(vb) : va - vb;
+        return (d * ngbr_sort.dir) || (a.nr - b.nr) || (parseInt(a.arfcn) - parseInt(b.arfcn)) || (parseFloat(b.rsrp) - parseFloat(a.rsrp));
     });
 
-    var html = "<table class='ngbr_cell_table'><tr><th>RAT</th><th>BAND</th><th>ARFCN</th><th>PCI</th><th>RSRP</th><th>RSRQ</th><th>RSSI</th><th>NOTE</th></tr>";
+    var html = "<table class='ngbr_cell_table'><tr>";
+    NGBR_COLUMNS.forEach(function(col) {
+        var arrow = ngbr_sort.key == col[0] ? (ngbr_sort.dir > 0 ? "&nbsp;&#9650;" : "&nbsp;&#9660;") : "";
+        html += "<th style='cursor:pointer' onclick=\"ngbr_sort_by('" + col[0] + "')\">" + col[1] + arrow + "</th>";
+    });
+    html += "</tr>";
     cells.forEach(function(c) {
-        var key = c.arfcn + ":" + c.pci;
-        var mark = c.nr ? (key == nr_serving ? "SERVING" : "")
-                        : (key == lte_serving ? "SERVING" : (ca[key] ? "CA" : ""));
         var age = Math.round((now - c.t) / 1000);
         html += "<tr title='" + c.raw + "' style='opacity:" + (age > 3 ? 0.5 : 1) + "'>" +
-            "<td>" + (c.nr ? "NR" : "LTE") + "</td><td>" + arfcn_to_band(c.arfcn, c.nr) + "</td>" +
+            "<td>" + (c.nr ? "NR" : "LTE") + "</td><td>" + c.band + "</td>" +
             "<td>" + c.arfcn + "</td><td>" + c.pci + "</td>" +
             "<td>" + c.rsrp + "&nbsp;dBm&nbsp;</td><td>" + c.rsrq + "&nbsp;dB&nbsp;</td>" +
             "<td>" + (c.rssi ? c.rssi + "&nbsp;dBm" : c.extra) + "</td>" +
-            "<td><b>" + mark + "</b>" + (age > 3 ? " " + age + "s ago" : "") + "</td></tr>";
+            "<td><b>" + c.mark + "</b>" + (age > 3 ? " " + age + "s ago" : "") + "</td></tr>";
     });
     return html + "</table>";
 }
