@@ -1018,7 +1018,7 @@ function tools_render()
     $("#align_table").html(html);
 }
 
-function tools_reset() { tools.base = {}; tools.peak = {}; }
+function tools_reset() { tools.base = {}; tools.peak = {}; if (tools.tone) tools.tone.peak = NaN; }
 
 function align_fast(on)
 {
@@ -1028,30 +1028,58 @@ function align_fast(on)
     }, 500) : null;
 }
 
-// audio pitch follows the chosen metric (computer speakers); off by default
+// parking-sensor style beeps on the computer speakers; off by default.
+// Better signal -> faster and higher beeps; a rising double chirp marks a new best (+0.5 dB).
 function tone_toggle(on)
 {
-    if (tools.tone) { tools.tone.osc.stop(); tools.tone.ctx.close(); tools.tone = null; }
+    if (tools.tone) { window.clearTimeout(tools.tone.timer); tools.tone.ctx.close(); tools.tone = null; }
     if (!on) return;
-    var ctx = new (window.AudioContext || window.webkitAudioContext)();
-    var osc = ctx.createOscillator(), gain = ctx.createGain();
-    gain.gain.value = 0;
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start();
-    tools.tone = { ctx: ctx, osc: osc, gain: gain };
-    tone_update();
+    tools.tone = { ctx: new (window.AudioContext || window.webkitAudioContext)(), timer: null, peak: NaN };
+    tone_loop();
+}
+
+function tone_beep(freq, start, len)
+{
+    var ctx = tools.tone.ctx, osc = ctx.createOscillator(), g = ctx.createGain();
+    osc.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, start);
+    g.gain.exponentialRampToValueAtTime(0.08, start + 0.005);   // short ramps: no clicks
+    g.gain.exponentialRampToValueAtTime(0.0001, start + len);
+    osc.connect(g);
+    g.connect(ctx.destination);
+    osc.start(start);
+    osc.stop(start + len + 0.02);
+}
+
+// chosen metric mapped to 0..1 over a typical range (SINR -5..30 dB, RSRP -120..-60 dBm, RSRQ -20..-3 dB)
+function tone_level()
+{
+    var m = ALIGN_METRICS.filter(function(x) { return x[0] == tools.tone_metric; })[0], v = tools_avg(tools.tone_metric);
+    if (!m || isNaN(v)) return NaN;
+    var r = m[3] == "dBm" ? [-120, -60] : (m[0].indexOf("rsrq") >= 0 ? [-20, -3] : [-5, 30]);
+    return Math.min(1, Math.max(0, (v - r[0]) / (r[1] - r[0])));
+}
+
+function tone_loop()
+{
+    if (!tools.tone) return;
+    var x = tone_level();
+    if (!isNaN(x)) tone_beep(400 + x * 800, tools.tone.ctx.currentTime, 0.06);
+    tools.tone.timer = window.setTimeout(tone_loop, isNaN(x) ? 500 : 1000 - x * 880);   // 1 beep/s .. ~8 beeps/s
 }
 
 function tone_update()
 {
     if (!tools.tone) return;
-    var m = ALIGN_METRICS.filter(function(x) { return x[0] == tools.tone_metric; })[0], v = tools_avg(tools.tone_metric);
-    if (!m || isNaN(v)) { tools.tone.gain.gain.value = 0; return; }
-    tools.tone.gain.gain.value = 0.04;  // quiet
-    var r = m[3] == "dBm" ? [-120, -60] : (m[0].indexOf("rsrq") >= 0 ? [-20, -3] : [-5, 30]);
-    var x = Math.min(1, Math.max(0, (v - r[0]) / (r[1] - r[0])));
-    tools.tone.osc.frequency.setTargetAtTime(200 + x * 1300, tools.tone.ctx.currentTime, 0.1);
+    var v = tools_avg(tools.tone_metric);
+    if (isNaN(v)) return;
+    if (!isNaN(tools.tone.peak) && v >= tools.tone.peak + 0.5)
+    {
+        var t = tools.tone.ctx.currentTime;
+        tone_beep(1800, t, 0.05);
+        tone_beep(2400, t + 0.08, 0.05);
+    }
+    if (isNaN(tools.tone.peak) || v > tools.tone.peak) tools.tone.peak = v;
 }
 
 /* ---- lock / band status ---- */
@@ -2616,7 +2644,7 @@ function inject_html()
                 <label><input type="checkbox" onchange="align_fast(this.checked)"> Fast update (0.5 s)</label>
                 &nbsp;&nbsp;
                 <label><input type="checkbox" onchange="tone_toggle(this.checked)"> Tone</label>
-                <select onchange="tools.tone_metric = this.value">
+                <select onchange="tools.tone_metric = this.value; if (tools.tone) tools.tone.peak = NaN;">
                     ${ALIGN_METRICS.slice(0, 8).map(m => "<option value='" + m[0] + "'>" + m[2] + "</option>").join("")}
                 </select>
                 &nbsp;&nbsp;
