@@ -938,7 +938,7 @@ var ALIGN_METRICS = [
     ["lte_p1", "lte_rsrp_1", "LTE RSRP port 1", "dBm"], ["lte_p2", "lte_rsrp_2", "LTE RSRP port 2", "dBm"],
     ["lte_p3", "lte_rsrp_3", "LTE RSRP port 3", "dBm"], ["lte_p4", "lte_rsrp_4", "LTE RSRP port 4", "dBm"]
 ];
-var tools = { hist: {}, base: {}, peak: {}, fast_timer: null, tone: null, tone_metric: "nr_sinr" };
+var tools = { hist: {}, base: {}, peak: {}, fast_timer: null, tone: null, tone_mode: "dual" };
 
 function tools_store(name, def) { try { var v = JSON.parse(localStorage.getItem(name)); return v === null ? def : v; } catch (e) { return def; } }
 function tools_save(name, v) { try { localStorage.setItem(name, JSON.stringify(v)); } catch (e) { console.log("localStorage unavailable", e); } }
@@ -1018,7 +1018,7 @@ function tools_render()
     $("#align_table").html(html);
 }
 
-function tools_reset() { tools.base = {}; tools.peak = {}; if (tools.tone) tools.tone.peak = NaN; }
+function tools_reset() { tools.base = {}; tools.peak = {}; if (tools.tone) tools.tone.peaks = {}; }
 
 function align_fast(on)
 {
@@ -1028,14 +1028,37 @@ function align_fast(on)
     }, 500) : null;
 }
 
-// parking-sensor style beeps on the computer speakers; off by default.
-// Better signal -> faster and higher beeps; a rising double chirp marks a new best (+0.5 dB).
+/*
+ * Alignment sounds on the computer speakers (off by default). Modes (tools.tone_mode):
+ *  "dual"     5G + LTE SINR: each beep is a pair - high note = 5G, low note = LTE, pitch rises with each SINR;
+ *             beeps speed up as the weaker of the two improves.
+ *             chirps: 5G new best = two rising high notes, LTE new best = two falling notes,
+ *             both at their best at the same time = three-note rising chime.
+ *  "balance"  5G rx0/rx1: steady tone when within 2 dB; otherwise beeps that get faster as the
+ *             difference shrinks - LOW beeps = rx0 stronger, HIGH beeps = rx1 stronger.
+ *  "m:<key>"  one metric: faster + higher beeps for better values, double chirp on a new best.
+ * A "new best" is +0.5 dB over the best 3 s average since the tone / reset / mode change.
+ */
+var TONE_LEGEND = {
+    dual: "pair of beeps: high = 5G SINR, low = LTE SINR (pitch rises with SINR, faster when the weaker improves). " +
+          "Chirp up = 5G best, chirp down = LTE best, 3-note chime = both at best.",
+    balance: "steady tone = rx0/rx1 within 2 dB. Low beeps = rx0 stronger, high beeps = rx1 stronger; faster = closer to balanced.",
+    metric: "faster and higher = better; double chirp = new best."
+};
+
 function tone_toggle(on)
 {
     if (tools.tone) { window.clearTimeout(tools.tone.timer); tools.tone.ctx.close(); tools.tone = null; }
     if (!on) return;
-    tools.tone = { ctx: new (window.AudioContext || window.webkitAudioContext)(), timer: null, peak: NaN };
+    tools.tone = { ctx: new (window.AudioContext || window.webkitAudioContext)(), timer: null, peaks: {}, hold: null, chime_at: 0, chirp_at: 0 };
     tone_loop();
+}
+
+function tone_set_mode(mode)
+{
+    tools.tone_mode = mode;
+    if (tools.tone) { tools.tone.peaks = {}; tone_hold(0); }
+    $("#tone_legend").html(TONE_LEGEND[mode.indexOf("m:") == 0 ? "metric" : mode]);
 }
 
 function tone_beep(freq, start, len)
@@ -1051,10 +1074,32 @@ function tone_beep(freq, start, len)
     osc.stop(start + len + 0.02);
 }
 
-// chosen metric mapped to 0..1 over a typical range (SINR -5..30 dB, RSRP -120..-60 dBm, RSRQ -20..-3 dB)
-function tone_level()
+// sustained tone for "balanced"; freq 0 = off
+function tone_hold(freq)
 {
-    var m = ALIGN_METRICS.filter(function(x) { return x[0] == tools.tone_metric; })[0], v = tools_avg(tools.tone_metric);
+    var t = tools.tone, now = t.ctx.currentTime;
+    if (!freq) { if (t.hold) { t.hold.g.gain.setTargetAtTime(0.0001, now, 0.03); t.hold.osc.stop(now + 0.2); t.hold = null; } return; }
+    if (t.hold) return;
+    var osc = t.ctx.createOscillator(), g = t.ctx.createGain();
+    osc.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, now);
+    g.gain.setTargetAtTime(0.05, now, 0.03);
+    osc.connect(g);
+    g.connect(t.ctx.destination);
+    osc.start(now);
+    t.hold = { osc: osc, g: g };
+}
+
+function tone_chord(freqs)
+{
+    var t = tools.tone.ctx.currentTime;
+    freqs.forEach(function(f, i) { tone_beep(f, t + i * 0.08, 0.06); });
+}
+
+// metric mapped to 0..1 over a typical range (SINR -5..30 dB, RSRP -120..-60 dBm, RSRQ -20..-3 dB)
+function tone_level(key)
+{
+    var m = ALIGN_METRICS.filter(function(x) { return x[0] == key; })[0], v = tools_avg(key);
     if (!m || isNaN(v)) return NaN;
     var r = m[3] == "dBm" ? [-120, -60] : (m[0].indexOf("rsrq") >= 0 ? [-20, -3] : [-5, 30]);
     return Math.min(1, Math.max(0, (v - r[0]) / (r[1] - r[0])));
@@ -1062,24 +1107,65 @@ function tone_level()
 
 function tone_loop()
 {
-    if (!tools.tone) return;
-    var x = tone_level();
-    if (!isNaN(x)) tone_beep(400 + x * 800, tools.tone.ctx.currentTime, 0.06);
-    tools.tone.timer = window.setTimeout(tone_loop, isNaN(x) ? 500 : 1000 - x * 880);   // 1 beep/s .. ~8 beeps/s
+    var t = tools.tone;
+    if (!t) return;
+    var now = t.ctx.currentTime, next = 500, mode = tools.tone_mode;
+
+    if (mode == "balance")
+    {
+        var d = tools_avg("nr_rx0") - tools_avg("nr_rx1");
+        if (isNaN(d)) tone_hold(0);
+        else if (Math.abs(d) <= 2) { tone_hold(660); next = 200; }
+        else
+        {
+            tone_hold(0);
+            tone_beep(d > 0 ? 440 : 990, now, 0.07);
+            next = Math.min(1200, 150 + (Math.abs(d) - 2) * 100);   // 3 dB off -> fast, 12+ dB off -> ~1 beep/s
+        }
+    }
+    else if (mode == "dual")
+    {
+        tone_hold(0);
+        var x5 = tone_level("nr_sinr"), x4 = tone_level("lte_sinr");
+        if (!isNaN(x5)) tone_beep(700 + x5 * 900, now, 0.06);           // 5G: 700..1600 Hz
+        if (!isNaN(x4)) tone_beep(250 + x4 * 400, now + 0.09, 0.06);    // LTE: 250..650 Hz
+        var w = Math.min(isNaN(x5) ? 1 : x5, isNaN(x4) ? 1 : x4);
+        if (!isNaN(x5) || !isNaN(x4)) next = Math.max(250, 1000 - w * 750);
+    }
+    else
+    {
+        tone_hold(0);
+        var x = tone_level(mode.substr(2));
+        if (!isNaN(x)) { tone_beep(400 + x * 800, now, 0.06); next = 1000 - x * 880; }   // 1 .. ~8 beeps/s
+    }
+    t.timer = window.setTimeout(tone_loop, next);
 }
 
+// called on every new reading: track bests and play the "new best" sounds
 function tone_update()
 {
-    if (!tools.tone) return;
-    var v = tools_avg(tools.tone_metric);
-    if (isNaN(v)) return;
-    if (!isNaN(tools.tone.peak) && v >= tools.tone.peak + 0.5)
+    var t = tools.tone;
+    if (!t || tools.tone_mode == "balance") return;
+    var keys = tools.tone_mode == "dual" ? ["nr_sinr", "lte_sinr"] : [tools.tone_mode.substr(2)];
+    var improved = {};
+    keys.forEach(function(k) {
+        var v = tools_avg(k);
+        if (isNaN(v)) return;
+        if (t.peaks[k] !== undefined && v >= t.peaks[k] + 0.5) improved[k] = true;
+        if (t.peaks[k] === undefined || v > t.peaks[k]) t.peaks[k] = v;
+    });
+    if (!Object.keys(improved).length || Date.now() - t.chirp_at < 1000) return;   // at most one chirp per second
+    t.chirp_at = Date.now();
+
+    if (tools.tone_mode != "dual") { tone_chord([1800, 2400]); return; }
+    var at_best = function(k) { var v = tools_avg(k); return !isNaN(v) && t.peaks[k] !== undefined && v >= t.peaks[k] - 0.5; };
+    if (at_best("nr_sinr") && at_best("lte_sinr") && Date.now() - t.chime_at > 3000)
     {
-        var t = tools.tone.ctx.currentTime;
-        tone_beep(1800, t, 0.05);
-        tone_beep(2400, t + 0.08, 0.05);
+        t.chime_at = Date.now();
+        tone_chord([1200, 1600, 2000]);           // both 5G and LTE at their best
     }
-    if (isNaN(tools.tone.peak) || v > tools.tone.peak) tools.tone.peak = v;
+    else if (improved.nr_sinr) tone_chord([1800, 2400]);   // 5G new best: rising
+    else tone_chord([1600, 1200]);                         // LTE new best: falling
 }
 
 /* ---- lock / band status ---- */
@@ -1126,8 +1212,12 @@ function position_save()
 
 function records_table(list, cols, del_fn)
 {
+    // highlight the best value per column, only when the column actually differs
     var best = {};
-    cols.forEach(function(c) { list.forEach(function(r) { if (typeof r[c] == "number" && (best[c] === undefined || r[c] > best[c])) best[c] = r[c]; }); });
+    cols.forEach(function(c) {
+        var vs = list.map(function(r) { return r[c]; }).filter(function(v) { return typeof v == "number"; });
+        if (vs.length > 1 && Math.max.apply(null, vs) != Math.min.apply(null, vs)) best[c] = Math.max.apply(null, vs);
+    });
     var html = "<tr><th>TIME</th><th>LABEL</th>" + cols.map(function(c) {
         var m = ALIGN_METRICS.filter(function(x) { return x[0] == c; })[0];
         return "<th>" + (m ? m[2].replace("RSRP ", "") : c.toUpperCase()) + "</th>";
@@ -1135,7 +1225,7 @@ function records_table(list, cols, del_fn)
     list.forEach(function(r, i) {
         html += "<tr><td>" + r.time + "</td><td>" + r.label + "</td>" + cols.map(function(c) {
             var v = r[c] === undefined ? "" : r[c];
-            return "<td>" + (v !== "" && v === best[c] && list.length > 1 ? "<b style='color:#5c5'>" + v + "</b>" : v) + "</td>";
+            return "<td>" + (v !== "" && v === best[c] ? "<b style='color:#5c5'>" + v + "</b>" : v) + "</td>";
         }).join("") + "<td><a style='cursor:pointer' onclick='" + del_fn + "(" + i + ")'>x</a></td></tr>";
     });
     return html;
@@ -2644,11 +2734,14 @@ function inject_html()
                 <label><input type="checkbox" onchange="align_fast(this.checked)"> Fast update (0.5 s)</label>
                 &nbsp;&nbsp;
                 <label><input type="checkbox" onchange="tone_toggle(this.checked)"> Tone</label>
-                <select onchange="tools.tone_metric = this.value; if (tools.tone) tools.tone.peak = NaN;">
-                    ${ALIGN_METRICS.slice(0, 8).map(m => "<option value='" + m[0] + "'>" + m[2] + "</option>").join("")}
+                <select onchange="tone_set_mode(this.value)">
+                    <option value="dual" selected>5G + LTE SINR</option>
+                    <option value="balance">5G rx0/rx1 balance</option>
+                    ${ALIGN_METRICS.slice(0, 8).map(m => "<option value='m:" + m[0] + "'>" + m[2] + "</option>").join("")}
                 </select>
                 &nbsp;&nbsp;
                 <a onclick="tools_reset()">Reset start/peak</a> | <a onclick="position_save()">Save position</a>
+                <div style="font-size:11px">Tone: <span id="tone_legend">${TONE_LEGEND.dual}</span></div>
                 <div class="spacing_links"></div>
                 Antenna branches: <span class="branch_warn"></span>
                 <table class="tools_table" id="align_table"></table>
