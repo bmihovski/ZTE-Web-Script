@@ -701,7 +701,7 @@ function arfcn_to_band(arfcn, nr)
     return "?";
 }
 
-var NGBR_COLUMNS = [["rat","RAT"],["band","BAND"],["arfcn","ARFCN"],["pci","PCI"],["rsrp","RSRP"],["rsrq","RSRQ"],["rssi","RSSI"],["note","NOTE"]];
+var NGBR_COLUMNS = [["rat","RAT"],["band","BAND"],["arfcn","ARFCN"],["pci","PCI"],["rsrp","RSRP"],["rsrq","RSRQ"],["sinr","SINR"],["rssi","RSSI"],["note","NOTE"]];
 var ngbr_sort = { key: "band", dir: 1 };
 
 function ngbr_sort_value(c, key)
@@ -718,8 +718,41 @@ function ngbr_sort_value(c, key)
 // click same header again to reverse; signal columns start strongest-first
 function ngbr_sort_by(key)
 {
-    ngbr_sort = { key: key, dir: ngbr_sort.key == key ? -ngbr_sort.dir : (["rsrp", "rsrq", "rssi"].includes(key) ? -1 : 1) };
+    ngbr_sort = { key: key, dir: ngbr_sort.key == key ? -ngbr_sort.dir : (["rsrp", "rsrq", "sinr", "rssi"].includes(key) ? -1 : 1) };
     $("#ngbr_cell_info").html(render_ngbr_cells(""));
+}
+
+function sinr_or_unknown(v)
+{
+    return (v == "-20.0" || v == "-3276.8" || v == "0.0") ? "?" : (v || "");
+}
+
+// PCell + LTE SCells (lte_multi_ca_scell_info/_sig_info) + NR PCell/SCells, same order as the signal panels
+function connected_cells()
+{
+    var cells = [];
+    if (is_lte && wan_active_channel)
+        cells.push({ nr: false, arfcn: lte_ca_pcell_freq || wan_active_channel, pci: String(parseInt(lte_pci, 16)),
+                     rsrp: lte_rsrp, rsrq: lte_rsrq, sinr: lte_snr, rssi: lte_rssi });
+
+    var sig = (lte_multi_ca_scell_sig_info || "").split(";").filter(Boolean);
+    (lte_multi_ca_scell_info || "").split(";").filter(Boolean).forEach(function(info, i) {
+        var d = info.split(","), g = (sig[i] || "").split(",");  // d: idx,pci,?,band,earfcn,bw  g: rsrp,rsrq,sinr,rssi
+        if (d.length < 5) return;
+        cells.push({ nr: false, arfcn: d[4], pci: d[1], rsrp: g[0] == "-44.0" ? "" : (g[0] || ""), rsrq: g[1] || "",
+                     sinr: g[2] || "", rssi: g[3] || "" });
+    });
+
+    if (is_5g && (!is_5g_nsa || is_5g_nsa_active) && nr5g_action_channel && Z5g_rsrp)
+        cells.push({ nr: true, arfcn: nr5g_action_channel, pci: String(parseInt(nr5g_pci, 16)),
+                     rsrp: Z5g_rsrp, rsrq: Z5g_rsrq, sinr: sinr_or_unknown(Z5g_SINR), rssi: (Z5g_rssi || "").replace(".0", "") });
+
+    (nr_multi_ca_scell_info || "").split(";").filter(Boolean).forEach(function(info) {
+        var d = info.split(",");  // 0,PCI,1,n75,ARFCN,BW,0,RSRP,RSRQ,SINR
+        if (d.length < 10) return;
+        cells.push({ nr: true, arfcn: d[4], pci: d[1], rsrp: d[7], rsrq: d[8], sinr: sinr_or_unknown(d[9]), rssi: "" });
+    });
+    return cells;
 }
 
 function render_ngbr_cells(raw)
@@ -732,9 +765,17 @@ function render_ngbr_cells(raw)
         var nr = parseInt(p[0]) > 65535;
         ngbr_seen[(nr ? "nr" : "lte") + ":" + p[0] + ":" + p[1]] = {
             nr: nr, arfcn: p[0], pci: p[1], rsrq: p[2], rsrp: p[3],
-            rssi: nr ? "" : (p[4] || ""), extra: nr ? p.slice(4).join(",") : p.slice(5).join(","),
+            rssi: nr ? "" : (p[4] || ""), sinr: "", extra: nr ? p.slice(4).join(",") : p.slice(5).join(","),
             raw: cell, t: now
         };
+    });
+
+    // connected cells: neighbour list has no SINR, so overwrite them with the serving/CA measurements
+    connected_cells().forEach(function(c) {
+        c.t = now;
+        c.extra = "";
+        c.raw = "connected: " + [c.arfcn, c.pci, c.rsrq, c.rsrp, c.sinr, c.rssi].join(",");
+        ngbr_seen[(c.nr ? "nr" : "lte") + ":" + c.arfcn + ":" + c.pci] = c;
     });
 
     var ca = {};
@@ -742,7 +783,12 @@ function render_ngbr_cells(raw)
         var d = c.split(",");
         if (d.length >= 5) ca[d[4] + ":" + d[1]] = true;
     });
-    var lte_serving = wan_active_channel + ":" + parseInt(lte_pci, 16);
+    var nr_ca = {};
+    (nr_multi_ca_scell_info || "").split(";").forEach(function(c) {
+        var d = c.split(",");
+        if (d.length >= 5) nr_ca[d[4] + ":" + d[1]] = true;
+    });
+    var lte_serving = (lte_ca_pcell_freq || wan_active_channel) + ":" + parseInt(lte_pci, 16);
     var nr_serving = nr5g_action_channel + ":" + parseInt(nr5g_pci, 16);
 
     var cells = [];
@@ -751,7 +797,7 @@ function render_ngbr_cells(raw)
         var c = ngbr_seen[k];
         if (now - c.t > NGBR_KEEP_MS) { delete ngbr_seen[k]; continue; }
         var key = c.arfcn + ":" + c.pci;
-        c.mark = c.nr ? (key == nr_serving ? "SERVING" : "")
+        c.mark = c.nr ? (key == nr_serving ? "SERVING" : (nr_ca[key] ? "CA" : ""))
                       : (key == lte_serving ? "SERVING" : (ca[key] ? "CA" : ""));
         c.band = arfcn_to_band(c.arfcn, c.nr);
         cells.push(c);
@@ -775,7 +821,8 @@ function render_ngbr_cells(raw)
         html += "<tr title='" + c.raw + "' style='opacity:" + (age > 3 ? 0.5 : 1) + "'>" +
             "<td>" + (c.nr ? "NR" : "LTE") + "</td><td>" + c.band + "</td>" +
             "<td>" + c.arfcn + "</td><td>" + c.pci + "</td>" +
-            "<td>" + c.rsrp + "&nbsp;dBm&nbsp;</td><td>" + c.rsrq + "&nbsp;dB&nbsp;</td>" +
+            "<td>" + (c.rsrp ? c.rsrp + "&nbsp;dBm" : "") + "</td><td>" + (c.rsrq ? c.rsrq + "&nbsp;dB" : "") + "</td>" +
+            "<td>" + (c.sinr ? c.sinr + "&nbsp;dB" : "") + "</td>" +
             "<td>" + (c.rssi ? c.rssi + "&nbsp;dBm" : c.extra) + "</td>" +
             "<td><b>" + c.mark + "</b>" + (age > 3 ? " " + age + "s ago" : "") + "</td></tr>";
     });
