@@ -722,6 +722,16 @@ function ngbr_sort_by(key)
     $("#ngbr_cell_info").html(render_ngbr_cells(""));
 }
 
+// lock straight from a NGBR row; SCS: 30 kHz for TDD mid-band (n38/n41/n77/n78/n79), else 15 kHz
+function ngbr_lock(nr, arfcn, pci, band)
+{
+    if (!nr) return lte_cell_lock(false, pci + "," + arfcn);
+    var b = band.replace(/^n/, "");
+    var known = /^\d+$/.test(b);   // "n20/n28" overlap or "?" -> let the user fix it in the prompt
+    var scs = ["38", "41", "77", "78", "79"].includes(b) ? "30" : "15";
+    nr_cell_lock(false, pci + "," + arfcn + "," + (known ? b : "") + "," + scs, !known);
+}
+
 function sinr_or_unknown(v)
 {
     return (v == "-20.0" || v == "-3276.8" || v == "0.0") ? "?" : (v || "");
@@ -815,7 +825,7 @@ function render_ngbr_cells(raw)
         var arrow = ngbr_sort.key == col[0] ? (ngbr_sort.dir > 0 ? "&nbsp;&#9650;" : "&nbsp;&#9660;") : "";
         html += "<th style='cursor:pointer' onclick=\"ngbr_sort_by('" + col[0] + "')\">" + col[1] + arrow + "</th>";
     });
-    html += "</tr>";
+    html += "<th>LOCK</th></tr>";
     cells.forEach(function(c) {
         var age = Math.round((now - c.t) / 1000);
         html += "<tr title='" + c.raw + "' style='opacity:" + (age > 3 ? 0.5 : 1) + "'>" +
@@ -824,7 +834,9 @@ function render_ngbr_cells(raw)
             "<td>" + (c.rsrp ? c.rsrp + "&nbsp;dBm" : "") + "</td><td>" + (c.rsrq ? c.rsrq + "&nbsp;dB" : "") + "</td>" +
             "<td>" + (c.sinr ? c.sinr + "&nbsp;dB" : "") + "</td>" +
             "<td>" + (c.rssi ? c.rssi + "&nbsp;dBm" : c.extra) + "</td>" +
-            "<td><b>" + c.mark + "</b>" + (age > 3 ? " " + age + "s ago" : "") + "</td></tr>";
+            "<td><b>" + c.mark + "</b>" + (age > 3 ? " " + age + "s ago" : "") + "</td>" +
+            "<td><a style='cursor:pointer' title='Lock to this cell (reboot required)' onclick=\"ngbr_lock(" +
+                c.nr + ",'" + c.arfcn + "','" + c.pci + "','" + c.band + "')\">lock</a></td></tr>";
     });
     return html + "</table>";
 }
@@ -1150,15 +1162,17 @@ function set_net_mode(mode = null)
 
 }
 
-function lte_cell_lock(reset = false) {
+function lte_cell_lock(reset = false, preset = null) {
     var lockParameters;
 
     if (reset) {
         lockParameters = ["0", "0"];
     } else {
         var defaultPciEarfcn = parseInt(lte_pci, 16) + "," + wan_active_channel;
-        var cellLockDetails = prompt("Please input PCI,EARFCN, separated by ',' char (example 116,3350). "+ 
-                                     "Leave default for lock on current main band.", defaultPciEarfcn);
+        var cellLockDetails = preset
+            ? (confirm("Lock LTE to PCI " + preset.split(",")[0] + " on EARFCN " + preset.split(",")[1] + "?") ? preset : null)
+            : prompt("Please input PCI,EARFCN, separated by ',' char (example 116,3350). "+ 
+                     "Leave default for lock on current main band.", defaultPciEarfcn);
 
         if (cellLockDetails === null || cellLockDetails.trim() === "") {
             return;
@@ -1220,7 +1234,7 @@ function lte_cell_lock(reset = false) {
     });
 }
 
-function nr_cell_lock(reset = false) {
+function nr_cell_lock(reset = false, preset = null, ask = false) {
     var cellLockDetails;
 
     if (reset) {
@@ -1234,8 +1248,13 @@ function nr_cell_lock(reset = false) {
             defaultCellDetails = primaryNrCell.pci + ',' + primaryNrCell.arfcn + ',' + primaryNrCell.band.replace('n', '') + ',' + "30";
         }
 
-        cellLockDetails = prompt("Please input PCI,ARFCN,BAND,SCS separated by ',' char (example 202,639936,78,30). " + 
-                                 "Leave default for locking the current NR primary band. You may need to adjust the SCS.", defaultCellDetails);
+        if (preset && !ask) {
+            var v = preset.split(",");
+            cellLockDetails = confirm("Lock 5G to PCI " + v[0] + ", ARFCN " + v[1] + ", band n" + v[2] + ", SCS " + v[3] + " kHz?") ? preset : null;
+        } else {
+            cellLockDetails = prompt("Please input PCI,ARFCN,BAND,SCS separated by ',' char (example 202,639936,78,30). " + 
+                                     "Leave default for locking the current NR primary band. You may need to adjust the SCS.", preset || defaultCellDetails);
+        }
 
         if (cellLockDetails === null || cellLockDetails.trim() === "") {
             return;
