@@ -938,7 +938,7 @@ var ALIGN_METRICS = [
     ["lte_p1", "lte_rsrp_1", "LTE RSRP port 1", "dBm"], ["lte_p2", "lte_rsrp_2", "LTE RSRP port 2", "dBm"],
     ["lte_p3", "lte_rsrp_3", "LTE RSRP port 3", "dBm"], ["lte_p4", "lte_rsrp_4", "LTE RSRP port 4", "dBm"]
 ];
-var tools = { hist: {}, base: {}, peak: {}, fast_timer: null, tone: null, tone_mode: "dual" };
+var tools = { hist: {}, base: {}, peak: {}, fast_timer: null, tone: null, tone_mode: "dual", tone_res: "high" };
 
 function tools_store(name, def) { try { var v = JSON.parse(localStorage.getItem(name)); return v === null ? def : v; } catch (e) { return def; } }
 function tools_save(name, v) { try { localStorage.setItem(name, JSON.stringify(v)); } catch (e) { console.log("localStorage unavailable", e); } }
@@ -1042,7 +1042,7 @@ function align_fast(on)
 var TONE_LEGEND = {
     dual: "pair of beeps: high = 5G SINR, low = LTE SINR (pitch rises with SINR, faster when the weaker improves). " +
           "Chirp up = 5G best, chirp down = LTE best, 3-note chime = both at best.",
-    balance: "steady tone = rx0/rx1 within 2 dB. Low beeps = rx0 stronger, high beeps = rx1 stronger; faster = closer to balanced.",
+    balance: "steady tone = rx0/rx1 balanced (2 / 1 / 0.5 dB by resolution). Low beeps = rx0 stronger, high beeps = rx1 stronger; faster = closer to balanced.",
     metric: "faster and higher = better; double chirp = new best."
 };
 
@@ -1096,47 +1096,73 @@ function tone_chord(freqs)
     freqs.forEach(function(f, i) { tone_beep(f, t + i * 0.08, 0.06); });
 }
 
-// metric mapped to 0..1 over a typical range (SINR -5..30 dB, RSRP -120..-60 dBm, RSRQ -20..-3 dB)
+/*
+ * Resolution. "abs": pitch spread over a fixed range (SINR -10..30 dB etc.) - small changes are hard to hear.
+ * "high"/"vhigh": pitch is relative to the reference (value at tone start / Reset start/peak):
+ * every dB of change = 2 (high) or 4 (very high) semitones, so even 0.3 dB is audible on a weak signal.
+ * k: semitones per dB, thr: balance window (dB), best: dB needed for a "new best" chirp.
+ */
+var TONE_RES = { abs: { k: 0, thr: 2, best: 0.5 }, high: { k: 2, thr: 1, best: 0.3 }, vhigh: { k: 4, thr: 0.5, best: 0.2 } };
+var TONE_AVG_MS = 1500;   // shorter than the display average: the tone should react quickly (use Fast update)
+
+function tone_set_res(res)
+{
+    tools.tone_res = res;
+    if (tools.tone) tools.tone.peaks = {};
+}
+
+// metric mapped to 0..1 over a typical range (SINR -10..30 dB, RSRP -125..-60 dBm, RSRQ -20..-3 dB)
 function tone_level(key)
 {
-    var m = ALIGN_METRICS.filter(function(x) { return x[0] == key; })[0], v = tools_avg(key);
+    var m = ALIGN_METRICS.filter(function(x) { return x[0] == key; })[0], v = tools_avg(key, TONE_AVG_MS);
     if (!m || isNaN(v)) return NaN;
-    var r = m[3] == "dBm" ? [-120, -60] : (m[0].indexOf("rsrq") >= 0 ? [-20, -3] : [-5, 30]);
+    var r = m[3] == "dBm" ? [-125, -60] : (m[0].indexOf("rsrq") >= 0 ? [-20, -3] : [-10, 30]);
     return Math.min(1, Math.max(0, (v - r[0]) / (r[1] - r[0])));
+}
+
+// one voice: frequency between lo..hi Hz and a 0..1 "goodness" that drives the beep speed
+function tone_voice(key, lo, hi)
+{
+    var v = tools_avg(key, TONE_AVG_MS), r = TONE_RES[tools.tone_res];
+    if (isNaN(v)) return null;
+    if (!r.k) { var x = tone_level(key); return { f: lo + x * (hi - lo), x: x }; }
+    var ref = tools.base[key] === undefined ? v : tools.base[key];
+    var semis = Math.max(-24, Math.min(24, (v - ref) * r.k));              // +-2 octaves around the middle pitch
+    return { f: Math.sqrt(lo * hi) * Math.pow(2, semis / 12), x: 0.5 + semis / 48 };
 }
 
 function tone_loop()
 {
     var t = tools.tone;
     if (!t) return;
-    var now = t.ctx.currentTime, next = 500, mode = tools.tone_mode;
+    var now = t.ctx.currentTime, next = 500, mode = tools.tone_mode, r = TONE_RES[tools.tone_res];
 
     if (mode == "balance")
     {
-        var d = tools_avg("nr_rx0") - tools_avg("nr_rx1");
+        var d = tools_avg("nr_rx0", TONE_AVG_MS) - tools_avg("nr_rx1", TONE_AVG_MS);
         if (isNaN(d)) tone_hold(0);
-        else if (Math.abs(d) <= 2) { tone_hold(660); next = 200; }
+        else if (Math.abs(d) <= r.thr) { tone_hold(660); next = 200; }
         else
         {
             tone_hold(0);
             tone_beep(d > 0 ? 440 : 990, now, 0.07);
-            next = Math.min(1200, 150 + (Math.abs(d) - 2) * 100);   // 3 dB off -> fast, 12+ dB off -> ~1 beep/s
+            // closer to balance -> faster; finer resolutions speed up over a smaller dB range
+            next = Math.min(1200, 120 + (Math.abs(d) - r.thr) * (r.k ? 400 / r.k : 100));
         }
     }
     else if (mode == "dual")
     {
         tone_hold(0);
-        var x5 = tone_level("nr_sinr"), x4 = tone_level("lte_sinr");
-        if (!isNaN(x5)) tone_beep(700 + x5 * 900, now, 0.06);           // 5G: 700..1600 Hz
-        if (!isNaN(x4)) tone_beep(250 + x4 * 400, now + 0.09, 0.06);    // LTE: 250..650 Hz
-        var w = Math.min(isNaN(x5) ? 1 : x5, isNaN(x4) ? 1 : x4);
-        if (!isNaN(x5) || !isNaN(x4)) next = Math.max(250, 1000 - w * 750);
+        var v5 = tone_voice("nr_sinr", 700, 1600), v4 = tone_voice("lte_sinr", 250, 650);
+        if (v5) tone_beep(v5.f, now, 0.06);            // 5G: high voice
+        if (v4) tone_beep(v4.f, now + 0.09, 0.06);     // LTE: low voice
+        if (v5 || v4) next = Math.max(250, 1000 - Math.min(v5 ? v5.x : 1, v4 ? v4.x : 1) * 750);
     }
     else
     {
         tone_hold(0);
-        var x = tone_level(mode.substr(2));
-        if (!isNaN(x)) { tone_beep(400 + x * 800, now, 0.06); next = 1000 - x * 880; }   // 1 .. ~8 beeps/s
+        var v = tone_voice(mode.substr(2), 400, 1200);
+        if (v) { tone_beep(v.f, now, 0.06); next = 1000 - v.x * 880; }   // 1 .. ~8 beeps/s
     }
     t.timer = window.setTimeout(tone_loop, next);
 }
@@ -1149,16 +1175,16 @@ function tone_update()
     var keys = tools.tone_mode == "dual" ? ["nr_sinr", "lte_sinr"] : [tools.tone_mode.substr(2)];
     var improved = {};
     keys.forEach(function(k) {
-        var v = tools_avg(k);
+        var v = tools_avg(k, TONE_AVG_MS);
         if (isNaN(v)) return;
-        if (t.peaks[k] !== undefined && v >= t.peaks[k] + 0.5) improved[k] = true;
+        if (t.peaks[k] !== undefined && v >= t.peaks[k] + TONE_RES[tools.tone_res].best) improved[k] = true;
         if (t.peaks[k] === undefined || v > t.peaks[k]) t.peaks[k] = v;
     });
     if (!Object.keys(improved).length || Date.now() - t.chirp_at < 1000) return;   // at most one chirp per second
     t.chirp_at = Date.now();
 
     if (tools.tone_mode != "dual") { tone_chord([1800, 2400]); return; }
-    var at_best = function(k) { var v = tools_avg(k); return !isNaN(v) && t.peaks[k] !== undefined && v >= t.peaks[k] - 0.5; };
+    var at_best = function(k) { var v = tools_avg(k, TONE_AVG_MS); return !isNaN(v) && t.peaks[k] !== undefined && v >= t.peaks[k] - TONE_RES[tools.tone_res].best; };
     if (at_best("nr_sinr") && at_best("lte_sinr") && Date.now() - t.chime_at > 3000)
     {
         t.chime_at = Date.now();
@@ -2739,9 +2765,15 @@ function inject_html()
                     <option value="balance">5G rx0/rx1 balance</option>
                     ${ALIGN_METRICS.slice(0, 8).map(m => "<option value='m:" + m[0] + "'>" + m[2] + "</option>").join("")}
                 </select>
+                <select onchange="tone_set_res(this.value)" title="High / very high: pitch follows the change from the reference (Reset start/peak) - 2 or 4 semitones per dB">
+                    <option value="abs">Absolute</option>
+                    <option value="high" selected>High res (2 st/dB)</option>
+                    <option value="vhigh">Very high (4 st/dB)</option>
+                </select>
                 &nbsp;&nbsp;
                 <a onclick="tools_reset()">Reset start/peak</a> | <a onclick="position_save()">Save position</a>
-                <div style="font-size:11px">Tone: <span id="tone_legend">${TONE_LEGEND.dual}</span></div>
+                <div style="font-size:11px">Tone: <span id="tone_legend">${TONE_LEGEND.dual}</span>
+                    High / very high resolution: pitch is relative to the reference set by Reset start/peak (1 dB = 2 / 4 semitones).</div>
                 <div class="spacing_links"></div>
                 Antenna branches: <span class="branch_warn"></span>
                 <table class="tools_table" id="align_table"></table>
