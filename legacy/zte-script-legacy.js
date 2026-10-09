@@ -931,9 +931,10 @@ function load_device_extras()
 var TOOLS_HISTORY_MS = 5 * 60 * 1000;    // sparkline window
 var TOOLS_AVG_MS = 3000;                 // smoothing window for "now" (router values jump)
 var ALIGN_CMD = "Z5g_rsrp,Z5g_rsrq,Z5g_SINR,5g_rx0_rsrp,5g_rx1_rsrp,lte_rsrp,lte_rsrq,lte_snr,lte_rsrp_1,lte_rsrp_2,lte_rsrp_3,lte_rsrp_4," +
-                "network_type,wan_active_channel,lte_ca_pcell_freq,lte_pci,nr5g_action_channel,nr5g_pci,realtime_rx_thrpt,realtime_tx_thrpt";
+                "network_type,wan_active_channel,lte_ca_pcell_freq,lte_pci,nr5g_action_channel,nr5g_pci,realtime_rx_thrpt,realtime_tx_thrpt,signal_quality";
 // [key, router field, label, unit]
 var ALIGN_METRICS = [
+    ["quality", "signal_quality", "ZTE quality (0-4)", "/4"],
     ["nr_sinr", "Z5g_SINR", "5G SINR", "dB"], ["nr_rsrp", "Z5g_rsrp", "5G RSRP", "dBm"], ["nr_rsrq", "Z5g_rsrq", "5G RSRQ", "dB"],
     ["nr_rx0", "5g_rx0_rsrp", "5G RSRP rx0", "dBm"], ["nr_rx1", "5g_rx1_rsrp", "5G RSRP rx1", "dBm"],
     ["lte_sinr", "lte_snr", "LTE SINR", "dB"], ["lte_rsrp", "lte_rsrp", "LTE RSRP", "dBm"], ["lte_rsrq", "lte_rsrq", "LTE RSRQ", "dB"],
@@ -1045,6 +1046,7 @@ var TONE_LEGEND = {
     dual: "pair of beeps: high = 5G SINR, low = LTE SINR; faster = the one further from its target (5G 15 dB, LTE 6 dB) gets closer; steady tone = both reached. " +
           "Chirp up = 5G best, chirp down = LTE best, 3-note chime = both at best.",
     balance: "target rx0 - rx1 = 0: steady tone = balanced (within 2 / 1 / 0.5 dB by resolution). Low beeps = rx0 stronger, high beeps = rx1 stronger; faster = closer to balanced.",
+    quality: "ZTE's own 0-4 grade (what the ZTE installer app aligns with): one pitch step and faster beeps per level, steady tone = 4 (Excellent+), chirp = level up.",
     metric: "faster = closer to target (5G SINR 20 dB, LTE SINR 6 dB, RSRQ -10 dB, RSRP -70 dBm); steady tone = target reached; double chirp = new best."
 };
 
@@ -1060,7 +1062,7 @@ function tone_set_mode(mode)
 {
     tools.tone_mode = mode;
     if (tools.tone) { tools.tone.peaks = {}; tone_hold(0); }
-    $("#tone_legend").html(TONE_LEGEND[mode.indexOf("m:") == 0 ? "metric" : mode]);
+    $("#tone_legend").html(TONE_LEGEND[mode == "m:quality" ? "quality" : (mode.indexOf("m:") == 0 ? "metric" : mode)]);
 }
 
 function tone_beep(freq, start, len)
@@ -1142,6 +1144,11 @@ function tone_voice(key, lo, hi, dual)
 {
     var v = tools_avg(key, TONE_AVG_MS), r = TONE_RES[tools.tone_res];
     if (isNaN(v)) return null;
+    if (key == "quality")
+    {
+        var lvl = Math.round(v);
+        return { f: 400 * Math.pow(2, lvl * 5 / 12), x: lvl / 4, done: lvl >= 4 };
+    }
     var x = tone_level(key, dual), f;
     if (!r.k) f = lo + x * (hi - lo);
     else
@@ -1207,7 +1214,7 @@ function tone_update()
     keys.forEach(function(k) {
         var v = tools_avg(k, TONE_AVG_MS);
         if (isNaN(v)) return;
-        if (t.peaks[k] !== undefined && v >= t.peaks[k] + TONE_RES[tools.tone_res].best) improved[k] = true;
+        if (t.peaks[k] !== undefined && v >= t.peaks[k] + (k == "quality" ? 1 : TONE_RES[tools.tone_res].best)) improved[k] = true;
         if (t.peaks[k] === undefined || v > t.peaks[k]) t.peaks[k] = v;
     });
     if (!Object.keys(improved).length || Date.now() - t.chirp_at < 1000) return;   // at most one chirp per second
@@ -1252,7 +1259,7 @@ function lock_status_html()
 }
 
 /* ---- saved positions ---- */
-var POSITION_COLS = ["nr_sinr", "nr_rsrp", "nr_rsrq", "nr_rx0", "nr_rx1", "lte_sinr", "lte_rsrp", "lte_rsrq"];
+var POSITION_COLS = ["quality", "nr_sinr", "nr_rsrp", "nr_rsrq", "nr_rx0", "nr_rx1", "lte_sinr", "lte_rsrp", "lte_rsrq"];
 
 function position_save()
 {
@@ -1308,8 +1315,8 @@ function csv_export(name, filename)
 function records_clear(name, render) { if (confirm("Delete all saved entries?")) { tools_save(name, []); render(); } }
 
 /* ---- lock experiments / cell evaluation: wait until camped on target, then average 60 s ---- */
-var EXP_COLS = ["lte_rsrp", "lte_sinr", "lte_rsrq", "nr_rsrp", "nr_sinr", "nr_rsrq", "rx_mbit", "tx_mbit"];
-var EXP_FIELDS = [["lte_rsrp", "lte_rsrp"], ["lte_sinr", "lte_snr"], ["lte_rsrq", "lte_rsrq"], ["nr_rsrp", "Z5g_rsrp"],
+var EXP_COLS = ["quality", "lte_rsrp", "lte_sinr", "lte_rsrq", "nr_rsrp", "nr_sinr", "nr_rsrq", "rx_mbit", "tx_mbit"];
+var EXP_FIELDS = [["quality", "signal_quality"], ["lte_rsrp", "lte_rsrp"], ["lte_sinr", "lte_snr"], ["lte_rsrq", "lte_rsrq"], ["nr_rsrp", "Z5g_rsrp"],
                   ["nr_sinr", "Z5g_SINR"], ["nr_rsrq", "Z5g_rsrq"], ["rx_mbit", "realtime_rx_thrpt"], ["tx_mbit", "realtime_tx_thrpt"]];
 var exp_run = null;
 
@@ -2793,7 +2800,7 @@ function inject_html()
                 <select onchange="tone_set_mode(this.value)">
                     <option value="dual" selected>5G + LTE SINR</option>
                     <option value="balance">5G rx0/rx1 balance</option>
-                    ${ALIGN_METRICS.slice(0, 8).map(m => "<option value='m:" + m[0] + "'>" + m[2] + "</option>").join("")}
+                    ${ALIGN_METRICS.slice(0, 9).map(m => "<option value='m:" + m[0] + "'>" + m[2] + "</option>").join("")}
                 </select>
                 <select onchange="tone_set_res(this.value)" title="High / very high: pitch follows the change from the reference (Reset start/peak) - 2 or 4 semitones per dB">
                     <option value="abs">Absolute</option>
