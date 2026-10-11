@@ -1045,6 +1045,8 @@ function align_fast(on)
 var TONE_LEGEND = {
     dual: "pair of beeps: high = 5G SINR, low = LTE SINR; faster = the one further from its target (5G 15 dB, LTE 6 dB) gets closer; steady tone = both reached. " +
           "Chirp up = 5G best, chirp down = LTE best, 3-note chime = both at best.",
+    qsinr: "one tone: ZTE quality sets the pitch step (one step per level), 5G SINR moves it slightly within the step and sets the speed (faster = closer to 15 dB). " +
+           "3-note chime = quality level up, rising chirp = new 5G SINR best, steady tone = quality 4 and 5G SINR >= 15 dB.",
     balance: "target rx0 - rx1 = 0: steady tone = balanced (within 2 / 1 / 0.5 dB by resolution). Low beeps = rx0 stronger, high beeps = rx1 stronger; faster = closer to balanced.",
     quality: "ZTE's own 0-4 grade (what the ZTE installer app aligns with): one pitch step and faster beeps per level, steady tone = 4 (Excellent+), chirp = level up.",
     metric: "faster = closer to target (5G SINR 20 dB, LTE SINR 6 dB, RSRQ -10 dB, RSRP -70 dBm); steady tone = target reached; double chirp = new best."
@@ -1179,6 +1181,27 @@ function tone_loop()
             next = Math.min(1200, 120 + (Math.abs(d) - r.thr) * (r.k ? 400 / r.k : 100));
         }
     }
+    else if (mode == "qsinr")
+    {
+        // one tone: ZTE quality picks the pitch step (a fourth per level), 5G SINR fine-tunes it within the
+        // step (max +-2 semitones, so levels never overlap) and sets the beep speed (closeness to 15 dB)
+        var q = tools_avg("quality", TONE_AVG_MS), sv = tone_voice("nr_sinr", 700, 1600, true);
+        if (isNaN(q) && !sv) tone_hold(0);
+        else if (Math.round(q) >= 4 && sv && sv.done) { tone_hold(880); next = 200; }   // quality 4 and 5G SINR >= 15 dB
+        else
+        {
+            tone_hold(0);
+            var lvl = isNaN(q) ? 2 : Math.round(q), fine = 0;
+            if (sv)
+            {
+                var ref = tools.base.nr_sinr, v = tools_avg("nr_sinr", TONE_AVG_MS);
+                fine = r.k && ref !== undefined ? (v - ref) * r.k / 2 : (sv.x - 0.5) * 4;
+                fine = Math.max(-2, Math.min(2, fine));
+            }
+            tone_beep(400 * Math.pow(2, (lvl * 5 + fine) / 12), now, 0.07);
+            next = sv ? Math.max(150, 1000 - sv.x * 850) : 700;
+        }
+    }
     else if (mode == "dual")
     {
         var v5 = tone_voice("nr_sinr", 700, 1600, true), v4 = tone_voice("lte_sinr", 250, 650, true);
@@ -1209,7 +1232,7 @@ function tone_update()
 {
     var t = tools.tone;
     if (!t || tools.tone_mode == "balance") return;
-    var keys = tools.tone_mode == "dual" ? ["nr_sinr", "lte_sinr"] : [tools.tone_mode.substr(2)];
+    var keys = tools.tone_mode == "dual" ? ["nr_sinr", "lte_sinr"] : (tools.tone_mode == "qsinr" ? ["quality", "nr_sinr"] : [tools.tone_mode.substr(2)]);
     var improved = {};
     keys.forEach(function(k) {
         var v = tools_avg(k, TONE_AVG_MS);
@@ -1220,6 +1243,7 @@ function tone_update()
     if (!Object.keys(improved).length || Date.now() - t.chirp_at < 1000) return;   // at most one chirp per second
     t.chirp_at = Date.now();
 
+    if (tools.tone_mode == "qsinr") { tone_chord(improved.quality ? [1200, 1600, 2000] : [1800, 2400]); return; }   // level up = chime
     if (tools.tone_mode != "dual") { tone_chord([1800, 2400]); return; }
     var at_best = function(k) { var v = tools_avg(k, TONE_AVG_MS); return !isNaN(v) && t.peaks[k] !== undefined && v >= t.peaks[k] - TONE_RES[tools.tone_res].best; };
     if (at_best("nr_sinr") && at_best("lte_sinr") && Date.now() - t.chime_at > 3000)
@@ -2799,6 +2823,7 @@ function inject_html()
                 <label><input type="checkbox" onchange="tone_toggle(this.checked)"> Tone</label>
                 <select onchange="tone_set_mode(this.value)">
                     <option value="dual" selected>5G + LTE SINR</option>
+                    <option value="qsinr">ZTE quality + 5G SINR</option>
                     <option value="balance">5G rx0/rx1 balance</option>
                     ${ALIGN_METRICS.slice(0, 9).map(m => "<option value='m:" + m[0] + "'>" + m[2] + "</option>").join("")}
                 </select>
