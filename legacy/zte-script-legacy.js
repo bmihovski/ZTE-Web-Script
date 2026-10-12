@@ -708,19 +708,36 @@ var NGBR_COLUMNS = [["rat","RAT"],["band","BAND"],["arfcn","ARFCN"],["pci","PCI"
     ["enb","CELL","Cell identifier (ECI) learned while connected to this cell; hover a value for eNB-sector"],["note","NOTE"]];
 var ngbr_sort = { key: "band", dir: 1 };
 
+// numeric value or null when missing (0 is a real value - e.g. SINR 0.0 dB, PCI 0)
+function ngbr_num(v)
+{
+    var n = parseFloat(v);
+    return isNaN(n) ? null : n;
+}
+
+// sort value of a column; null = missing (always sorted last, whatever the direction)
 function ngbr_sort_value(c, key)
 {
     switch (key)
     {
-        case "rat":  return c.nr ? 1 : 0;
-        case "band": return (c.nr ? 1000 : 0) + (parseInt(c.band.replace(/^\D+/, "")) || 999);  // B1 < B3 < B7 < B20 < n1 ...
-        case "note": return c.mark == "SERVING" ? 0 : (c.mark == "CA" ? 1 : (c.better ? 2 : 3));
-        case "dist": return c.dist === "" ? 99999 : c.dist;
-        case "range": return c.n ? c.max - c.min : 99999;           // most stable first
-        case "enb":  return c.eci === undefined ? 1e12 : c.eci;
-        case "avg":  return isNaN(c.avg) ? -9999 : c.avg;
-        default:     return parseFloat(c[key]) || -9999;  // arfcn, pci, rsrp, rsrq, rssi
+        case "rat":   return c.nr ? 1 : 0;
+        case "band":  var b = parseInt(c.band.replace(/^\D+/, ""), 10);              // B1 < B3 < B7 < B20 < n1 ...
+                      return isNaN(b) ? null : (c.nr ? 1000 : 0) + b;
+        case "note":  return c.mark == "SERVING" ? 0 : (c.mark == "CA" ? 1 : (c.better ? 2 : 3));
+        case "dist":  return c.dist === "" ? null : c.dist;
+        case "range": return c.n ? c.max - c.min : null;                            // spread: smaller = more stable
+        case "enb":   return c.eci === undefined ? null : c.eci;
+        case "avg":   return isNaN(c.avg) ? null : c.avg;
+        default:      return ngbr_num(c[key]);                                      // arfcn, pci, rsrp, rsrq, sinr, rssi
     }
+}
+
+// plain numeric comparison (correct for negative/negative, negative/positive, positive/positive);
+// dir 1 = ascending, -1 = descending; missing values last in both directions
+function ngbr_cmp(va, vb, dir)
+{
+    if (va === null || vb === null) return va === vb ? 0 : (va === null ? 1 : -1);
+    return va == vb ? 0 : (va < vb ? -dir : dir);
 }
 
 // click same header again to reverse; signal columns start strongest-first
@@ -866,9 +883,10 @@ function render_ngbr_cells(raw)
 
     // clicked column first, then RAT / ARFCN / strongest RSRP as tie-breakers
     cells.sort(function(a, b) {
-        var va = ngbr_sort_value(a, ngbr_sort.key), vb = ngbr_sort_value(b, ngbr_sort.key);
-        var d = typeof va == "string" ? va.localeCompare(vb) : va - vb;
-        return (d * ngbr_sort.dir) || (a.nr - b.nr) || (parseInt(a.arfcn) - parseInt(b.arfcn)) || (parseFloat(b.rsrp) - parseFloat(a.rsrp));
+        return ngbr_cmp(ngbr_sort_value(a, ngbr_sort.key), ngbr_sort_value(b, ngbr_sort.key), ngbr_sort.dir) ||
+               (a.nr - b.nr) ||
+               ngbr_cmp(ngbr_num(a.arfcn), ngbr_num(b.arfcn), 1) ||
+               ngbr_cmp(ngbr_num(a.rsrp), ngbr_num(b.rsrp), -1);                // strongest (least negative) first
     });
 
     var html = "<table class='ngbr_cell_table'><tr>";
@@ -1012,9 +1030,10 @@ function tools_render()
     ALIGN_METRICS.forEach(function(m) {
         var now = tools_avg(m[0]);
         if (isNaN(now)) return;
-        var d = now - tools.base[m[0]], pk = tools.peak[m[0]];
+        // every metric here is "higher = better" (e.g. -85 dBm beats -90 dBm, 2 dB beats -1 dB)
+        var d = Math.round((now - tools.base[m[0]]) * 10) / 10, pk = tools.peak[m[0]];
         html += "<tr><td>" + m[2] + "</td><td><b>" + now.toFixed(1) + "</b>&nbsp;" + m[3] + "</td>" +
-                "<td style='color:" + (d >= 0 ? "#5c5" : "#e66") + "'>" + (d >= 0 ? "+" : "") + d.toFixed(1) + "</td>" +
+                "<td style='color:" + (d > 0 ? "#5c5" : (d < 0 ? "#e66" : "#999")) + "'>" + (d > 0 ? "+" : "") + (d == 0 ? "0.0" : d.toFixed(1)) + "</td>" +
                 "<td title='" + new Date(pk.t).toLocaleTimeString() + "'>" + pk.v.toFixed(1) + "</td>" +
                 "<td>" + sparkline(m[0]) + "</td></tr>";
     });
