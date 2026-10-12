@@ -635,10 +635,10 @@ function parse_nr_cell_info()
             cell_data[3], // Band
             cell_data[4], // Arfcn
             cell_data[5].replace("MHz", ""),
-            cell_data[7], // RSRP
-            "",
-            "",
+            cell_data[7], // RSRP (rsrp1)
+            "",           // rsrp2
             cell_data[8], // RSRQ
+            "",           // rsrp
             (cell_data[9] == "0.0" ? "?????" : cell_data[9]) // SINR
         ));
     });
@@ -766,7 +766,7 @@ function sinr_or_unknown(v, scell = false)
 function connected_cells()
 {
     var cells = [];
-    if (is_lte && wan_active_channel)
+    if (is_lte && wan_active_channel && !isNaN(parseInt(lte_pci, 16)))
         cells.push({ nr: false, arfcn: lte_ca_pcell_freq || wan_active_channel, pci: String(parseInt(lte_pci, 16)),
                      rsrp: lte_rsrp, rsrq: lte_rsrq, sinr: lte_snr, rssi: lte_rssi });
 
@@ -778,13 +778,15 @@ function connected_cells()
                      sinr: g[2] || "", rssi: g[3] || "" });
     });
 
-    if (is_5g && (!is_5g_nsa || is_5g_nsa_active) && nr5g_action_channel && Z5g_rsrp)
+    if (is_5g && (!is_5g_nsa || is_5g_nsa_active) && nr5g_action_channel && Z5g_rsrp && !isNaN(parseInt(nr5g_pci, 16)))
         cells.push({ nr: true, arfcn: nr5g_action_channel, pci: String(parseInt(nr5g_pci, 16)),
                      rsrp: Z5g_rsrp, rsrq: Z5g_rsrq, sinr: sinr_or_unknown(Z5g_SINR), rssi: Z5g_rssi || "" });
 
+    var nr_allowed = ((is_5g_nsa ? nr5g_nsa_band_lock : nr5g_sa_band_lock) || "").split(",").filter(Boolean);
     (nr_multi_ca_scell_info || "").split(";").filter(Boolean).forEach(function(info) {
         var d = info.split(",");  // 0,PCI,1,n75,ARFCN,BW,0,RSRP,RSRQ,SINR
         if (d.length < 10) return;
+        if (!is_5g || (nr_allowed.length && nr_allowed.indexOf(d[3].replace(/^n/i, "")) == -1)) return;   // stale data after NR CA ended
         cells.push({ nr: true, arfcn: d[4], pci: d[1], rsrp: d[7], rsrq: d[8], sinr: sinr_or_unknown(d[9], true), rssi: "" });
     });
     return cells;
@@ -792,7 +794,7 @@ function connected_cells()
 
 var ngbr_hist = {};                                   // key -> [{t, v}] RSRP samples, last NGBR_KEEP_MS
 var cell_ids = tools_store("zte_cell_ids", {});
-var cell_id_streak = {};       // "lte:earfcn:pci" -> ECI (decimal), learned while connected
+var cell_id_streak = {};      // per RAT: { key, id, n } - consecutive identical reports for the current serving cell       // "lte:earfcn:pci" -> ECI (decimal), learned while connected
 
 // raw === null: re-render only (sort click) - no new samples
 function render_ngbr_cells(raw)
@@ -836,10 +838,10 @@ function render_ngbr_cells(raw)
     if (refresh)
     {
         var learned = false;
-        [["lte:" + lte_serving, is_lte ? cell_id : ""], ["nr:" + nr_serving, is_5g ? nr5g_cell_id : ""]].forEach(function(x) {
-            var id = parseInt(x[1]);
-            if (isNaN(id)) return;
-            var st = cell_id_streak[x[0]] = (cell_id_streak[x[0]] && cell_id_streak[x[0]].id == id) ? { id: id, n: cell_id_streak[x[0]].n + 1 } : { id: id, n: 1 };
+        [["lte", "lte:" + lte_serving, is_lte ? cell_id : ""], ["nr", "nr:" + nr_serving, is_5g ? nr5g_cell_id : ""]].forEach(function(y) {
+            var id = parseInt(y[2]), prev = cell_id_streak[y[0]], x = [y[1]];
+            if (isNaN(id) || /NaN/.test(y[1])) { delete cell_id_streak[y[0]]; return; }
+            var st = cell_id_streak[y[0]] = (prev && prev.key == y[1] && prev.id == id) ? { key: y[1], id: id, n: prev.n + 1 } : { key: y[1], id: id, n: 1 };
             if (st.n >= 3 && cell_ids[x[0]] != id) { cell_ids[x[0]] = id; learned = true; }
         });
         if (learned) tools_save("zte_cell_ids", cell_ids);
@@ -1029,7 +1031,7 @@ function tools_render()
     var html = "<tr><th>METRIC</th><th>NOW (3 s)</th><th>&Delta; START</th><th>PEAK</th><th>LAST 5 MIN</th></tr>";
     ALIGN_METRICS.forEach(function(m) {
         var now = tools_avg(m[0]);
-        if (isNaN(now)) return;
+        if (isNaN(now) || tools.base[m[0]] === undefined || !tools.peak[m[0]]) return;
         // every metric here is "higher = better" (e.g. -85 dBm beats -90 dBm, 2 dB beats -1 dB)
         var d = Math.round((now - tools.base[m[0]]) * 10) / 10, pk = tools.peak[m[0]];
         html += "<tr><td>" + m[2] + "</td><td><b>" + now.toFixed(1) + "</b>&nbsp;" + m[3] + "</td>" +
@@ -1316,6 +1318,11 @@ function position_save()
     positions_render();
 }
 
+function esc_html(v)
+{
+    return String(v).replace(/[&<>"']/g, function(c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; });
+}
+
 function records_table(list, cols, del_fn)
 {
     // highlight the best value per column, only when the column actually differs
@@ -1329,9 +1336,9 @@ function records_table(list, cols, del_fn)
         return "<th>" + (m ? m[2].replace("RSRP ", "") : c.toUpperCase()) + "</th>";
     }).join("") + "<th></th></tr>";
     list.forEach(function(r, i) {
-        html += "<tr><td>" + r.time + "</td><td>" + r.label + "</td>" + cols.map(function(c) {
+        html += "<tr><td>" + esc_html(r.time) + "</td><td>" + esc_html(r.label) + "</td>" + cols.map(function(c) {
             var v = r[c] === undefined ? "" : r[c];
-            return "<td>" + (v !== "" && v === best[c] ? "<b style='color:#5c5'>" + v + "</b>" : v) + "</td>";
+            return "<td>" + (v !== "" && v === best[c] ? "<b style='color:#5c5'>" + v + "</b>" : esc_html(v)) + "</td>";
         }).join("") + "<td><a style='cursor:pointer' onclick='" + del_fn + "(" + i + ")'>x</a></td></tr>";
     });
     return html;
@@ -1369,14 +1376,16 @@ function exp_serving(a, nr)
               : (a.lte_ca_pcell_freq || a.wan_active_channel) + ":" + parseInt(a.lte_pci, 16);
 }
 
-function exp_arm(nr, arfcn, pci, label)
+// delay_ms: ignore readings for this long (lets the reboot take the old connection down first)
+function exp_arm(nr, arfcn, pci, label, delay_ms)
 {
-    tools_save("zte_exp_pending", { nr: nr, target: arfcn + ":" + pci, label: label, armed: Date.now() });
+    tools_save("zte_exp_pending", { nr: nr, target: arfcn + ":" + pci, label: label, armed: Date.now(), not_before: Date.now() + (delay_ms || 0) });
     exp_run = null;
 }
 
 function exp_measure_now()
 {
+    if (!is_lte || isNaN(parseInt(lte_pci, 16)) || !(lte_ca_pcell_freq || wan_active_channel)) { alert("No LTE serving cell reported right now."); return; }
     var label = prompt("Label for this measurement", "LTE PCI " + parseInt(lte_pci, 16) + " @ " + (lte_ca_pcell_freq || wan_active_channel));
     if (label === null) return;
     exp_arm(false, lte_ca_pcell_freq || wan_active_channel, parseInt(lte_pci, 16), label);
@@ -1387,14 +1396,16 @@ function exp_tick(a, now)
     if (a.network_type === undefined) return;
     var p = tools_store("zte_exp_pending", null);
     if (!p) return;
+    if (p.not_before && now < p.not_before) { $("#exp_state").html("waiting for reboot ..."); return; }
     if (!exp_run)
     {
         if (exp_serving(a, p.nr) == p.target) exp_run = { start: now, sums: {}, ns: {} };
-        else if (now - p.armed > 10 * 60 * 1000) exp_finish(p, { result: "not camped on target within 10 min" });
-        else $("#exp_state").html("waiting for " + p.target + " ...");
+        else if (now - p.armed > 10 * 60 * 1000) exp_finish(p, { result: "no stable 60 s on target within 10 min" });
+        else $("#exp_state").html("waiting for " + esc_html(p.target) + " ...");
         return;
     }
-    if (exp_serving(a, p.nr) != p.target) { exp_finish(p, { result: "left target cell during measurement" }); return; }
+    // target lost (reboot, reselection): discard the partial minute and wait for the cell again until the deadline
+    if (exp_serving(a, p.nr) != p.target) { exp_run = null; return; }
     EXP_FIELDS.forEach(function(f) {
         var v = tools_num(f[1], a[f[1]]);
         if (isNaN(v)) return;
@@ -1403,7 +1414,7 @@ function exp_tick(a, now)
         exp_run.ns[f[0]] = (exp_run.ns[f[0]] || 0) + 1;
     });
     var secs = Math.round((now - exp_run.start) / 1000);
-    $("#exp_state").html("measuring " + p.label + ": " + secs + "/60 s");
+    $("#exp_state").html("measuring " + esc_html(p.label) + ": " + secs + "/60 s");
     if (secs >= 60)
     {
         var rec = { result: "ok" };
@@ -1421,7 +1432,7 @@ function exp_finish(p, rec)
     tools_save("zte_exp_results", list);
     try { localStorage.removeItem("zte_exp_pending"); } catch (e) {}
     exp_run = null;
-    $("#exp_state").html("last: " + rec.label + " - " + rec.result);
+    $("#exp_state").html("last: " + esc_html(rec.label) + " - " + esc_html(rec.result));
     exp_render();
 }
 
@@ -1594,7 +1605,7 @@ function get_status()
             if (is_umts && lte_ca_pcell_band)
                 $("#umts_signal_table_main_band").html(" (" + lte_ca_pcell_band + ")");
 
-            if (ngbr_cell_info || Object.keys(ngbr_seen).length > 0)
+            if (ngbr_cell_info || Object.keys(ngbr_seen).length > 0 || connected_cells().length > 0)
             {
                 ngbr_cell_info = render_ngbr_cells(ngbr_cell_info || "");
                 $("#ngbr_cells").show();
@@ -1737,7 +1748,7 @@ function lte_cell_lock(reset = false, preset = null) {
     if (reset) {
         lockParameters = ["0", "0"];
     } else {
-        var defaultPciEarfcn = parseInt(lte_pci, 16) + "," + wan_active_channel;
+        var defaultPciEarfcn = parseInt(lte_pci, 16) + "," + (lte_ca_pcell_freq || wan_active_channel);
         var cellLockDetails = preset
             ? (confirm("Lock LTE to PCI " + preset.split(",")[0] + " on EARFCN " + preset.split(",")[1] + "?") ? preset : null)
             : prompt("Please input PCI,EARFCN, separated by ',' char (example 116,3350). "+ 
@@ -1782,13 +1793,13 @@ function lte_cell_lock(reset = false, preset = null) {
                 success: function(a) {
                     var response = JSON.parse(a);
                     if (response.result === "success") {
-                        if (!reset) exp_arm(false, lockParameters[1], lockParameters[0], "LTE lock PCI " + lockParameters[0] + " @ " + lockParameters[1]);
 
                         var rebootMessage = 
                             "You have to reboot your Router in order " + 
                             (reset ? "to remove the cell lock" : "for the cell lock to be active") + ".\n\nReboot now?";
 
                         if (confirm(rebootMessage)) {
+                            if (!reset) exp_arm(false, lockParameters[1], lockParameters[0], "LTE lock PCI " + lockParameters[0] + " @ " + lockParameters[1], 30000);
                             reboot(true);
                         }
                     } else {
@@ -1866,13 +1877,13 @@ function nr_cell_lock(reset = false, preset = null, ask = false) {
                 success: function(a) {
                     var response = JSON.parse(a);
                     if (response.result === "success") {
-                        if (!reset) { var lv = cellLockDetails.split(","); exp_arm(true, lv[1], lv[0], "5G lock PCI " + lv[0] + " @ " + lv[1]); }
 
                         var rebootMessage = 
                             "You have to reboot your Router in order " + 
                             (reset ? "to remove the cell lock" : "for the cell lock to be active")+ ".\n\nReboot now?";
 
                         if (confirm(rebootMessage)) {
+                            if (!reset) { var lv = cellLockDetails.split(","); exp_arm(true, lv[1], lv[0], "5G lock PCI " + lv[0] + " @ " + lv[1], 30000); }
                             reboot(true);
                         }
                     } else {

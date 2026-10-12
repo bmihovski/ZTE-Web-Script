@@ -5,9 +5,9 @@ const src = require('fs').readFileSync(process.argv[2], 'utf8');
 const grab = n => { const i = src.indexOf('function ' + n + '('); if (i < 0) throw n; let d = 0; for (let k = src.indexOf('{', i); k < src.length; k++) { if (src[k] == '{') d++; if (src[k] == '}' && --d == 0) return src.slice(i, k + 1); } };
 const vars = re => eval(src.match(re)[0].replace(/var /g, 'global.'));
 vars(/var NGBR_COLUMNS[\s\S]*?\]\];\n/); vars(/var LTE_BANDS[\s\S]*?\]\];\nvar NR_BANDS[\s\S]*?\]\];/);
-vars(/var ALIGN_METRICS = \[[\s\S]*?\n\];/); vars(/var TONE_TARGET[^\n]*\n/); vars(/var TONE_RES[^\n]*\n/);
+vars(/var ALIGN_METRICS = \[[\s\S]*?\n\];/); vars(/var EXP_COLS[^\n]*\n/); vars(/var EXP_FIELDS[\s\S]*?\]\];/); vars(/var TONE_TARGET[^\n]*\n/); vars(/var TONE_RES[^\n]*\n/);
 global.TONE_AVG_MS = 1500; global.TOOLS_AVG_MS = 3000; global.TOOLS_HISTORY_MS = 300000;
-for (const f of ['ngbr_num', 'ngbr_sort_value', 'ngbr_cmp', 'arfcn_to_band', 'sinr_or_unknown', 'connected_cells', 'render_ngbr_cells',
+for (const f of ['esc_html', 'exp_serving', 'exp_arm', 'exp_tick', 'exp_finish', 'exp_render', 'ngbr_num', 'ngbr_sort_value', 'ngbr_cmp', 'arfcn_to_band', 'sinr_or_unknown', 'connected_cells', 'render_ngbr_cells',
                  'tools_avg', 'tools_num', 'tools_render', 'sparkline', 'branch_warning', 'records_table', 'tone_range', 'tone_level', 'tone_voice'])
   eval('global.' + f + '=' + grab(f).replace('function ' + f, 'function'));
 let html = {}; global.$ = sel => ({ html(v) { html[sel] = v; }, length: 1 });
@@ -31,7 +31,8 @@ Object.assign(global, { ngbr_seen: {}, ngbr_hist: {}, cell_ids: {}, cell_id_stre
   is_lte: true, is_5g: true, is_5g_nsa: true, is_5g_nsa_active: true, wan_active_channel: '3350', lte_ca_pcell_freq: '3350', lte_pci: '154',
   lte_rsrp: '-91', lte_rsrq: '-14', lte_snr: '-1.5', lte_rssi: '-55', lte_ta: '2', cell_id: '318269', nr5g_cell_id: '',
   lte_multi_ca_scell_info: '1,340,1,1,100,20.0;2,340,1,3,1550,20.0;', lte_multi_ca_scell_sig_info: '-101.1,-19.6,0.0,-72.5,0,1;-91.2,-15.9,8.3,-66.3,0,1;',
-  nr5g_action_channel: '636576', nr5g_pci: '7f', Z5g_rsrp: '-84', Z5g_rsrq: '-12', Z5g_SINR: '6.0', Z5g_rssi: '-74.0', nr_multi_ca_scell_info: '' });
+  nr5g_action_channel: '636576', nr5g_pci: '7f', Z5g_rsrp: '-84', Z5g_rsrq: '-12', Z5g_SINR: '6.0', Z5g_rssi: '-74.0', nr_multi_ca_scell_info: '',
+  nr5g_nsa_band_lock: '1,3,7,8,20,28,78', nr5g_sa_band_lock: '1,3,7,8,20,28,78' });
 const raw = '6400,112,-10,-76,-56;6400,394,-15,-81,-56;100,202,-15,-95,-67';
 const rows = h => [...h.matchAll(/<tr title='([^']*)'[^>]*>(.*?)<\/tr>/g)].map(m => m[2].replace(/<a[\s\S]*?<\/a>/g, '').replace(/<[^>]+>/g, '|').replace(/&nbsp;/g, ' ').split('|').filter(x => x !== '').map(x => x.trim()));
 let r = rows(render_ngbr_cells(raw));
@@ -90,6 +91,32 @@ t('LTE SINR 6 reaches 6 dB target, 5.9 not', () => { set('lte_sinr', 6); assert(
 t('relative pitch rises when -90 -> -88', () => { tools.tone_res = 'high'; tools.base = { lte_rsrp: -90 }; set('lte_rsrp', -88); const up = tone_voice('lte_rsrp', 400, 1200).f; set('lte_rsrp', -92); assert(up > tone_voice('lte_rsrp', 400, 1200).f); });
 t('balance: rx0 -80 vs rx1 -83 => rx0 stronger (d > 0)', () => { const d = -80 - (-83); assert(d > 0); });
 t('branch warning uses absolute difference', () => { tools.hist = {}; set('nr_rx0', -91); set('nr_rx1', -83); assert(branch_warning().includes('8.0 dB')); set('nr_rx0', -83); set('nr_rx1', -91); assert(branch_warning().includes('8.0 dB')); });
+
+
+// ---- logic fixes ----
+t('NR SCell: RSRQ in the rsrq slot', () => { const m = src.match(/cell_data\[7\], \/\/ RSRP \(rsrp1\)\s*""\s*,[^\n]*\n\s*cell_data\[8\], \/\/ RSRQ/); assert(m); });
+t('connected: unknown LTE PCI is skipped', () => { const old = lte_pci; lte_pci = ''; const c = connected_cells(); lte_pci = old; assert(!c.some(x => x.pci == 'NaN')); });
+t('connected: stale NR SCell outside allowed bands dropped', () => { nr_multi_ca_scell_info = '0,10,1,n41,520000,100MHz,0,-80,-10,5.0;0,11,1,n78,640000,100MHz,0,-82,-11,6.0;';
+  const c = connected_cells().filter(x => x.nr && x.arfcn != nr5g_action_channel); nr_multi_ca_scell_info = ''; assert.deepStrictEqual(c.map(x => x.arfcn), ['640000']); });
+t('learned cell id: ping-pong does not save the lagging id', () => {
+  ngbr_seen = {}; ngbr_hist = {}; cell_ids = {}; cell_id_streak = {}; lte_multi_ca_scell_info = ''; lte_multi_ca_scell_sig_info = '';
+  const visit = (pci, id) => { lte_pci = pci; cell_id = id; render_ngbr_cells(''); };
+  // A = 3350/340 (hex 154) id 100, B = 3350/112 (hex 70) id 200; cell_id lags pci by one tick on B
+  for (let i = 0; i < 3; i++) { visit('154', '100'); visit('70', '100'); }
+  assert(cell_ids['lte:3350:112'] === undefined, JSON.stringify(cell_ids));
+  visit('70', '200'); visit('70', '200'); visit('70', '200'); assert.strictEqual(cell_ids['lte:3350:112'], 200); lte_pci = '154'; cell_id = '318269'; });
+t('alignment table survives missing base/peak after reset', () => { tools.hist = { nr_sinr: [{ t: Date.now(), v: 5 }] }; tools.base = {}; tools.peak = {}; tools_render(); });
+t('labels are escaped', () => { const h = records_table([{ time: 't', label: '<b>x', lte_rsrp: -90 }], ['lte_rsrp'], 'd'); assert(h.includes('&lt;b&gt;x') && !h.includes('<b>x')); });
+t('lock experiment: delay, lost target waits, completes after 60 s', () => {
+  const store = {}; global.tools_store = (n, d) => (n in store ? store[n] : d); global.tools_save = (n, v) => { store[n] = v; };
+  global.localStorage = { removeItem: n => { delete store[n]; } }; global.exp_run = null;
+  const a = (pci) => ({ network_type: 'ENDC', wan_active_channel: '6400', lte_ca_pcell_freq: '6400', lte_pci: pci, lte_rsrp: '-80', lte_snr: '3.0', lte_rsrq: '-12', Z5g_SINR: '6.0', realtime_rx_thrpt: '125000' });
+  const t0 = Date.now(); exp_arm(false, '6400', '112', 'L', 30000);
+  exp_tick(a('70'), t0 + 1000); assert(exp_run === null, 'measured during the delay');
+  exp_tick(a('70'), t0 + 31000); assert(exp_run, 'did not start');
+  exp_tick(a('154'), t0 + 40000); assert(exp_run === null && store.zte_exp_pending, 'lost target should wait, not finish');
+  exp_tick(a('70'), t0 + 50000); exp_tick(a('70'), t0 + 80000); exp_tick(a('70'), t0 + 111000);
+  const res = store.zte_exp_results; assert(res && res.length == 1 && res[0].result == 'ok' && res[0].lte_rsrp == -80 && res[0].rx_mbit == 1, JSON.stringify(res)); });
 
 console.log(fails ? fails + ' FAILED' : 'ALL PASSED');
 process.exit(fails ? 1 : 0);
