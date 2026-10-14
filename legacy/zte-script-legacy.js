@@ -7,7 +7,7 @@
  * 
  */
 
-console.log("Loading ZTE Script v" + "2026-10-08-#4");
+console.log("Loading ZTE Script v" + "2026-10-14-#6");
 
 siginfo =
     "wan_active_band,wan_active_channel,wan_lte_ca,wan_apn,wan_ipaddr," +
@@ -273,23 +273,28 @@ function have_admin_password_hash()
     return cookies.get("admin_password_hash") !== null;
 }
 
+// macOS app: hidden-answer native dialog (api.ask, no time limit); browser / other apps: prompt()
+function ask_password(callback)
+{
+    var api = window.pywebview && window.pywebview.api;
+    if (api && api.ask && window.app_ask) api.ask("Router Password", "").then(callback);
+    else callback(prompt("Router Password"));
+}
+
 function perform_login(successCallback, developer_login = false, save_password_hash = false)
 {
-    var password_hash = "";
-
     if (have_admin_password_hash())
-        password_hash = cookies.get("admin_password_hash");
+        return perform_login_hash(cookies.get("admin_password_hash"), successCallback, developer_login, save_password_hash);
 
-    if (password_hash == "")
-    {
-        var password = prompt("Router Password");
-
+    ask_password(function(password) {
         if (password == null || password == "")
             return;
+        perform_login_hash(SHA256(password), successCallback, developer_login, save_password_hash);
+    });
+}
 
-        password_hash = SHA256(password);
-    }
-
+function perform_login_hash(password_hash, successCallback, developer_login, save_password_hash)
+{
     $.ajax({
         type: "GET",
         url: "/goform/goform_get_cmd_process",
@@ -1063,15 +1068,22 @@ function align_fast(on)
  *  "m:<key>"  one metric: faster + higher beeps for better values, double chirp on a new best.
  * A "new best" is +0.5 dB over the best 3 s average since the tone / reset / mode change.
  */
-var TONE_LEGEND = {
-    dual: "pair of beeps: high = 5G SINR, low = LTE SINR; faster = the one further from its target (5G 15 dB, LTE 6 dB) gets closer; steady tone = both reached. " +
-          "Chirp up = 5G best, chirp down = LTE best, 3-note chime = both at best.",
-    qsinr: "one tone: ZTE quality sets the pitch step (one step per level), 5G SINR moves it slightly within the step and sets the speed (faster = closer to 15 dB). " +
-           "3-note chime = quality level up, rising chirp = new 5G SINR best, steady tone = quality 4 and 5G SINR >= 15 dB.",
-    balance: "target rx0 - rx1 = 0: steady tone = balanced (within 2 / 1 / 0.5 dB by resolution). Low beeps = rx0 stronger, high beeps = rx1 stronger; faster = closer to balanced.",
-    quality: "ZTE's own 0-4 grade (what the ZTE installer app aligns with): one pitch step and faster beeps per level, steady tone = 4 (Excellent+), chirp = level up.",
-    metric: "faster = closer to target (5G SINR 20 dB, LTE SINR 6 dB, RSRQ -10 dB, RSRP -70 dBm); steady tone = target reached; double chirp = new best."
-};
+// legend text from the current targets (they are editable)
+function tone_legend(mode)
+{
+    var T = function(k) { return TONE_TARGET[k][1]; };
+    var key = mode == "m:quality" ? "quality" : (mode.indexOf("m:") == 0 ? "metric" : mode);
+    return {
+        dual: "pair of beeps: high = 5G SINR, low = LTE SINR; faster = the one further from its target (5G " + T("dual_nr_sinr") + " dB, LTE " + T("dual_lte_sinr") +
+              " dB) gets closer; steady tone = both reached. Chirp up = 5G best, chirp down = LTE best, 3-note chime = both at best.",
+        qsinr: "one tone: ZTE quality sets the pitch step (one step per level), 5G SINR moves it slightly within the step and sets the speed (faster = closer to " +
+               T("dual_nr_sinr") + " dB). 3-note chime = quality level up, rising chirp = new 5G SINR best, steady tone = quality 4 and 5G SINR >= " + T("dual_nr_sinr") + " dB.",
+        balance: "target rx0 - rx1 = 0: steady tone = balanced (within 2 / 1 / 0.5 dB by resolution). Low beeps = rx0 stronger, high beeps = rx1 stronger; faster = closer to balanced.",
+        quality: "ZTE's own 0-4 grade (what the ZTE installer app aligns with): one pitch step and faster beeps per level, steady tone = 4 (Excellent+), chirp = level up.",
+        metric: "faster = closer to target (5G SINR " + T("nr_sinr") + " dB, LTE SINR " + T("lte_sinr") + " dB, RSRQ " + T("rsrq") + " dB, RSRP " + T("rsrp") +
+                " dBm); steady tone = target reached; double chirp = new best."
+    }[key];
+}
 
 function tone_toggle(on)
 {
@@ -1085,7 +1097,7 @@ function tone_set_mode(mode)
 {
     tools.tone_mode = mode;
     if (tools.tone) { tools.tone.peaks = {}; tone_hold(0); }
-    $("#tone_legend").html(TONE_LEGEND[mode == "m:quality" ? "quality" : (mode.indexOf("m:") == 0 ? "metric" : mode)]);
+    $("#tone_legend").html(tone_legend(mode));
 }
 
 function tone_beep(freq, start, len)
@@ -1147,6 +1159,57 @@ function tone_set_res(res)
  */
 // [floor, target] per value - edit to taste. LTE SINR is typically several dB below 5G here, so its target is lower.
 var TONE_TARGET = { nr_sinr: [-10, 20], lte_sinr: [-10, 6], rsrq: [-20, -10], rsrp: [-120, -70], dual_nr_sinr: [-10, 15], dual_lte_sinr: [-10, 6] };
+
+// Editable targets (alignment box, saved in localStorage "zte_tone_targets"): [key, label]. Floors stay fixed.
+var TONE_TARGET_DEFAULT = JSON.parse(JSON.stringify(TONE_TARGET));
+var TONE_TARGET_EDIT = [["dual_nr_sinr", "5G+LTE mode: 5G SINR"], ["dual_lte_sinr", "LTE SINR"],
+                        ["nr_sinr", "single metric: 5G SINR"], ["lte_sinr", "LTE SINR"], ["rsrq", "RSRQ"], ["rsrp", "RSRP"]];
+
+// saved targets over the defaults; anything missing / not a number / not above the floor -> default
+function tone_targets_load(saved)
+{
+    TONE_TARGET_EDIT.forEach(function(e) {
+        var k = e[0], s = saved ? saved[k] : undefined, v = Number(s);
+        var ok = s !== undefined && s !== null && String(s).trim() !== "" && isFinite(v) && v > TONE_TARGET_DEFAULT[k][0];
+        TONE_TARGET[k] = [TONE_TARGET_DEFAULT[k][0], ok ? v : TONE_TARGET_DEFAULT[k][1]];
+    });
+}
+
+// false = rejected (empty, not a number, not above the floor) - the input then shows the current value again
+function tone_target_set(k, v)
+{
+    var n = Number(v);
+    if (!TONE_TARGET[k] || String(v).trim() === "" || !isFinite(n) || n <= TONE_TARGET[k][0]) return false;
+    TONE_TARGET[k][1] = n;
+    var s = {};
+    TONE_TARGET_EDIT.forEach(function(e) { s[e[0]] = TONE_TARGET[e[0]][1]; });
+    tools_save("zte_tone_targets", s);
+    return true;
+}
+
+function tone_targets_html()
+{
+    return TONE_TARGET_EDIT.map(function(e) {
+        return "<label>" + e[1] + " <input type=number step=1 style='width:4.5em' value='" + TONE_TARGET[e[0]][1] +
+               "' title='above " + TONE_TARGET[e[0]][0] + "' onchange='tone_target_input(\"" + e[0] + "\", this)'></label>";
+    }).join(" ") + " <a onclick='tone_targets_reset()'>defaults</a>";
+}
+
+function tone_target_input(k, el)
+{
+    if (!tone_target_set(k, el.value)) el.value = TONE_TARGET[k][1];
+    tone_targets_render(false);
+}
+
+function tone_targets_reset() { tools_save("zte_tone_targets", {}); tone_targets_load({}); tone_targets_render(true); }
+
+tone_targets_load(tools_store("zte_tone_targets", {}));
+
+function tone_targets_render(inputs)
+{
+    if (inputs) $("#tone_targets").html(tone_targets_html());
+    $("#tone_legend").html(tone_legend(tools.tone_mode));
+}
 
 function tone_range(key, dual)
 {
@@ -2864,8 +2927,9 @@ function inject_html()
                 </select>
                 &nbsp;&nbsp;
                 <a onclick="tools_reset()">Reset start/peak</a> | <a onclick="position_save()">Save position</a>
-                <div style="font-size:11px">Tone: <span id="tone_legend">${TONE_LEGEND.dual}</span>
+                <div style="font-size:11px">Tone: <span id="tone_legend">${tone_legend("dual")}</span>
                     High / very high resolution: pitch is relative to the reference set by Reset start/peak (1 dB = 2 / 4 semitones).</div>
+                <div style="font-size:11px">Tone targets (dB / dBm): <span id="tone_targets">${tone_targets_html()}</span></div>
                 <div class="spacing_links"></div>
                 Antenna branches: <span class="branch_warn"></span>
                 <table class="tools_table" id="align_table"></table>

@@ -118,5 +118,43 @@ t('lock experiment: delay, lost target waits, completes after 60 s', () => {
   exp_tick(a('70'), t0 + 50000); exp_tick(a('70'), t0 + 80000); exp_tick(a('70'), t0 + 111000);
   const res = store.zte_exp_results; assert(res && res.length == 1 && res[0].result == 'ok' && res[0].lte_rsrp == -80 && res[0].rx_mbit == 1, JSON.stringify(res)); });
 
-console.log(fails ? fails + ' FAILED' : 'ALL PASSED');
-process.exit(fails ? 1 : 0);
+t('editable tone targets (ZTE defaults 5G 15 / LTE 6), legend follows', () => {
+  for (const f of ['tone_targets_load', 'tone_target_set', 'tone_legend']) eval('global.' + f + '=' + grab(f).replace('function ' + f, 'function'));
+  global.TONE_TARGET_DEFAULT = JSON.parse(JSON.stringify(TONE_TARGET));
+  eval(src.match(/var TONE_TARGET_EDIT[\s\S]*?\]\];/)[0].replace(/^var /, 'global.'));
+  let saved = null; const save0 = global.tools_save; global.tools_save = (n, v) => { saved = [n, v]; };
+  tone_targets_load({});
+  assert.ok(tone_legend('dual').includes('(5G 15 dB, LTE 6 dB)') && tone_legend('m:nr_sinr').includes('5G SINR 20 dB'));
+  assert.ok(tone_target_set('dual_nr_sinr', '18') && !tone_target_set('dual_lte_sinr', '-10'));
+  assert.ok(tone_legend('dual').includes('(5G 18 dB, LTE 6 dB)') && tone_legend('qsinr').includes('>= 18 dB'));
+  assert.strictEqual(saved[0], 'zte_tone_targets'); assert.strictEqual(saved[1].dual_nr_sinr, 18);
+  tone_targets_load({}); global.tools_save = save0; });
+
+// ---- login: saved hash = automatic, macOS app asks via api.ask (no 10 s limit), browser via prompt() ----
+for (const f of ['ask_password', 'perform_login', 'have_admin_password_hash']) eval('global.' + f + '=' + grab(f).replace('function ' + f, 'function'));
+const loginRun = async (cookie, app, answer) => {
+  const calls = [], asked = [];
+  global.cookies = { get: k => (k == 'admin_password_hash' ? cookie : null) };
+  global.SHA256 = s => 'sha(' + s + ')';
+  global.perform_login_hash = (h, ok, dev, save) => calls.push([h, save]);
+  global.prompt = m => { asked.push('prompt:' + m); return answer; };
+  global.window = app ? { app_ask: true, pywebview: { api: { ask: async m => { asked.push('ask:' + m); return answer; } } } } : {};
+  perform_login(() => {}, false, true);
+  await new Promise(r => setTimeout(r, 0));
+  return { calls, asked };
+};
+(async () => {
+  const cases = [
+    ['saved hash: logs in without asking', async () => { const r = await loginRun('abc', true, 'x');
+      assert.deepStrictEqual(r.calls, [['abc', true]]); assert.deepStrictEqual(r.asked, []); }],
+    ['macOS app: password via api.ask, hashed', async () => { const r = await loginRun(null, true, 'pw');
+      assert.deepStrictEqual(r.asked, ['ask:Router Password']); assert.deepStrictEqual(r.calls, [['sha(pw)', true]]); }],
+    ['browser: password via prompt()', async () => { const r = await loginRun(null, false, 'pw');
+      assert.deepStrictEqual(r.asked, ['prompt:Router Password']); assert.deepStrictEqual(r.calls, [['sha(pw)', true]]); }],
+    ['cancel / empty: no login', async () => { assert.deepStrictEqual((await loginRun(null, true, null)).calls, []);
+      assert.deepStrictEqual((await loginRun(null, false, '')).calls, []); }],
+  ];
+  for (const [name, fn] of cases) { try { await fn(); console.log('ok   ', name); } catch (e) { fails++; console.log('FAIL ', name, '-', e.message); } }
+  console.log(fails ? fails + ' FAILED' : 'ALL PASSED');
+  process.exit(fails ? 1 : 0);
+})();

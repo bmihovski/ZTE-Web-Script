@@ -10,7 +10,9 @@ Requirements: Node.js 18+ (no `npm install` needed), Python 3 for the app check.
 cd legacy
 node --check zte-script-legacy.js                  # syntax
 node tests/test_cmp.js zte-script-legacy.js        # logic: prints "ok"/"FAIL" per case, then ALL PASSED
-python3 app/zte_app.py --selftest                  # Mac app prompt bridge (no GUI, no router)
+node --check mikrotik-script.js
+node tests/test_mikrotik.js mikrotik-script.js     # MikroTik parsers + AT command builders
+python3 app/zte_app.py --selftest                  # Mac app prompt bridge, both router origins (no GUI, no router)
 ```
 
 `test_cmp.js` exits with code 1 when any case fails, so it can gate a commit:
@@ -33,6 +35,14 @@ Run all three after every edit of the script, before pasting it into Firefox or 
 - **Tones:** targets (RSRP -70 dBm, RSRQ -10 dB, 5G SINR 15/20 dB, LTE SINR 6 dB), closeness direction, relative pitch,
   rx0/rx1 direction, branch warning.
 - **Lock experiment:** waits through the reboot delay, waits again when the target cell is lost, records a 60 s result.
+- **MikroTik (`test_mikrotik.js`):** `ca-band`/`primary-band` parsing, `AT+QNWLOCK` answers (off, multi-cell, PCI 0), lock
+  input validation and AT commands, NR SCS, `cell-monitor` dedupe/sort (newest section wins, missing RSRP last),
+  colours for negative/zero/missing values, HTML escaping; antenna alignment: `AT+QENG`/`AT+QRSRP` parsing (NSA, LTE only,
+  SA, "no value" markers -140/-32768, SINR 0 kept), 3 s average / start / peak / 5 min window, change colours (no red -0.0),
+  rx-path branch warning, tone targets and closeness, saved positions (best per column, escaping) and CSV quoting.
+  Cell evaluations: serving cell from `primary-band`/`ca-band` (LTE, NSA 5G, SA), settle delay, waiting for the target,
+  60 s averages (SINR 0, negatives, bit/s -> Mbit/s), target lost restarts the minute, 3 min deadline.
+  Fixtures are real RouterOS 7.24.4 / RG520F answers (SA built from the Quectel field order).
 
 ## How it works
 
