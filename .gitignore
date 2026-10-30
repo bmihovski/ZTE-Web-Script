@@ -2,3 +2,12 @@
 /.DS_Store
 /legacy/app/__pycache__
 /legacy/app/dist/ZTE Helper.app/Contents
+/legacy/.DS_Store
+/legacy/mikrotik-keeper/.DS_Store
+/legacy/mikrotik-keeper/__pycache__
+/legacy/mikrotik-keeper/keeper/.DS_Store
+/legacy/mikrotik-keeper/keeper/__pycache__
+/legacy/mikrotik-keeper/keeper/devices/__pycache__
+/legacy/mikrotik-keeper/keeper/devices/zte/__pycache__
+/legacy/mikrotik-keeper/test/__pycache__
+/legacy/mikrotik-keeper/test/fixtures/__pycache__

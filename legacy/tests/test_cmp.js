@@ -130,6 +130,105 @@ t('editable tone targets (ZTE defaults 5G 15 / LTE 6), legend follows', () => {
   assert.strictEqual(saved[0], 'zte_tone_targets'); assert.strictEqual(saved[1].dual_nr_sinr, 18);
   tone_targets_load({}); global.tools_save = save0; });
 
+// ---- antenna mode sweep: scoring, cell-change detection, best applied, failure restores previous ----
+for (const f of ['ant_score', 'ant_best', 'ant_record', 'ant_apply', 'ant_sweep']) eval('global.' + f + '=' + (src.includes('async function ' + f + '(') ? 'async ' : '') + grab(f).replace('function ' + f, 'function'));
+vars(/var ANT_CONFIGS[\s\S]*?\n\];/);
+t('ant score: dual adds 5G + LTE SINR with signs, missing ranks last', () => {
+  assert.strictEqual(ant_score({ nr_sinr: 10.2, lte_sinr: -1.5 }, 'dual'), 8.7);
+  assert.strictEqual(ant_score({ nr_sinr: 10.2 }, 'dual'), undefined);
+  assert.strictEqual(ant_best([{ score: undefined }, { score: -3 }, { score: -0.5 }, { score: -7 }]), 2);
+  assert.strictEqual(ant_best([{ score: undefined }]), -1); });
+t('ant record: averages, hex PCI, cell change shown', () => {
+  const s = (pci, sinr) => ({ Z5g_SINR: sinr, lte_snr: '1.0', nr5g_action_channel: '636576', nr5g_pci: pci, lte_pci: '154', wan_active_channel: '3350' });
+  const r = ant_record({ label: 'x' }, [s('216', '10.0'), s('216', '9.0'), s('312', '-20.0')], 'nr_sinr');
+  assert.strictEqual(r.nr_sinr, 9.5, 'no-value marker -20.0 must be skipped');
+  assert.strictEqual(r.nr_cell, '636576/534 > 636576/786'); assert.strictEqual(r.lte_cell, '3350/340'); assert.strictEqual(r.score, 9.5); });
+const sweepRun = async (failAt) => {
+  const store = {}, calls = []; let cur = { auto: 1, rx0: 1, rx1: 1 };
+  global.tools_store = (n, d) => (n in store ? store[n] : d); global.tools_save = (n, v) => { store[n] = v; };
+  global.ANT_SETTLE_MS = 0; global.ANT_MEASURE_MS = 3; global.ALIGN_CMD = 'x'; global.ant = { busy: false, stop: false };
+  global.confirm = () => true; global.ant_sleep = () => Promise.resolve(); global.ant_render = () => {}; global.ant_read = () => {};
+  global.$ = sel => ({ html(v) { html[sel] = v; }, val: () => 'dual', text: () => '5G + LTE SINR', length: 1 });
+  global.zte_set = async d => { calls.push(d); if (failAt && calls.length == failAt) throw new Error('boom');
+    if (d.goformId == 'WAN_ANT_SWITCH_SET') cur.auto = +d.ant_switch_enable; else cur[d.antenna_name == '5' ? 'rx0' : 'rx1'] = +d.state; };
+  global.ant_get = async cmd => cmd == 'ant_switch_enable' ? { ant_switch_enable: '0' } : {
+    // antenna 6 directional is the winner in this fake world; antenna 5 directional is bad
+    Z5g_SINR: String(cur.rx0 == 4 ? 1 : (cur.rx1 == 4 ? 12 : 10)), lte_snr: String(cur.rx1 == 4 ? 0.5 : 1), nr5g_action_channel: '636576', nr5g_pci: '216' };
+  await ant_sweep();
+  return { store, calls, cur };
+};
+const antCases = [
+  ['ant sweep: measures 5 modes, applies the best (ant6 dir), saves results', async () => {
+    const r = await sweepRun(0), list = r.store.zte_ant_results;
+    assert.strictEqual(list.length, 5); assert.deepStrictEqual(r.cur, { auto: 0, rx0: 1, rx1: 4 });
+    assert(list[3].label.endsWith('BEST, applied') && list[3].score == 12.5, JSON.stringify(list[3]));
+    assert(list.every(x => x.goal == '5G + LTE SINR' && x.samples > 0)); assert(html['#ant_state'].includes('ant5 omni / ant6 dir')); }],
+  ['ant sweep: failure restores previous auto-select + omni/omni', async () => {
+    const r = await sweepRun(6);
+    assert.deepStrictEqual(r.cur, { auto: 0, rx0: 1, rx1: 1 }); assert(html['#ant_state'].includes('boom')); }],
+];
+
+// ---- 5G cells seen: time per cell, switches, gaps not counted, rx dropouts counted once per dropout, "no 5G" state ----
+t('5G cell log: switches, time, gaps, rx dropouts', () => {
+  for (const f of ['nr_key', 'nr_track', 'nr_rows']) eval('global.' + f + '=' + grab(f).replace('function ' + f, 'function'));
+  global.NR_EVENTS_MAX = 3; global.nr_render = () => {}; global.tools_save = () => {};
+  global.nr_log = { cells: {}, events: [], prev: null, t: 0, rx_dead: false, saved: Date.now() + 1e9 };
+  const s = (pci, sinr, rx1 = '-88', type = 'ENDC') => ({ network_type: type, nr5g_action_channel: '636576', nr5g_pci: pci.toString(16), Z5g_SINR: String(sinr), Z5g_rsrp: '-80', '5g_rx0_rsrp': '-83', '5g_rx1_rsrp': rx1 });
+  let t0 = 1e12; const at = (sec, a) => nr_track(a, t0 + sec * 1000);
+  at(0, s(534, 9)); at(1, s(534, 10)); at(2, s(534, 8, '-140')); at(3, s(534, 8, '-140')); at(4, s(534, 9)); at(5, s(534, 9, '-140'));
+  at(6, s(786, 0.5)); at(7, s(786, -0.5)); at(60, s(786, 0));          // 53 s gap -> only 5 s counted
+  at(61, { network_type: 'LTE-NSA', nr5g_action_channel: '', nr5g_pci: '' }); at(62, { network_type: 'LTE-NSA' }); at(63, s(534, 9));
+  const c = nr_log.cells;
+  assert.strictEqual(c['636576/534'].secs, 5); assert.strictEqual(c['636576/534'].rx_drops, 2, 'dropout counted once per -140 run');
+  assert.strictEqual(c['636576/534'].n_in, 1); assert.strictEqual(c['636576/534'].sinr_min, 8);
+  assert.strictEqual(c['636576/786'].secs, 6); assert.strictEqual(c['636576/786'].sinr_min, -0.5, 'negative SINR kept');
+  assert.strictEqual(c['no 5G'].secs, 1); assert.strictEqual(c['no 5G'].sinr_n, 0);
+  assert.deepStrictEqual(nr_log.events.map(e => e.from + '>' + e.to), ['636576/534>636576/786', '636576/786>no 5G', 'no 5G>636576/534']);
+  assert.strictEqual(nr_log.events[0].sinr_before, 9, 'SINR on the old cell just before the switch');
+  const rows = nr_rows(); assert.strictEqual(rows[0].cell, '636576/786'); assert.strictEqual(rows[0].share_pct, 50);
+  assert.strictEqual(rows.find(r => r.cell == '636576/534').avg_sinr, 8.86);
+  at(64, s(127, 5)); assert.strictEqual(nr_log.events.length, 3, 'event list capped'); });
+
+// ---- peak guide: rise -> new peaks, small noise silent, past the peak, back, confirmed after holding; negative values ----
+t('peak guide: new / past / back / confirmed, noise ignored, go-back seconds', () => {
+  for (const f of ['peak_step', 'peak_back_s']) eval('global.' + f + '=' + grab(f).replace('function ' + f, 'function'));
+  vars(/var PEAK_GUIDE[^\n]*\n/);
+  const g = {}, ev = [], t0 = 1e12;
+  const feed = (sec, v) => { const e = peak_step(g, v, t0 + sec * 1000); if (e) ev.push(sec + ':' + e); };
+  // LTE SINR sweep with negatives: -2 -> 2.4 (peak at 6 s) -> falls -> come back
+  [[0, -2], [1, -1.2], [2, -0.5], [3, 0.6], [4, 1.5], [5, 2.1], [6, 2.4], [7, 2.2], [8, 1.6], [9, 0.8], [10, 0.4]].forEach(([s, v]) => feed(s, v));
+  assert.deepStrictEqual(ev, ['1:new', '2:new', '3:new', '4:new', '5:new', '6:new', '9:past']);
+  assert.strictEqual(peak_back_s(g, t0 + 9000), 5, '3 s since the peak reading + 2 s lag');
+  feed(11, 1.2); feed(12, 2.0); feed(13, 2.1); feed(14, 1.8); feed(15, 2.0); feed(16, 2.2);
+  assert.deepStrictEqual(ev.slice(7), ['12:back'], 'back within 0.5 dB');
+  feed(17, 2.3); feed(18, 2.0); assert.deepStrictEqual(ev.slice(8), ['18:confirmed'], 'dip at 14 restarts the 3 s hold: 15 -> 18');
+  feed(19, 2.1); feed(20, 2.2); assert.strictEqual(ev.length, 9, 'no repeats while holding');
+  // noise around a plateau: small ups and downs (< drop) never announce "past"
+  const h = {}, e2 = []; [5, 5.2, 4.6, 5.1, 4.2, 5.0, 4.4].forEach((v, i) => { const e = peak_step(h, v, t0 + i * 1000); if (e) e2.push(e); });
+  assert.deepStrictEqual(e2, [], 'noise within 1.5 dB is silent');
+  assert.strictEqual(peak_step(h, NaN, t0), null); });
+
+// ---- RSSI: measured everywhere, but neutral (no green/red, no "best" highlight) ----
+t('RSSI rows are neutral; per-cell average RSSI in the 5G log', () => {
+  global.$ = sel => ({ html(v) { html[sel] = v; }, length: 1 });
+  tools.hist = { nr_rssi: [{ t: Date.now(), v: -70 }], lte_rssi: [{ t: Date.now(), v: -55 }] }; tools.base = { nr_rssi: -74, lte_rssi: -55 };
+  tools.peak = { nr_rssi: { v: -70, t: Date.now() }, lte_rssi: { v: -55, t: Date.now() } };
+  tools_render();
+  const row = html['#align_table'].split('</tr>').find(x => x.includes('5G RSSI'));
+  assert(row && row.includes("color:#999") && row.includes('+4.0'), 'RSSI +4 dB shown grey, not green: ' + row);
+  const h = records_table([{ time: 1, label: 'a', nr_rssi: -70, nr_sinr: 5 }, { time: 2, label: 'b', nr_rssi: -60, nr_sinr: 3 }], ['nr_rssi', 'nr_sinr'], 'x');
+  assert(!h.includes("color:#5c5'>-60") && h.includes("color:#5c5'>5"), 'no best highlight for RSSI, SINR still highlighted');
+  global.nr_log = { cells: {}, events: [], prev: null, t: 0, rx_dead: false, saved: Date.now() + 1e9 };
+  const a = r => ({ network_type: 'ENDC', nr5g_action_channel: '636576', nr5g_pci: '216', Z5g_SINR: '9', Z5g_rsrp: '-80', Z5g_rssi: r, '5g_rx0_rsrp': '-83', '5g_rx1_rsrp': '-88' });
+  nr_track(a('-74.0'), 1e12); nr_track(a('-70.0'), 1e12 + 1000);
+  assert.strictEqual(nr_rows()[0].avg_rssi, -72); });
+
+t('tone: RSSI options + wide RSSI range (no premature "done")', () => {
+  assert.deepStrictEqual(tone_range('nr_rssi', false), [-110, -30]); assert.deepStrictEqual(tone_range('lte_rssi', true), [-110, -30]);
+  assert.deepStrictEqual(tone_range('lte_rsrq', false), TONE_TARGET.rsrq); assert.deepStrictEqual(tone_range('nr_rsrp', false), TONE_TARGET.rsrp);
+  const opts = src.match(/ALIGN_METRICS\.filter\(\(m, i\) => i < 9 \|\| m\[4\] == "n"\)/); assert(opts, 'tone select includes the neutral RSSI metrics');
+  assert.deepStrictEqual(ALIGN_METRICS.filter((m, i) => i < 9 || m[4] == 'n').slice(-2).map(m => m[0]), ['nr_rssi', 'lte_rssi']); });
+
 // ---- login: saved hash = automatic, macOS app asks via api.ask (no 10 s limit), browser via prompt() ----
 for (const f of ['ask_password', 'perform_login', 'have_admin_password_hash']) eval('global.' + f + '=' + grab(f).replace('function ' + f, 'function'));
 const loginRun = async (cookie, app, answer) => {
@@ -154,7 +253,7 @@ const loginRun = async (cookie, app, answer) => {
     ['cancel / empty: no login', async () => { assert.deepStrictEqual((await loginRun(null, true, null)).calls, []);
       assert.deepStrictEqual((await loginRun(null, false, '')).calls, []); }],
   ];
-  for (const [name, fn] of cases) { try { await fn(); console.log('ok   ', name); } catch (e) { fails++; console.log('FAIL ', name, '-', e.message); } }
+  for (const [name, fn] of antCases.concat(cases)) { try { await fn(); console.log('ok   ', name); } catch (e) { fails++; console.log('FAIL ', name, '-', e.message); } }
   console.log(fails ? fails + ' FAILED' : 'ALL PASSED');
   process.exit(fails ? 1 : 0);
 })();

@@ -1,0 +1,417 @@
+{
+ "_help": "Fill from CellMapper (Yettel BG = MCC 284 / MNC 05). One entry per site (eNB). lat/lon = the tower position, azimuth = the direction a sector points to in degrees (0 = north, 90 = east), as CellMapper draws it. Add every LTE and 5G cell you see on that site. Unknown values: leave null.",
+ "zte": {
+  "lat": 42.626118,
+  "lon": 23.384814,
+  "note": "from the ZTE (TR-069 Device.DeviceInfo.Location)"
+ },
+ "sites": [
+  {
+   "enb": 1072,
+   "lat": 42.62140071939849,
+   "lon": 23.405000435799607,
+   "cells": [
+    {
+     "rat": "LTE",
+     "pci": 375,
+     "earfcn": [],
+     "azimuth": 274.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 475,
+     "earfcn": [],
+     "azimuth": 212.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 434,
+     "earfcn": [],
+     "azimuth": 234.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 375,
+     "earfcn": [],
+     "azimuth": 273.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 475,
+     "earfcn": [],
+     "azimuth": 287.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 434,
+     "earfcn": [],
+     "azimuth": 241.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 375,
+     "earfcn": [],
+     "azimuth": 285.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 475,
+     "earfcn": [],
+     "azimuth": 274.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 434,
+     "earfcn": [],
+     "azimuth": 279.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 77,
+     "earfcn": [],
+     "azimuth": 349.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 200,
+     "earfcn": [],
+     "azimuth": 198.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 77,
+     "earfcn": [],
+     "azimuth": 278.0
+    }
+   ]
+  },
+  {
+   "enb": 1172,
+   "lat": 42.634100579987646,
+   "lon": 23.379300265635315,
+   "cells": []
+  },
+  {
+   "enb": 1191,
+   "lat": 42.61370096343538,
+   "lon": 23.363300600340157,
+   "cells": []
+  },
+  {
+   "enb": 1195,
+   "lat": 42.6354009608752,
+   "lon": 23.40210096190393,
+   "cells": []
+  },
+  {
+   "enb": 1197,
+   "lat": 42.62600021610141,
+   "lon": 23.378700304240905,
+   "cells": []
+  },
+  {
+   "enb": 1243,
+   "lat": 42.628400760760385,
+   "lon": 23.379800969242623,
+   "cells": [
+    {
+     "rat": "LTE",
+     "pci": 340,
+     "earfcn": [],
+     "azimuth": 132.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 137,
+     "earfcn": [],
+     "azimuth": 227.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 9,
+     "earfcn": [],
+     "azimuth": 13.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 340,
+     "earfcn": [],
+     "azimuth": 136.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 137,
+     "earfcn": [],
+     "azimuth": 239.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 9,
+     "earfcn": [],
+     "azimuth": 6.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 340,
+     "earfcn": [],
+     "azimuth": 54.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 137,
+     "earfcn": [],
+     "azimuth": 233.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 398,
+     "earfcn": [],
+     "azimuth": 153.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 121,
+     "earfcn": [],
+     "azimuth": 137.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 65,
+     "earfcn": [],
+     "azimuth": 238.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 398,
+     "earfcn": [],
+     "azimuth": 5.0
+    }
+   ]
+  },
+  {
+   "enb": 1263,
+   "lat": 42.63270042400969,
+   "lon": 23.373400987520835,
+   "cells": []
+  },
+  {
+   "enb": 1265,
+   "lat": 42.632500199246856,
+   "lon": 23.40940085932487,
+   "cells": [
+    {
+     "rat": "LTE",
+     "pci": 103,
+     "earfcn": [],
+     "azimuth": 330.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 462,
+     "earfcn": [],
+     "azimuth": 252.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 103,
+     "earfcn": [],
+     "azimuth": 329.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 202,
+     "earfcn": [],
+     "azimuth": 267.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 103,
+     "earfcn": [],
+     "azimuth": 314.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 462,
+     "earfcn": [],
+     "azimuth": 253.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 202,
+     "earfcn": [],
+     "azimuth": 306.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 49,
+     "earfcn": [],
+     "azimuth": 264.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 49,
+     "earfcn": [],
+     "azimuth": 351.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 397,
+     "earfcn": [],
+     "azimuth": 257.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 24,
+     "earfcn": [],
+     "azimuth": 290.0
+    }
+   ]
+  },
+  {
+   "enb": 1438,
+   "lat": 42.617700174306876,
+   "lon": 23.360700876521314,
+   "cells": []
+  },
+  {
+   "enb": 1475,
+   "lat": 42.62710073953644,
+   "lon": 23.374000458710682,
+   "cells": []
+  },
+  {
+   "enb": 1512,
+   "lat": 42.62950039304206,
+   "lon": 23.36500079059203,
+   "cells": []
+  },
+  {
+   "enb": 1546,
+   "lat": 42.62190088050336,
+   "lon": 23.41950060335165,
+   "cells": []
+  },
+  {
+   "enb": 1554,
+   "lat": 42.613100826793804,
+   "lon": 23.414500676996028,
+   "cells": [
+    {
+     "rat": "LTE",
+     "pci": 277,
+     "earfcn": [],
+     "azimuth": 9.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 181,
+     "earfcn": [],
+     "azimuth": 8.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 66,
+     "earfcn": [],
+     "azimuth": 8.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 277,
+     "earfcn": [],
+     "azimuth": 192.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 307,
+     "earfcn": [],
+     "azimuth": 10.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 66,
+     "earfcn": [],
+     "azimuth": 1.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 277,
+     "earfcn": [],
+     "azimuth": 16.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 307,
+     "earfcn": [],
+     "azimuth": 2.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 66,
+     "earfcn": [],
+     "azimuth": 4.0
+    }
+   ]
+  },
+  {
+   "enb": 1580,
+   "lat": 42.628100927574756,
+   "lon": 23.40670059690686,
+   "cells": [
+    {
+     "rat": "LTE",
+     "pci": 356,
+     "earfcn": [],
+     "azimuth": 7.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 484,
+     "earfcn": [],
+     "azimuth": 1.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 173,
+     "earfcn": [],
+     "azimuth": 255.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 318,
+     "earfcn": [],
+     "azimuth": 181.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 173,
+     "earfcn": [],
+     "azimuth": 253.0
+    },
+    {
+     "rat": "LTE",
+     "pci": 496,
+     "earfcn": [],
+     "azimuth": 186.0
+    }
+   ]
+  },
+  {
+   "enb": 1637,
+   "lat": 42.61760098477612,
+   "lon": 23.399800218668116,
+   "cells": []
+  },
+  {
+   "enb": 1696,
+   "lat": 42.622700918573365,
+   "lon": 23.37780017416615,
+   "cells": []
+  },
+  {
+   "enb": 1978,
+   "lat": 42.62160090723527,
+   "lon": 23.369700851193958,
+   "cells": []
+  }
+ ]
+}

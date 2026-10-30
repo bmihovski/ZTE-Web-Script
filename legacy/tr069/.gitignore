@@ -1,0 +1,3 @@
+# dumps and raw logs hold IMEI / IMSI / ICCID - keep them out of git
+tr069-dump-*.csv
+tr069-raw.log

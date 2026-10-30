@@ -1,0 +1,13 @@
+# local test runs: raw TR-069 logs hold IMEI / IMSI / ICCID
+keeper/data*/
+data*/
+
+# CellMapper HAR exports contain your login cookies
+*.har
+
+# generated API docs (pdoc keeper -o docs/api), test caches
+docs/api/
+.pytest_cache/
+_to_delete/
+cpu-*.log
+config-*.txt

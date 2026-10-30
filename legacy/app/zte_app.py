@@ -79,6 +79,10 @@ CONFIG = load_config()
 ROUTER = CONFIG["zte"]
 MT_ROUTER = CONFIG["mikrotik"]
 ORIGINS = {ROUTER, MT_ROUTER}  # + any address opened from the launcher
+KEEPER = origin(os.environ.get("ZTE_KEEPER", "http://192.168.6.250:7557"))  # zte-keeper API (MikroTik container), read by the ZTE page
+KEEPER_PATH = re.compile(r"^/(status|report|events|cells|anchors|antennas|antenna-sweeps|antenna-sweep|lock-tests|lock-test-continue|lock-test-skip|lock-test-stop|lock-test|lte-lock|nr-lock|userdata|cell-ids)(\?[A-Za-z0-9_=&.@,;]*)?$")
+KEEPER_BOTH = ("/userdata", "/cell-ids")      # read and written by the app (its lists live in the keeper's database)
+KEEPER_WRITES = ("/antennas", "/antenna-sweep", "/lock-test", "/lock-test-continue", "/lock-test-skip", "/lock-test-stop", "/lte-lock", "/nr-lock")    # the only POSTs
 HERE = Path(__file__).resolve().parent
 TOKEN = secrets.token_urlsafe(16)
 DEBUG = "--debug" in sys.argv
@@ -122,6 +126,24 @@ class JsApi:
         req = urllib.request.Request(origin + path, data=data, method=method, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=30) as r:  # cell-monitor alone takes 5 s
+                return {"status": r.status, "text": r.read().decode("utf-8", "replace")}
+        except urllib.error.HTTPError as e:
+            return {"status": e.code, "text": e.read().decode("utf-8", "replace")}
+        except Exception as e:
+            return {"status": 0, "text": "%s: %s" % (type(e).__name__, e)}
+
+    def keeper(self, method, path, body=None):
+        """zte-keeper API call made by Python for the Keeper panel: WKWebView's cross-origin fetch to it fails in the app
+        ("Load failed") while Chrome is fine. Only the keeper origin, its read paths and POST /antenna-sweep. Returns {status, text}."""
+        path = str(path)
+        p = path.split("?")[0]
+        if not KEEPER_PATH.match(path) or (p not in KEEPER_BOTH and (method, p in KEEPER_WRITES) not in (("GET", False), ("POST", True))) \
+                or method not in ("GET", "POST") or (body is not None and (method != "POST" or p not in KEEPER_BOTH or len(str(body)) > 4000000)):
+            return {"status": 0, "text": "refused"}
+        req = urllib.request.Request(KEEPER + path, data=(str(body) if body is not None else "").encode() if method == "POST" else None, method=method,
+                                     headers={"Content-Type": "text/plain"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
                 return {"status": r.status, "text": r.read().decode("utf-8", "replace")}
         except urllib.error.HTTPError as e:
             return {"status": e.code, "text": e.read().decode("utf-8", "replace")}
@@ -369,14 +391,15 @@ def main():
         ORIGINS.add(o)  # the prompt bridge accepts this router's page
         threading.Thread(target=probe, args=(o + probe_path,), daemon=True).start()
         api = JsApi()
-        window = webview.create_window("%s Helper - %s" % (title, o.split("://", 1)[1]), o + path, width=1280, height=900, js_api=api)
+        window = webview.create_window("%s Helper - %s" % (title, o.split("://", 1)[1]), o + path, width=1600, height=1000, js_api=api,
+                                       text_select=True)   # pywebview disables selecting / copying text by default
         window.events.loaded += injector(window, o, shim + find_script(script) + "\n;true", api)
 
     picked = [k for k in ROUTERS if "--" + k in sys.argv]
     for k in picked:  # --zte / --mikrotik: straight to that router (address from routers.json / env)
         open_router(k, CONFIG[k])
     if not picked:
-        webview.create_window("Router Helper", html=LAUNCHER_HTML, width=480, height=340, js_api=Launcher(open_router))
+        webview.create_window("Router Helper", html=LAUNCHER_HTML, width=480, height=340, js_api=Launcher(open_router), text_select=True)
     webview.settings["ALLOW_DOWNLOADS"] = True  # CSV export from the alignment tools
     # persistent cookies -> "Enable Automatic Login" survives restarts
     webview.start(debug=DEBUG, private_mode=False, storage_path=str(STORAGE))
@@ -456,6 +479,40 @@ def selftest():
     assert JsApi().rest(fo, "HEAD", "/rest/x")["text"] == "refused"
     fr.shutdown()
     ORIGINS.discard(fo)
+
+    class FakeKeeper(BaseHTTPRequestHandler):  # zte-keeper API: echoes method + path
+        def _go(self):
+            out = json.dumps({"m": self.command, "p": self.path}).encode()
+            self.send_response(202 if self.command == "POST" else 200)
+            self.end_headers()
+            self.wfile.write(out)
+        do_GET = do_POST = _go
+
+        def log_message(self, *a):
+            pass
+
+    global KEEPER
+    fk = ThreadingHTTPServer(("127.0.0.1", 0), FakeKeeper)
+    threading.Thread(target=fk.serve_forever, daemon=True).start()
+    real_keeper, KEEPER = KEEPER, "http://127.0.0.1:%d" % fk.server_address[1]
+    r = JsApi().keeper("GET", "/report?hours=24")
+    assert r["status"] == 200 and json.loads(r["text"]) == {"m": "GET", "p": "/report?hours=24"}, r
+    assert JsApi().keeper("GET", "/status")["status"] == 200 and JsApi().keeper("GET", "/events?n=15")["status"] == 200
+    assert JsApi().keeper("POST", "/antenna-sweep")["status"] == 202                         # the writes
+    assert JsApi().keeper("POST", "/lock-test?cells=434@1550,340@100")["status"] == 202
+    assert JsApi().keeper("GET", "/lock-tests")["status"] == 200 and JsApi().keeper("GET", "/lock-test")["text"] == "refused"
+    assert JsApi().keeper("POST", "/lock-test?cells=434@1550|rm")["text"] == "refused"
+    assert JsApi().keeper("GET", "/lte-lock")["text"] == "refused" and JsApi().keeper("POST", "/lte-lock?cell=1@2", "x")["text"] == "refused"   # body only for app data
+    assert JsApi().keeper("POST", "/userdata?name=zte_positions", "[]")["text"] != "refused" and JsApi().keeper("GET", "/cell-ids")["text"] != "refused"
+    assert JsApi().keeper("POST", "/lte-lock?cell=434@1550")["status"] == 202 and JsApi().keeper("GET", "/cells")["status"] == 200
+    assert JsApi().keeper("POST", "/lock-test-continue?heading=108")["status"] == 202 and JsApi().keeper("POST", "/lock-test?cells=434@1550&align=1")["status"] == 202
+    assert JsApi().keeper("GET", "/anchors")["status"] == 200 and JsApi().keeper("GET", "/lte-lock?cell=none")["text"] == "refused"
+    assert JsApi().keeper("GET", "/antenna-sweep")["text"] == "refused"                       # write path, GET
+    assert JsApi().keeper("POST", "/status")["text"] == "refused"                              # read path, POST
+    for bad in ("/", "/../etc/passwd", "http://evil.example/status", "/status/x", "/report?h=<x>"):
+        assert JsApi().keeper("GET", bad)["text"] == "refused", bad
+    fk.shutdown()
+    KEEPER = real_keeper
     with tempfile.TemporaryDirectory() as d:
         f, opened = Path(d) / "routers.json", []
         la = Launcher(lambda k, o: opened.append((k, o)), f)

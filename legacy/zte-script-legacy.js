@@ -7,7 +7,7 @@
  * 
  */
 
-console.log("Loading ZTE Script v" + "2026-10-14-#6");
+console.log("Loading ZTE Script v" + "2026-10-27-#26");
 
 siginfo =
     "wan_active_band,wan_active_channel,wan_lte_ca,wan_apn,wan_ipaddr," +
@@ -137,6 +137,12 @@ function wait_for_log_in()
             load_device_extras();
             positions_render();
             exp_render();
+            ant_render();
+            ant_read();
+            nr_render();
+            keeper_poll();
+            keeper_sync_pull();
+            window.setInterval(keeper_poll, 60000);
 
             show_logout_and_shutdown_buttons_i = 0;
             show_logout_and_shutdown_buttons_timer_id = window.setInterval(function() {
@@ -955,21 +961,27 @@ function load_device_extras()
  */
 var TOOLS_HISTORY_MS = 5 * 60 * 1000;    // sparkline window
 var TOOLS_AVG_MS = 3000;                 // smoothing window for "now" (router values jump)
-var ALIGN_CMD = "Z5g_rsrp,Z5g_rsrq,Z5g_SINR,5g_rx0_rsrp,5g_rx1_rsrp,lte_rsrp,lte_rsrq,lte_snr,lte_rsrp_1,lte_rsrp_2,lte_rsrp_3,lte_rsrp_4," +
+var ALIGN_CMD = "Z5g_rsrp,Z5g_rsrq,Z5g_SINR,Z5g_rssi,5g_rx0_rsrp,5g_rx1_rsrp,lte_rsrp,lte_rsrq,lte_snr,lte_rssi,lte_rsrp_1,lte_rsrp_2,lte_rsrp_3,lte_rsrp_4," +
                 "network_type,wan_active_channel,lte_ca_pcell_freq,lte_pci,nr5g_action_channel,nr5g_pci,realtime_rx_thrpt,realtime_tx_thrpt,signal_quality";
-// [key, router field, label, unit]
+// [key, router field, label, unit, "n" = neutral: higher is not automatically better]
 var ALIGN_METRICS = [
     ["quality", "signal_quality", "ZTE quality (0-4)", "/4"],
     ["nr_sinr", "Z5g_SINR", "5G SINR", "dB"], ["nr_rsrp", "Z5g_rsrp", "5G RSRP", "dBm"], ["nr_rsrq", "Z5g_rsrq", "5G RSRQ", "dB"],
     ["nr_rx0", "5g_rx0_rsrp", "5G RSRP rx0", "dBm"], ["nr_rx1", "5g_rx1_rsrp", "5G RSRP rx1", "dBm"],
     ["lte_sinr", "lte_snr", "LTE SINR", "dB"], ["lte_rsrp", "lte_rsrp", "LTE RSRP", "dBm"], ["lte_rsrq", "lte_rsrq", "LTE RSRQ", "dB"],
     ["lte_p1", "lte_rsrp_1", "LTE RSRP port 1", "dBm"], ["lte_p2", "lte_rsrp_2", "LTE RSRP port 2", "dBm"],
-    ["lte_p3", "lte_rsrp_3", "LTE RSRP port 3", "dBm"], ["lte_p4", "lte_rsrp_4", "LTE RSRP port 4", "dBm"]
+    ["lte_p3", "lte_rsrp_3", "LTE RSRP port 3", "dBm"], ["lte_p4", "lte_rsrp_4", "LTE RSRP port 4", "dBm"],
+    // RSSI = all power on the channel: wanted signal + interference + other users' traffic, so a rise can also mean more interference
+    ["nr_rssi", "Z5g_rssi", "5G RSSI", "dBm", "n"], ["lte_rssi", "lte_rssi", "LTE RSSI", "dBm", "n"]
 ];
 var tools = { hist: {}, base: {}, peak: {}, fast_timer: null, tone: null, tone_mode: "dual", tone_res: "high" };
 
 function tools_store(name, def) { try { var v = JSON.parse(localStorage.getItem(name)); return v === null ? def : v; } catch (e) { return def; } }
-function tools_save(name, v) { try { localStorage.setItem(name, JSON.stringify(v)); } catch (e) { console.log("localStorage unavailable", e); } }
+function tools_save(name, v)
+{
+    try { localStorage.setItem(name, JSON.stringify(v)); } catch (e) { console.log("localStorage unavailable", e); }
+    if (typeof KEEPER_SYNC != "undefined" && KEEPER_SYNC.indexOf(name) >= 0) keeper_push(name, v);          // the keeper's database is the master copy, the browser a cache
+}
 
 function tools_num(field, v)
 {
@@ -1000,8 +1012,10 @@ function tools_feed(a)
         if (tools.peak[m[0]] === undefined || avg > tools.peak[m[0]].v) tools.peak[m[0]] = { v: avg, t: now };
     });
     exp_tick(a, now);
+    nr_track(a, now);
     tools_render();
     tone_update();
+    pg_update(now);
 }
 
 function sparkline(key)
@@ -1037,17 +1051,94 @@ function tools_render()
     ALIGN_METRICS.forEach(function(m) {
         var now = tools_avg(m[0]);
         if (isNaN(now) || tools.base[m[0]] === undefined || !tools.peak[m[0]]) return;
-        // every metric here is "higher = better" (e.g. -85 dBm beats -90 dBm, 2 dB beats -1 dB)
+        // every metric here is "higher = better" (e.g. -85 dBm beats -90 dBm, 2 dB beats -1 dB) - except the neutral RSSI rows (grey)
         var d = Math.round((now - tools.base[m[0]]) * 10) / 10, pk = tools.peak[m[0]];
-        html += "<tr><td>" + m[2] + "</td><td><b>" + now.toFixed(1) + "</b>&nbsp;" + m[3] + "</td>" +
-                "<td style='color:" + (d > 0 ? "#5c5" : (d < 0 ? "#e66" : "#999")) + "'>" + (d > 0 ? "+" : "") + (d == 0 ? "0.0" : d.toFixed(1)) + "</td>" +
+        html += "<tr><td>" + m[2] + (m[4] == "n" ? " <span title='total power incl. interference - higher is not automatically better'>(i)</span>" : "") +
+                "</td><td><b>" + now.toFixed(1) + "</b>&nbsp;" + m[3] + "</td>" +
+                "<td style='color:" + (m[4] == "n" || d == 0 ? "#999" : (d > 0 ? "#5c5" : "#e66")) + "'>" + (d > 0 ? "+" : "") + (d == 0 ? "0.0" : d.toFixed(1)) + "</td>" +
                 "<td title='" + new Date(pk.t).toLocaleTimeString() + "'>" + pk.v.toFixed(1) + "</td>" +
                 "<td>" + sparkline(m[0]) + "</td></tr>";
     });
     $("#align_table").html(html);
 }
 
-function tools_reset() { tools.base = {}; tools.peak = {}; if (tools.tone) tools.tone.peaks = {}; }
+/*
+ * Peak guide: tells you when you have passed the peak and brings you back to it.
+ * The reading lags the antenna (router ~1 s + the moving average), so the moment the value starts falling the best
+ * position is already behind you. The guide remembers when the peak was seen and says how far (in seconds of turning
+ * at the same speed) to go back, then confirms once you hold within `near` dB of the peak for `confirm_ms`.
+ */
+// dB (also used for dBm metrics). lag_s = router delay + half the average window - calibration knob, raise it if "go back" undershoots.
+var PEAK_GUIDE = { avg_ms: 2000, up: 0.3, near: 0.5, drop: 1.5, confirm_ms: 3000, lag_s: 2 };
+var pg = { on: false, key: "lte_sinr", voice: true, ctx: null, g: {} };
+
+// state machine on the averaged value: returns "new" | "past" | "back" | "confirmed" | null
+function peak_step(g, v, now)
+{
+    var P = PEAK_GUIDE;
+    if (isNaN(v)) return null;
+    if (!g.peak || v >= g.peak.v + P.up)
+    {
+        var first = !g.peak;
+        g.peak = { v: v, t: now }; g.state = "rise"; g.near_since = null; g.confirmed = false;
+        return first ? null : "new";
+    }
+    if (v > g.peak.v) g.peak = { v: v, t: now };                  // small rise: follow it quietly
+    if (v < g.peak.v - P.drop)
+    {
+        g.near_since = null;
+        if (g.state != "past") { g.state = "past"; g.past_at = now; return "past"; }
+        return null;
+    }
+    if (v >= g.peak.v - P.near)
+    {
+        if (g.state == "past") { g.state = "near"; g.near_since = now; return "back"; }
+        if (g.state == "rise") g.state = "near";
+        if (g.near_since === null) g.near_since = now;          // (re)start the hold timer when entering the near zone
+        if (!g.confirmed && now - g.near_since >= P.confirm_ms) { g.confirmed = true; return "confirmed"; }
+    }
+    else g.near_since = null;                                   // between near and drop: keep the state, restart the hold timer
+    return null;
+}
+
+// seconds of turning (at the same speed) back to where the peak reading came from
+function peak_back_s(g, now) { return g.peak ? Math.round((now - g.peak.t) / 1000 + PEAK_GUIDE.lag_s) : 0; }
+
+function pg_toggle(on)
+{
+    pg.on = on; pg.g = {};
+    if (on && !pg.ctx) pg.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    $("#peak_guide").html(on ? "sweep slowly across the whole range ..." : "");
+}
+
+function pg_set_key(k) { pg.key = k; pg.g = {}; }
+
+function pg_say(text)
+{
+    if (!pg.voice || !window.speechSynthesis) return;
+    try { window.speechSynthesis.cancel(); window.speechSynthesis.speak(new SpeechSynthesisUtterance(text)); }
+    catch (e) { console.log("speech unavailable", e); }                 // sounds and the text line still work
+}
+
+function pg_update(now)
+{
+    if (!pg.on) return;
+    var v = tools_avg(pg.key, PEAK_GUIDE.avg_ms), g = pg.g, ev = peak_step(g, v, now);
+    if (isNaN(v) || !g.peak) return;
+    var m = ALIGN_METRICS.filter(function(x) { return x[0] == pg.key; })[0], u = m ? " " + m[3] : "", f = function(x) { return x.toFixed(1); };
+    var txt = { rise: "&#9650; rising - peak " + f(g.peak.v) + u,
+                near: (g.confirmed ? "&#10004; PEAK " : "&#9679; at peak ") + f(v) + " / " + f(g.peak.v) + u + (g.confirmed ? " - stop here" : " - hold"),
+                past: "&#9660; past the peak by " + f(g.peak.v - v) + u + " - go back ~" + peak_back_s(g, now) + " s of turning" }[g.state] || "";
+    $("#peak_guide").html(txt);
+    if (!ev) return;
+    var t = pg.ctx ? pg.ctx.currentTime : 0;
+    if (pg.ctx) ({ new: [[2000, 0]], past: [[500, 0], [350, 0.15]], back: [[1200, 0], [1600, 0.08]], confirmed: [[1200, 0], [1600, 0.08], [2000, 0.16]] })[ev]
+        .forEach(function(b) { tone_beep(b[0], t + b[1], 0.07, pg.ctx); });
+    pg_say({ new: "new peak " + f(v), past: "past the peak, go back about " + peak_back_s(g, now) + " seconds",
+             back: "peak, hold", confirmed: "peak confirmed, " + f(g.peak.v) + ", stop here" }[ev]);
+}
+
+function tools_reset() { tools.base = {}; tools.peak = {}; if (tools.tone) tools.tone.peaks = {}; pg.g = {}; }
 
 function align_fast(on)
 {
@@ -1081,7 +1172,8 @@ function tone_legend(mode)
         balance: "target rx0 - rx1 = 0: steady tone = balanced (within 2 / 1 / 0.5 dB by resolution). Low beeps = rx0 stronger, high beeps = rx1 stronger; faster = closer to balanced.",
         quality: "ZTE's own 0-4 grade (what the ZTE installer app aligns with): one pitch step and faster beeps per level, steady tone = 4 (Excellent+), chirp = level up.",
         metric: "faster = closer to target (5G SINR " + T("nr_sinr") + " dB, LTE SINR " + T("lte_sinr") + " dB, RSRQ " + T("rsrq") + " dB, RSRP " + T("rsrp") +
-                " dBm); steady tone = target reached; double chirp = new best."
+                " dBm); steady tone = target reached; double chirp = new best. RSSI has no target (it includes interference): " +
+                "use High / Very high resolution - the pitch then follows its change from the reference."
     }[key];
 }
 
@@ -1100,9 +1192,9 @@ function tone_set_mode(mode)
     $("#tone_legend").html(tone_legend(mode));
 }
 
-function tone_beep(freq, start, len)
+function tone_beep(freq, start, len, c)
 {
-    var ctx = tools.tone.ctx, osc = ctx.createOscillator(), g = ctx.createGain();
+    var ctx = c || tools.tone.ctx, osc = ctx.createOscillator(), g = ctx.createGain();
     osc.frequency.value = freq;
     g.gain.setValueAtTime(0.0001, start);
     g.gain.exponentialRampToValueAtTime(0.08, start + 0.005);   // short ramps: no clicks
@@ -1158,7 +1250,8 @@ function tone_set_res(res)
  * so even small changes are audible on a weak signal.
  */
 // [floor, target] per value - edit to taste. LTE SINR is typically several dB below 5G here, so its target is lower.
-var TONE_TARGET = { nr_sinr: [-10, 20], lte_sinr: [-10, 6], rsrq: [-20, -10], rsrp: [-120, -70], dual_nr_sinr: [-10, 15], dual_lte_sinr: [-10, 6] };
+var TONE_TARGET = { nr_sinr: [-10, 20], lte_sinr: [-10, 6], rsrq: [-20, -10], rsrp: [-120, -70], rssi: [-110, -30], dual_nr_sinr: [-10, 15], dual_lte_sinr: [-10, 6] };
+// rssi: no real target (total power incl. interference) - a wide range so the steady "done" tone practically never plays; use High / Very high res
 
 // Editable targets (alignment box, saved in localStorage "zte_tone_targets"): [key, label]. Floors stay fixed.
 var TONE_TARGET_DEFAULT = JSON.parse(JSON.stringify(TONE_TARGET));
@@ -1214,6 +1307,7 @@ function tone_targets_render(inputs)
 function tone_range(key, dual)
 {
     if (key.indexOf("sinr") >= 0) return TONE_TARGET[(dual ? "dual_" : "") + key];
+    if (key.indexOf("rssi") >= 0) return TONE_TARGET.rssi;
     return key.indexOf("rsrq") >= 0 ? TONE_TARGET.rsrq : TONE_TARGET.rsrp;
 }
 
@@ -1367,7 +1461,7 @@ function lock_status_html()
 }
 
 /* ---- saved positions ---- */
-var POSITION_COLS = ["quality", "nr_sinr", "nr_rsrp", "nr_rsrq", "nr_rx0", "nr_rx1", "lte_sinr", "lte_rsrp", "lte_rsrq"];
+var POSITION_COLS = ["quality", "nr_sinr", "nr_rsrp", "nr_rsrq", "nr_rx0", "nr_rx1", "nr_rssi", "lte_sinr", "lte_rsrp", "lte_rsrq", "lte_rssi"];
 
 function position_save()
 {
@@ -1390,13 +1484,15 @@ function records_table(list, cols, del_fn)
 {
     // highlight the best value per column, only when the column actually differs
     var best = {};
+    var neutral = ALIGN_METRICS.filter(function(m) { return m[4] == "n"; }).map(function(m) { return m[0]; });
     cols.forEach(function(c) {
+        if (neutral.indexOf(c) >= 0) return;                               // RSSI: no "best" highlight
         var vs = list.map(function(r) { return r[c]; }).filter(function(v) { return typeof v == "number"; });
         if (vs.length > 1 && Math.max.apply(null, vs) != Math.min.apply(null, vs)) best[c] = Math.max.apply(null, vs);
     });
     var html = "<tr><th>TIME</th><th>LABEL</th>" + cols.map(function(c) {
         var m = ALIGN_METRICS.filter(function(x) { return x[0] == c; })[0];
-        return "<th>" + (m ? m[2].replace("RSRP ", "") : c.toUpperCase()) + "</th>";
+        return "<th>" + (m ? m[2].replace("RSRP ", "") : c.toUpperCase().replace(/_/g, "_<wbr>")) + "</th>";
     }).join("") + "<th></th></tr>";
     list.forEach(function(r, i) {
         html += "<tr><td>" + esc_html(r.time) + "</td><td>" + esc_html(r.label) + "</td>" + cols.map(function(c) {
@@ -1412,7 +1508,7 @@ function position_delete(i) { var l = tools_store("zte_positions", []); l.splice
 
 function csv_export(name, filename)
 {
-    var list = tools_store(name, []);
+    var list = Array.isArray(name) ? name : tools_store(name, []);
     if (!list.length) { alert("Nothing to export."); return; }
     var cols = [];
     list.forEach(function(r) { Object.keys(r).forEach(function(k) { if (cols.indexOf(k) < 0) cols.push(k); }); });
@@ -1493,7 +1589,7 @@ function exp_finish(p, rec)
     var list = tools_store("zte_exp_results", []);
     list.push(rec);
     tools_save("zte_exp_results", list);
-    try { localStorage.removeItem("zte_exp_pending"); } catch (e) {}
+    tools_save("zte_exp_pending", null);
     exp_run = null;
     $("#exp_state").html("last: " + esc_html(rec.label) + " - " + esc_html(rec.result));
     exp_render();
@@ -1501,6 +1597,407 @@ function exp_finish(p, rec)
 
 function exp_render() { $("#exp_table").html(records_table(tools_store("zte_exp_results", []), EXP_COLS.concat(["result"]), "exp_delete")); }
 function exp_delete(i) { var l = tools_store("zte_exp_results", []); l.splice(i, 1); tools_save("zte_exp_results", l); exp_render(); }
+
+/* ---- antenna mode (n78 BSP antenna switch): manual control + measured sweep ---- */
+// state 1 = omni, 4 = directional; n78 antennas are addressed by ID "5" and "6" ("9" is accepted but changes nothing on the MC889).
+// Labels use the IDs on purpose: tests 2026-10-23 showed antenna "6" directional raises 5g_rx0_rsrp, antenna "5" barely moves either rx value.
+// Tested 2026-10-23: auto-select off (ant_switch_enable=0) survives a reboot; omni/omni came back after reboot.
+var ANT_CONFIGS = [
+    { label: "Auto-select", auto: 1, rx0: 1, rx1: 1 },
+    { label: "ant5 omni / ant6 omni", auto: 0, rx0: 1, rx1: 1 },
+    { label: "ant5 dir / ant6 omni", auto: 0, rx0: 4, rx1: 1 },
+    { label: "ant5 omni / ant6 dir", auto: 0, rx0: 1, rx1: 4 },
+    { label: "ant5 dir / ant6 dir", auto: 0, rx0: 4, rx1: 4 }
+];
+var ANT_COLS = ["score", "nr_sinr", "lte_sinr", "quality", "nr_rsrp", "nr_rx0", "nr_rx1", "nr_rsrq", "nr_rssi", "lte_rsrp", "lte_rsrq", "lte_rssi", "nr_cell", "lte_cell", "samples"];
+var ANT_SETTLE_MS = 10000, ANT_MEASURE_MS = 20000;
+var ant = { busy: false, stop: false };
+
+function ant_sleep(ms) { return new Promise(function(r) { window.setTimeout(r, ms); }); }
+function ant_get(cmd) { return new Promise(function(ok, fail) { $.getJSON("/goform/goform_get_cmd_process", { cmd: cmd, multi_data: "1" }, ok).fail(fail); }); }
+
+function zte_set(data)
+{
+    return ant_get("wa_inner_version,cr_version,RD").then(function(a) {
+        data.isTest = "false";
+        data.AD = hash(hash(a.wa_inner_version + a.cr_version) + a.RD);
+        return new Promise(function(ok, fail) {
+            $.post("/goform/goform_set_cmd_process", data, function(r) {
+                try { if (typeof r == "string") r = JSON.parse(r); } catch (e) {}
+                if (r && r.result == "success") ok(r); else fail(new Error(data.goformId + " " + JSON.stringify(r)));
+            }).fail(function() { fail(new Error(data.goformId + " request failed")); });
+        });
+    });
+}
+
+async function ant_apply(c)
+{
+    await zte_set({ goformId: "WAN_ANT_SWITCH_SET", ant_switch_enable: "0" });
+    await zte_set({ goformId: "BSP_ANTENNA_STATE_SET", antenna_name: "5", state: String(c.rx0) });
+    await zte_set({ goformId: "BSP_ANTENNA_STATE_SET", antenna_name: "6", state: String(c.rx1) });
+    if (c.auto) await zte_set({ goformId: "WAN_ANT_SWITCH_SET", ant_switch_enable: "1" });
+}
+
+function ant_read()
+{
+    ant_get("ant_switch_enable,ant_switch_idx,ant_switch_state").then(function(a) {
+        $("#ant_now").html("auto-select <b>" + (a.ant_switch_enable == "1" ? "on" : (a.ant_switch_enable == "0" ? "off" : "?")) + "</b>" +
+            (a.ant_switch_idx ? ", last set: antenna " + esc_html(a.ant_switch_idx) + " = " + (a.ant_switch_state == "4" ? "directional" : (a.ant_switch_state == "1" ? "omni" : esc_html(a.ant_switch_state))) : ""));
+    }, function() { $("#ant_now").html("unreadable"); });
+}
+
+function ant_manual(data)
+{
+    if (ant.busy) return;
+    zte_set(data).then(ant_read, function(e) { alert(e.message + "\n\nLogged in? Directional/omni needs a normal admin login."); });
+}
+
+// value of a mode for the chosen goal; missing values rank last
+function ant_score(rec, metric)
+{
+    var v = metric == "dual" ? rec.nr_sinr + rec.lte_sinr : rec[metric];
+    return typeof v == "number" && !isNaN(v) ? +v.toFixed(2) : undefined;
+}
+
+function ant_best(list)
+{
+    var b = -1;
+    list.forEach(function(r, i) { if (typeof r.score == "number" && (b < 0 || r.score > list[b].score)) b = i; });
+    return b;
+}
+
+function ant_record(c, samples, metric)
+{
+    var rec = { label: c.label, samples: samples.length };
+    ALIGN_METRICS.forEach(function(m) {
+        var v = samples.map(function(a) { return tools_num(m[1], a[m[1]]); }).filter(function(x) { return !isNaN(x); });
+        if (v.length) rec[m[0]] = +(v.reduce(function(s, x) { return s + x; }, 0) / v.length).toFixed(2);
+    });
+    // every cell seen during the window - a change means the mode moved the router to another cell
+    var cells = function(f) {
+        var u = [];
+        samples.forEach(function(a) { var s = f(a); if (s && u.indexOf(s) < 0) u.push(s); });
+        return u.join(" > ");
+    };
+    rec.nr_cell = cells(function(a) { var p = parseInt(a.nr5g_pci, 16); return a.nr5g_action_channel && !isNaN(p) ? a.nr5g_action_channel + "/" + p : ""; });
+    rec.lte_cell = cells(function(a) { var p = parseInt(a.lte_pci, 16); var f = a.lte_ca_pcell_freq || a.wan_active_channel; return f && !isNaN(p) ? f + "/" + p : ""; });
+    rec.score = ant_score(rec, metric);
+    return rec;
+}
+
+async function ant_sweep()
+{
+    if (ant.busy) return;
+    var metric = $("#ant_metric").val(), n = ANT_CONFIGS.length;
+    if (!confirm("Measure " + n + " antenna modes, " + (ANT_SETTLE_MS + ANT_MEASURE_MS) / 1000 + " s each (~" + Math.ceil(n * (ANT_SETTLE_MS + ANT_MEASURE_MS) / 60000) +
+                 " min).\nDirectional modes can drop the 5G SINR or move you to another cell while they run.\nThe best mode is applied at the end. Continue?")) return;
+    ant.busy = true; ant.stop = false;
+    var before = await ant_get("ant_switch_enable").catch(function() { return {}; });
+    var results = [];
+    try
+    {
+        for (var i = 0; i < n; i++)
+        {
+            var c = ANT_CONFIGS[i], tag = "(" + (i + 1) + "/" + n + ") " + esc_html(c.label) + ": ";
+            $("#ant_state").html(tag + "applying ...");
+            await ant_apply(c);
+            for (var t = Date.now() + ANT_SETTLE_MS; Date.now() < t; await ant_sleep(1000))
+            {
+                if (ant.stop) throw new Error("stopped");
+                $("#ant_state").html(tag + "settling " + Math.ceil((t - Date.now()) / 1000) + " s");
+            }
+            var samples = [];
+            for (var e = Date.now() + ANT_MEASURE_MS; Date.now() < e; await ant_sleep(1000))
+            {
+                if (ant.stop) throw new Error("stopped");
+                try { samples.push(await ant_get(ALIGN_CMD)); } catch (x) {}
+                $("#ant_state").html(tag + "measuring " + Math.ceil((e - Date.now()) / 1000) + " s");
+            }
+            results.push(ant_record(c, samples, metric));
+        }
+        var b = ant_best(results);
+        if (b < 0) throw new Error("no usable readings");
+        await ant_apply(ANT_CONFIGS[b]);
+        results[b].label += " - BEST, applied";
+        $("#ant_state").html("done: applied <b>" + esc_html(ANT_CONFIGS[b].label) + "</b>");
+    }
+    catch (err)
+    {
+        // put back what was there before: auto-select as it was, both antennas omni
+        await ant_apply({ auto: before.ant_switch_enable == "0" ? 0 : 1, rx0: 1, rx1: 1 }).catch(function() {});
+        $("#ant_state").html(esc_html(err.message) + " - restored auto-select " + (before.ant_switch_enable == "0" ? "off" : "on") + ", omni/omni");
+    }
+    var now = new Date().toLocaleString(), goal = $("#ant_metric option:selected").text(), list = tools_store("zte_ant_results", []);
+    results.forEach(function(r) { r.time = now; r.goal = goal; list.push(r); });
+    tools_save("zte_ant_results", list);
+    ant.busy = false;
+    ant_render();
+    ant_read();
+}
+
+function ant_render() { $("#ant_table").html(records_table(tools_store("zte_ant_results", []), ANT_COLS, "ant_delete")); ant_keeper_info(); }
+
+// the keeper re-applies its antenna mode at every ZTE boot: show which one (saved state or env) and offer to keep the sweep winner
+function ant_mode_name(c) { return c.auto == "1" ? "Auto-select" : "ant5 " + (c.ant5 == "4" ? "dir" : "omni") + " / ant6 " + (c.ant6 == "4" ? "dir" : "omni"); }
+function ant_keeper_info()
+{
+    keeper_get("/status").then(function(s) {
+        var cfg = (s.config || {}), k = cfg.antennas || {}, e = cfg.antennas_env || {};
+        var best = tools_store("zte_ant_results", []).filter(function(r) { return / - BEST, applied$/.test(r.label); }).pop();
+        var w = best && ANT_CONFIGS.filter(function(c) { return best.label.indexOf(c.label + " - BEST") == 0; })[0];
+        var wk = w && { auto: String(w.auto), ant5: String(w.rx0), ant6: String(w.rx1) };
+        var same = wk && wk.auto == k.auto && (wk.auto == "1" || (wk.ant5 == k.ant5 && wk.ant6 == k.ant6));
+        $("#ant_keeper").html("Keeper re-applies at every ZTE boot: <b>" + esc_html(ant_mode_name(k)) + "</b> (" +
+            (k.auto == e.auto && k.ant5 == e.ant5 && k.ant6 == e.ant6 ? "from env" : "saved in the keeper, overrides env") +
+            " ANT_AUTO=" + esc_html(e.auto) + " ANT5=" + esc_html(e.ant5) + " ANT6=" + esc_html(e.ant6) + "; 1 = omni, 4 = dir)" +
+            (wk && !same ? " &nbsp; last sweep winner: <b>" + esc_html(w.label) + "</b> <a onclick='ant_keeper_keep(" + JSON.stringify(wk) + ")'>keep it in the keeper</a>" :
+             wk ? " &nbsp; = last sweep winner" : ""));
+    }).catch(function() { $("#ant_keeper").text(""); });
+}
+function ant_keeper_keep(c)
+{
+    if (!confirm("Keep " + ant_mode_name(c) + " in the keeper (re-applied at every ZTE boot, instead of the env)?")) return;
+    keeper_call("POST", "/antennas?auto=" + c.auto + "&ant5=" + c.ant5 + "&ant6=" + c.ant6).then(ant_keeper_info);
+}
+function ant_delete(i) { var l = tools_store("zte_ant_results", []); l.splice(i, 1); tools_save("zte_ant_results", l); ant_render(); }
+
+/* ---- 5G cells seen: the firmware exposes no NR neighbour list (NSA), so learn the cells from what the router actually serves ---- */
+// per cell "arfcn/pci" (or "no 5G"): time on cell, switches into it, SINR/RSRP stats, rx dropouts (a branch reading -140 = receives nothing)
+var nr_log = { cells: tools_store("zte_nr_cells", {}), events: tools_store("zte_nr_events", []), prev: null, t: 0, rx_dead: false, saved: 0 };
+var NR_EVENTS_MAX = 500;
+
+function nr_key(a)
+{
+    var pci = parseInt(a.nr5g_pci, 16);
+    return /ENDC|5G|NR/i.test(a.network_type || "") && a.nr5g_action_channel && !isNaN(pci) ? a.nr5g_action_channel + "/" + pci : "no 5G";
+}
+
+function nr_track(a, now)
+{
+    if (a.network_type === undefined) return;
+    var key = nr_key(a), c = nr_log.cells[key] = nr_log.cells[key] || { secs: 0, n_in: 0, sinr_sum: 0, sinr_n: 0, sinr_min: null, rsrp_sum: 0, rsrp_n: 0, rssi_sum: 0, rssi_n: 0, rx_drops: 0, first: now, last: now };
+    if (nr_log.prev !== null && key != nr_log.prev)
+    {
+        var p = nr_log.cells[nr_log.prev];
+        nr_log.events.push({ time: new Date(now).toLocaleString(), from: nr_log.prev, to: key, sinr_before: p && p.last_sinr !== undefined ? p.last_sinr : "" });
+        if (nr_log.events.length > NR_EVENTS_MAX) nr_log.events.splice(0, nr_log.events.length - NR_EVENTS_MAX);
+        c.n_in++;
+    }
+    // ponytail: gaps over 5 s (page closed, reboot) are not counted as time on the cell
+    if (nr_log.prev == key && nr_log.t) c.secs += Math.min(now - nr_log.t, 5000) / 1000;
+    c.last = now;
+    var sinr = tools_num("Z5g_SINR", a.Z5g_SINR), rsrp = tools_num("Z5g_rsrp", a.Z5g_rsrp);
+    if (key != "no 5G" && !isNaN(sinr)) { c.sinr_sum += sinr; c.sinr_n++; c.sinr_min = c.sinr_min === null ? sinr : Math.min(c.sinr_min, sinr); c.last_sinr = sinr; }
+    if (key != "no 5G" && !isNaN(rsrp)) { c.rsrp_sum += rsrp; c.rsrp_n++; }
+    var rssi = tools_num("Z5g_rssi", a.Z5g_rssi);
+    if (key != "no 5G" && !isNaN(rssi)) { c.rssi_sum = (c.rssi_sum || 0) + rssi; c.rssi_n = (c.rssi_n || 0) + 1; }
+    var dead = key != "no 5G" && (a["5g_rx0_rsrp"] == "-140" || a["5g_rx1_rsrp"] == "-140");
+    if (dead && !nr_log.rx_dead) c.rx_drops++;
+    nr_log.rx_dead = dead;
+    nr_log.prev = key; nr_log.t = now;
+    if (now - nr_log.saved > 30000) { tools_save("zte_nr_cells", nr_log.cells); tools_save("zte_nr_events", nr_log.events); nr_log.saved = now; nr_render(); }
+}
+
+function nr_rows()
+{
+    var total = 0, cells = nr_log.cells;
+    Object.keys(cells).forEach(function(k) { total += cells[k].secs; });
+    return Object.keys(cells).sort(function(a, b) { return cells[b].secs - cells[a].secs; }).map(function(k) {
+        var c = cells[k];
+        return { cell: k, time_min: +(c.secs / 60).toFixed(1), share_pct: total ? +(100 * c.secs / total).toFixed(1) : 0, switches_in: c.n_in,
+                 avg_sinr: c.sinr_n ? +(c.sinr_sum / c.sinr_n).toFixed(2) : "", min_sinr: c.sinr_min === null ? "" : c.sinr_min,
+                 avg_rsrp: c.rsrp_n ? +(c.rsrp_sum / c.rsrp_n).toFixed(2) : "", avg_rssi: c.rssi_n ? +(c.rssi_sum / c.rssi_n).toFixed(2) : "", rx_dropouts: c.rx_drops, last_seen: new Date(c.last).toLocaleString() };
+    });
+}
+
+function nr_render()
+{
+    if (!$("#nr_cells_table").length) return;
+    var cols = ["cell", "time_min", "share_pct", "switches_in", "avg_sinr", "min_sinr", "avg_rsrp", "avg_rssi", "rx_dropouts", "last_seen"];
+    $("#nr_cells_table").html("<tr>" + cols.map(function(c) { return "<th>" + c.toUpperCase() + "</th>"; }).join("") + "</tr>" +
+        nr_rows().map(function(r) { return "<tr>" + cols.map(function(c) { return "<td>" + esc_html(r[c]) + "</td>"; }).join("") + "</tr>"; }).join(""));
+    $("#nr_events_table").html("<tr><th>TIME</th><th>FROM</th><th>TO</th><th>SINR BEFORE</th></tr>" + nr_log.events.slice(-20).reverse().map(function(e) {
+        return "<tr><td>" + esc_html(e.time) + "</td><td>" + esc_html(e.from) + "</td><td>" + esc_html(e.to) + "</td><td>" + esc_html(e.sinr_before) + "</td></tr>"; }).join(""));
+}
+
+// ---------- Keeper panel: the MikroTik zte-keeper does the measuring, analysis and decisions; this only shows them ----------
+var KEEPER_URL = (function() { try { return localStorage.getItem("zte_keeper_url") || "http://192.168.6.250:7557"; } catch (e) { return "http://192.168.6.250:7557"; } })();
+
+// in the desktop app (WKWebView) a cross-origin fetch to the keeper fails ("Load failed"): there Python fetches it (api.keeper,
+// keeper address = ZTE_KEEPER env of the app); in a normal browser a plain fetch works (the keeper sends CORS headers)
+function keeper_api() { return window.pywebview && window.pywebview.api && window.pywebview.api.keeper ? window.pywebview.api : null; }
+
+function keeper_call(method, path, body)
+{
+    var api = keeper_api();
+    if (api) return api.keeper(method, path, body === undefined ? null : body).then(function(r) {
+        if (!r || !r.status) throw new Error(r ? r.text : "no answer");
+        return { status: r.status, json: function() { return Promise.resolve(JSON.parse(r.text)); } };
+    });
+    // text/plain: a "simple" request, no CORS preflight the keeper would have to answer
+    return fetch(KEEPER_URL + path, body === undefined ? { method: method, cache: "no-store" } :
+                 { method: method, cache: "no-store", headers: { "Content-Type": "text/plain" }, body: body });
+}
+
+/* ---- the app's lists live in the keeper's database (keeper.db); localStorage is only a cache for this browser ---- */
+var KEEPER_SYNC = ["zte_positions", "zte_ant_results", "zte_exp_results", "zte_exp_pending", "zte_cell_ids"];
+function keeper_push(name, v)
+{
+    var p = name == "zte_cell_ids" ? keeper_call("POST", "/cell-ids", JSON.stringify(v || {})) : keeper_call("POST", "/userdata?name=" + name, JSON.stringify(v));
+    p.catch(function(e) { console.log("keeper sync " + name + ": " + e.message); });
+}
+function keeper_sync_pull()
+{
+    // keeper copy wins; a list only this browser has (from before the keeper kept them) is pushed once
+    KEEPER_SYNC.forEach(function(name) {
+        if (name == "zte_cell_ids") {
+            keeper_call("POST", "/cell-ids", JSON.stringify(cell_ids)).then(function() { return keeper_get("/cell-ids"); }).then(function(ids) {
+                Object.keys(ids).forEach(function(k) { cell_ids[k] = ids[k]; });
+                try { localStorage.setItem("zte_cell_ids", JSON.stringify(cell_ids)); } catch (e) {}
+            }).catch(function() {});
+            return;
+        }
+        keeper_get("/userdata?name=" + name).then(function(d) {
+            var local = tools_store(name, null);
+            if (d.data === null || d.data === undefined) { if (local !== null) keeper_push(name, local); return; }
+            try { localStorage.setItem(name, JSON.stringify(d.data)); } catch (e) {}
+            positions_render(); exp_render(); ant_render();
+        }).catch(function() {});
+    });
+}
+
+function keeper_get(path)
+{
+    return keeper_call("GET", path).then(function(r) { if (r.status != 200) throw new Error("HTTP " + r.status); return r.json(); });
+}
+
+function keeper_table(rows, cols)
+{
+    if (!rows || !rows.length) return "";
+    return "<tr>" + cols.map(function(c) { return "<th>" + c.toUpperCase().replace(/_/g, "_<wbr>") + "</th>"; }).join("") + "</tr>" +
+        rows.map(function(r) { return "<tr>" + cols.map(function(c) { return "<td>" + esc_html(r[c] === null || r[c] === undefined ? "" : r[c]) + "</td>"; }).join("") + "</tr>"; }).join("");
+}
+
+function keeper_poll()
+{
+    if (!$("#keeper_status").length) return;
+    Promise.all([keeper_get("/status"), keeper_get("/report?hours=24"), keeper_get("/events?n=15"), keeper_get("/antenna-sweeps"), keeper_get("/lock-tests"), keeper_get("/anchors"), keeper_get("/cells")]).then(function(res) {
+        var s = res[0], r = res[1], ev = res[2], sw = res[3], lk = res[4] || {}, an = res[5] || {}, cl = res[6] || {};
+        var col = { good: "#2a2", fair: "#c80", poor: "#c22" }[s.verdict] || "#888";
+        var L = s.latency || {};
+        $("#keeper_status").html(
+            "<b style='color:" + col + "'>" + esc_html(String(s.verdict).toUpperCase()) + "</b> &nbsp; " + esc_html(s.time || "") +
+            " &nbsp; 5G <b>" + esc_html(s.nr_cell || "") + "</b> SINR " + esc_html(s.nr_sinr || "") + " RSRP " + esc_html(s.nr_rsrp || "") +
+            " &nbsp; LTE anchor " + esc_html(s.lte_anchor || "") +
+            " &nbsp; call: <b>" + (s.call_ready ? "ready" : "at risk") + "</b> (latency p50/p95 " + esc_html(L.lat_p50 || "") + "/" + esc_html(L.lat_p95 || "") +
+            " ms, jitter " + esc_html(L.jitter_ms || "") + " ms, loss " + esc_html(L.loss_pct || 0) + "%)" +
+            " &nbsp; auto actions: " + esc_html(s.auto) + (s.pending ? " (pending: " + esc_html(s.pending) + ")" : "") +
+            (s.capacity ? "<br><span title='" + esc_html(s.capacity.note) + "'>signal allows ~<b>" + esc_html(s.capacity.est_down_mbps) + " Mbit/s</b> down (estimate, before load): " +
+                s.capacity.carriers.map(function(c) { return esc_html(c.carrier) + " " + esc_html(c.bw_mhz) + " MHz SINR " + esc_html(c.sinr) + " = " +
+                    (c.mbps_layer == null ? "?" : esc_html(c.mbps_layer) + "x" + c.layers); }).join(", ") + "</span>" : ""));
+        $("#keeper_findings").html((r.findings || []).map(function(f) {
+            var c = /^RECOMMEND/.test(f) ? "#06c" : /^WARN/.test(f) ? "#c22" : /^OK/.test(f) ? "#2a2" : "inherit";
+            return "<li style='color:" + c + "'>" + esc_html(f) + "</li>"; }).join(""));
+        $("#keeper_cells").html(keeper_table(r.cells, ["cell", "minutes", "share_pct", "call_ok_pct", "sinr_p10", "sinr_p50", "rsrp_p50", "lat_p95", "jitter_ms", "loss_pct"]));
+        $("#keeper_carriers").html(keeper_table(r.lte_carriers, ["carrier", "mhz", "bw_mhz", "anchor_pct", "sinr_p50", "capacity", "rsrp_p50", "samples"]));
+        var h = r.by_hour || {}, U = r.under_load || {};
+        $("#keeper_hours").text("call-ready % by hour: " + Object.keys(h).map(function(k) { return k + "h " + (h[k].call_ok_pct === null ? "-" : h[k].call_ok_pct); }).join(" | ") +
+            "  ·  latency p95 idle " + (U.idle_lat_p95 === null || U.idle_lat_p95 === undefined ? "-" : U.idle_lat_p95) + " ms vs while uploading " +
+            (U.busy_lat_p95 === null || U.busy_lat_p95 === undefined ? "-" : U.busy_lat_p95) + " ms (" + (U.busy_minutes || 0) + " busy min)" +
+            "  ·  " + (r.samples || 0) + " samples, " + (r.switches || 0) + " switches, " + (r.no5g_minutes || 0) + " min without 5G");
+        $("#keeper_events").html(keeper_table((ev || []).slice().reverse(), ["time", "event", "from", "to", "why"]));
+        $("#keeper_lte").html(keeper_table(r.lte_cells, ["cell", "band", "rsrp_p50", "seen_pct", "in_ca"]));
+        var cfg = s.config || {}, a = cfg.antennas || {};
+        $("#keeper_sweep_sum").text((cfg.sweep_running ? "antenna sweep running... " : "") + "kept: " + (a.auto == "0" ? "ant5 " + (a.ant5 == "4" ? "dir" : "omni") +
+            " / ant6 " + (a.ant6 == "4" ? "dir" : "omni") : "auto-select") + ", automatic sweep every " + cfg.sweep_days + " days" +
+            (cfg.last_sweep ? ", last " + new Date(cfg.last_sweep * 1000).toLocaleString() : ""));
+        $("#keeper_lt_sum").html(lk.waiting ? "<b style='color:#c80'>" + esc_html(lk.running) + " is locked - align the antenna for it now</b> (Peak guide, metric LTE SINR), then " +
+            "<a onclick='keeper_aligned()'><b>Aligned - measure now</b></a> [<a onclick='keeper_cut(\"skip\")'>skip this step</a> | <a onclick='keeper_cut(\"stop\")'>stop the test</a>]" : lk.running ? "running: " + esc_html(lk.running) + (lk.align ? " (align mode)" : "") + (lk.phase ? " - <b>" + esc_html(lk.phase) + "</b>" : "") + " [<a onclick='keeper_cut(\"skip\")'>skip this step</a> | <a onclick='keeper_cut(\"stop\")'>stop the test</a>]" +
+            " - plan: " + esc_html((lk.plan || []).join(", ")) : "idle");
+        $("#keeper_lt").html(keeper_table((lk.results || []).slice(-12).reverse(), ["time", "lock", "minutes", "on_target_pct", "anchor", "site", "anchor_sinr_p50", "anchor_sinr_p10",
+            "anchor_rsrp_p50", "anchor_rsrq_p50", "ca", "nr_cells", "nr_sinr_p50", "no5g_min", "call_ok_pct", "lat_p95", "jitter_ms", "heading", "mode", "note"]));
+        var L = (s.config || {}).lte_lock;
+        $("#keeper_lock_sum").html("LTE lock: " + (L ? "<b>" + esc_html(L.cell) + "</b> " + esc_html(L.state) + (L.reason ? " (" + esc_html(L.reason) + ")" : "") +
+            " &nbsp; <a onclick=\"keeper_lock('none')\">remove</a>" : "none (network decides)") +
+            (an.ranked && an.ranked.length ? " &nbsp; best tested: <b>" + esc_html(an.ranked[0].lock) + "</b> <a onclick=\"keeper_lock('" + esc_html(an.ranked[0].lock) + "')\">lock it (guarded)</a>" : "") +
+            (function() {            // 5G lock (guarded): released after 10 min off the cell, restored when the 5G is served by it again
+                var N = (s.config || {}).nr_lock, cur = (s.nr_cell || "").split("/"), spec = cur.length == 2 ? cur[1] + "@" + cur[0] : "";
+                return "<br>5G lock: " + (N ? "<b>" + esc_html(N.cell) + "</b> " + esc_html(N.state) + (N.reason ? " (" + esc_html(N.reason) + ")" : "") +
+                    " &nbsp; <a onclick=\"keeper_lock('none','nr')\">remove</a>" : "none (network decides)" +
+                    (spec ? " &nbsp; current " + esc_html(spec) + " <a onclick=\"keeper_lock('" + esc_html(spec) + "','nr')\">lock it (guarded)</a>" : ""));
+            })());
+        $("#keeper_anchors").html(keeper_table((an.ranked || []), ["lock", "site", "call_ok_pct", "nr_cells", "nr_sinr_p50", "no5g_min", "anchor_sinr_p50", "capacity", "lat_p95"]));
+        $("#keeper_cells_reg").html(keeper_table((cl.lte || []).filter(function(c) { return c.seen_min >= 60; }),
+            ["cell", "band", "rsrp", "sinr_when_used", "bw_mhz", "seen_min", "ca_min", "anchor_min", "site", "site_name", "site_dist_m", "site_bearing", "last"]));
+        $("#keeper_sweeps").html(keeper_table((sw || []).slice(-8).reverse(), ["time", "trigger", "mode", "nr_cell", "sinr_p50", "rsrp_p50", "rx0_p50", "rx1_p50", "lat_p95", "note"]));
+    }).catch(function(e) {
+        $("#keeper_status").html("<b style='color:#c22'>keeper not reachable</b> " + (keeper_api() ? "(via the app)" : "at " + esc_html(KEEPER_URL)) + " (" + esc_html(e.message) + ")");
+    });
+}
+
+function keeper_sweep()
+{
+    if (!confirm("Run the 4 antenna modes now? Takes ~2 min; the ZTE web page gets logged out.")) return;
+    keeper_call("POST", "/antenna-sweep").then(function(r) {
+        $("#keeper_sweep_sum").text(r.status == 202 ? "antenna sweep started - results in ~2 min" : "a sweep is already running");
+        window.setTimeout(keeper_poll, 130000);
+    }).catch(function(e) { $("#keeper_sweep_sum").text("keeper not reachable: " + e.message); });
+}
+
+function keeper_cut(what)
+{
+    if (!confirm(what == "skip" ? "Skip this step? What was measured so far is kept, the test goes on with the next cell." :
+                 "Stop the whole test? The LTE lock is removed (ZTE reboots).")) return;
+    keeper_call("POST", "/lock-test-" + what).then(function() { window.setTimeout(keeper_poll, 2000); });
+}
+
+function keeper_lock_test()
+{
+    var cells = prompt("LTE anchors to test as PCI@EARFCN, comma separated (an unlocked baseline runs first; each: lock + reboot + ~15 min; the lock is removed at the end). This page can stay open - you need it for the peak guide in align mode:",
+                       "434@1550,340@1550,66@1550,375@1550,340@100,434@100,66@100,375@100");
+    if (!cells) return;
+    var align = confirm("Align the antenna for each cell before it is measured?\nOK = align mode: after each lock the keeper waits until you aligned and click 'Aligned - measure now'.\n" +
+                        "Cancel = measure every cell at the current heading.");
+    keeper_call("POST", (align ? "" : "") + "/lock-test?" + (align ? "align=1&" : "") + "cells=" + encodeURIComponent(cells.replace(/\s+/g, "")).replace(/%40/g, "@").replace(/%2C/g, ",").replace(/%3B/g, ";")).then(function(r) {
+        $("#keeper_lt_sum").text(r.status == 202 ? "lock test started - the internet drops ~2 min per reboot" : r.status == 400 ? "no valid PCI@EARFCN given" : "a test or sweep is already running");
+        window.setTimeout(keeper_poll, 5000);
+    }).catch(function(e) { $("#keeper_lt_sum").text("keeper not reachable: " + e.message); });
+}
+
+function keeper_lock(cell, kind)
+{
+    var what = kind == "nr" ? "5G" : "LTE";
+    if (!confirm(cell == "none" ? "Remove the keeper's " + what + " lock (reboot)?" : "Keep " + what + " " + cell + " locked? The keeper applies it when the link is idle (reboot), " +
+                 "releases it if the cell goes bad or away and restores it when it is back.")) return;
+    keeper_call("POST", (kind == "nr" ? "/nr-lock?cell=" : "/lte-lock?cell=") + cell).then(function() { window.setTimeout(keeper_poll, 2000); })
+        .catch(function(e) { $("#keeper_lock_sum").text("keeper not reachable: " + e.message); });
+}
+
+function keeper_aligned()
+{
+    var h = prompt("Heading of the antenna now (degrees, 0 = north), recorded with the result:", "");
+    if (h === null) return;
+    keeper_call("POST", "/lock-test-continue?heading=" + encodeURIComponent(h.replace(/[^0-9.]/g, "") || "?")).then(function(r) {
+        $("#keeper_lt_sum").text(r.status == 200 ? "measuring at heading " + h + " (~12 min)..." : "nothing is waiting for alignment");
+        window.setTimeout(keeper_poll, 3000);
+    }).catch(function(e) { $("#keeper_lt_sum").text("keeper not reachable: " + e.message); });
+}
+
+function keeper_set_url()
+{
+    var u = prompt("Keeper URL", KEEPER_URL);
+    if (!u) return;
+    KEEPER_URL = u.replace(/\/+$/, "");
+    try { localStorage.setItem("zte_keeper_url", KEEPER_URL); } catch (e) {}
+    keeper_poll();
+}
+
+function nr_clear()
+{
+    if (!confirm("Delete the 5G cell log?")) return;
+    nr_log.cells = {}; nr_log.events = []; nr_log.prev = null; nr_log.t = 0;
+    tools_save("zte_nr_cells", {}); tools_save("zte_nr_events", []); nr_render();
+}
 
 function get_status()
 {
@@ -2391,6 +2888,17 @@ function inject_html()
         margin: 4px 0;
     }
 
+    /* the ZTE page boxes content to ~900 px: let the tools panel use the window width (centred) and fit tables without scrolling -
+       compact font, cells and long headers wrap (ANCHOR_SINR_P50 breaks at "_") */
+    .tools_container { width: 96vw !important; max-width: 1900px !important; box-sizing: border-box; position: relative; left: 50%; transform: translateX(-50%);
+                       background: #fff; z-index: 2; }   /* opaque + on top: the ZTE's own ~900 px frame would otherwise draw its border through it */
+    .tools_container .tools_table, .tools_container .ngbr_cell_table { font-size: 11px; }
+    .tools_container .tools_table td, .tools_container .tools_table th { white-space: normal; padding: 1px 6px 1px 0; vertical-align: top; }
+    .tools_container, .tools_container * { -webkit-user-select: text; user-select: text; }   /* tables and keeper results can be copied */
+    .tools_container details {
+        overflow-x: auto;
+    }
+
     .ngbr_cell_table td, .ngbr_cell_table th {
         all: revert;
         border: none;
@@ -2910,6 +3418,34 @@ function inject_html()
 
         <div class="inner_mod_container mod_border tools_container">
             <details open>
+                <summary><b>Keeper (MikroTik, 24/7)</b></summary>
+                <a onclick="keeper_poll()">Refresh</a> | <a onclick="keeper_set_url()">Keeper URL</a> |
+                <a onclick="window.open(KEEPER_URL + '/report?hours=24')">Full report (JSON)</a>
+                <div id="keeper_status" style="margin:4px 0">loading...</div>
+                <div style="font-size:11px">Findings (last 24 h, goal: call-ready all the time) - the keeper decides reboots itself (within limits); locks stay your decision:</div>
+                <ul id="keeper_findings" style="margin:2px 0 6px 18px"></ul>
+                <div style="font-size:11px">5G cells (24 h):</div>
+                <table class="tools_table" id="keeper_cells"></table>
+                <div style="font-size:11px">LTE carriers (24 h, first = anchor; capacity = est. Mbit/s per MIMO layer before load (MHz x 3GPP TR 36.942 truncated Shannon) - RSRP is only comparable within one band):</div>
+                <table class="tools_table" id="keeper_carriers"></table>
+                <div id="keeper_hours" style="font-size:11px;margin:4px 0"></div>
+                <div style="font-size:11px">LTE cells measured (24 h, RSRP only - compare within one band; low bands read ~10 dB higher; in_ca = used now):</div>
+                <table class="tools_table" id="keeper_lte"></table>
+                <div id="keeper_lock_sum" style="margin:4px 0"></div>
+                <div style="font-size:11px">Best anchors from the lock tests (stayed on the cell, ranked for calls):</div>
+                <table class="tools_table" id="keeper_anchors"></table>
+                <div style="font-size:11px">Cell registry (every LTE cell the ZTE measured for >= 1 h; site = real eNB/cell from the ZTE, site_* = your notes):</div>
+                <table class="tools_table" id="keeper_cells_reg"></table>
+                <div style="font-size:11px">LTE anchor lock tests (keeper) - <a onclick="keeper_lock_test()">Run LTE lock test</a>:</div>
+                <div id="keeper_lt_sum" style="font-size:11px"></div>
+                <table class="tools_table" id="keeper_lt"></table>
+                <div style="font-size:11px">Antenna modes (5G n78), tested by the keeper - <a onclick="keeper_sweep()">Run antenna sweep now</a>:</div>
+                <div id="keeper_sweep_sum" style="font-size:11px"></div>
+                <table class="tools_table" id="keeper_sweeps"></table>
+                <div style="font-size:11px">Last events (why = the keeper's explanation):</div>
+                <table class="tools_table" id="keeper_events"></table>
+            </details>
+            <details open>
                 <summary><b>Antenna alignment</b></summary>
                 <label><input type="checkbox" onchange="align_fast(this.checked)"> Fast update (0.5 s)</label>
                 &nbsp;&nbsp;
@@ -2918,7 +3454,7 @@ function inject_html()
                     <option value="dual" selected>5G + LTE SINR</option>
                     <option value="qsinr">ZTE quality + 5G SINR</option>
                     <option value="balance">5G rx0/rx1 balance</option>
-                    ${ALIGN_METRICS.slice(0, 9).map(m => "<option value='m:" + m[0] + "'>" + m[2] + "</option>").join("")}
+                    ${ALIGN_METRICS.filter((m, i) => i < 9 || m[4] == "n").map(m => "<option value='m:" + m[0] + "'>" + m[2] + "</option>").join("")}
                 </select>
                 <select onchange="tone_set_res(this.value)" title="High / very high: pitch follows the change from the reference (Reset start/peak) - 2 or 4 semitones per dB">
                     <option value="abs">Absolute</option>
@@ -2930,6 +3466,14 @@ function inject_html()
                 <div style="font-size:11px">Tone: <span id="tone_legend">${tone_legend("dual")}</span>
                     High / very high resolution: pitch is relative to the reference set by Reset start/peak (1 dB = 2 / 4 semitones).</div>
                 <div style="font-size:11px">Tone targets (dB / dBm): <span id="tone_targets">${tone_targets_html()}</span></div>
+                <div><label><input type="checkbox" onchange="pg_toggle(this.checked)"> Peak guide</label> for
+                    <select onchange="pg_set_key(this.value)">${ALIGN_METRICS.map(m => "<option value='" + m[0] + "'" + (m[0] == "lte_sinr" ? " selected" : "") + ">" + m[2] + "</option>").join("")}</select>
+                    <label><input type="checkbox" checked onchange="pg.voice = this.checked"> Voice</label>
+                    &nbsp; <b id="peak_guide" style="font-size:15px"></b></div>
+                <div style="font-size:11px">Peak guide: sweep slowly through the whole range once, then come back. "New peak" (ding) while it rises;
+                    "past the peak, go back about N seconds" (two low beeps) when it falls ${PEAK_GUIDE.drop} dB below the peak - N is how long to turn back at the same speed,
+                    the ~${PEAK_GUIDE.lag_s} s reading delay included; "peak, hold" when you are back within ${PEAK_GUIDE.near} dB; "peak confirmed, stop here" (chime) after
+                    ${PEAK_GUIDE.confirm_ms / 1000} s there. Uses a ${PEAK_GUIDE.avg_ms / 1000} s average; use Fast update. Reset start/peak restarts it.</div>
                 <div class="spacing_links"></div>
                 Antenna branches: <span class="branch_warn"></span>
                 <table class="tools_table" id="align_table"></table>
@@ -2948,6 +3492,43 @@ function inject_html()
                 &nbsp; <span id="exp_state"></span>
                 <div style="font-size:11px">Cell locks from this page start a 60 s measurement automatically once the router is camped on the locked cell (after reboot). RX/TX is the traffic flowing at the time, not link capacity - run a speed test during the window to compare.</div>
                 <table class="tools_table" id="exp_table"></table>
+            </details>
+            <details>
+                <summary><b>Antenna mode (5G n78)</b></summary>
+                Now: <span id="ant_now">-</span> <a onclick="ant_read()">refresh</a>
+                <div class="spacing_links"></div>
+                Auto-select [ <a onclick="ant_manual({goformId:'WAN_ANT_SWITCH_SET', ant_switch_enable:'1'})">On</a> |
+                <a onclick="ant_manual({goformId:'WAN_ANT_SWITCH_SET', ant_switch_enable:'0'})">Off</a> ]
+                &nbsp; Antenna 5 [ <a onclick="ant_manual({goformId:'BSP_ANTENNA_STATE_SET', antenna_name:'5', state:'1'})">Omni</a> |
+                <a onclick="ant_manual({goformId:'BSP_ANTENNA_STATE_SET', antenna_name:'5', state:'4'})">Directional</a> ]
+                &nbsp; Antenna 6 [ <a onclick="ant_manual({goformId:'BSP_ANTENNA_STATE_SET', antenna_name:'6', state:'1'})">Omni</a> |
+                <a onclick="ant_manual({goformId:'BSP_ANTENNA_STATE_SET', antenna_name:'6', state:'4'})">Directional</a> ]
+                <div class="spacing_links"></div>
+                <a onclick="ant_sweep()">Measure all modes &amp; apply best</a> by
+                <select id="ant_metric">
+                    <option value="nr_sinr" selected>5G SINR</option>
+                    <option value="dual">5G + LTE SINR</option>
+                    <option value="lte_sinr">LTE SINR</option>
+                    <option value="quality">ZTE quality</option>
+                </select>
+                | <a onclick="ant.stop = true">Stop</a> |
+                <a onclick="csv_export('zte_ant_results', 'zte-antenna-modes.csv')">Export CSV</a> |
+                <a onclick="records_clear('zte_ant_results', ant_render)">Clear</a>
+                &nbsp; <span id="ant_state"></span>
+                <div style="font-size:11px">Each mode: 10 s settle, then 20 x 1 s readings averaged. Directional/omni only affects 5G n78. Antenna 6 directional shows up on 5G rx0, so names use the antenna IDs, not rx0/rx1. For manual antenna 5/6 changes set auto-select Off first, otherwise the router may override them. Auto-select off survives a reboot; the "last set" readback only echoes the last command.</div>
+                <div id="ant_keeper" style="font-size:11px;margin-top:4px"></div>
+                <table class="tools_table" id="ant_table"></table>
+            </details>
+            <details>
+                <summary><b>5G cells seen (passive log - superseded by the Keeper panel)</b></summary>
+                <a onclick="csv_export(nr_rows(), 'zte-5g-cells.csv')">Export cells CSV</a> |
+                <a onclick="csv_export('zte_nr_events', 'zte-5g-switches.csv')">Export switches CSV</a> |
+                <a onclick="nr_clear()">Clear</a>
+                <div style="font-size:11px">The router reports no 5G neighbour list in NSA mode, so this learns cells from what it actually serves while this page is open:
+                    time on each cell, switches, SINR / RSRP and rx dropouts (a branch reading -140 dBm). Saved every 30 s.</div>
+                <table class="tools_table" id="nr_cells_table"></table>
+                <div style="font-size:11px">Last 20 switches:</div>
+                <table class="tools_table" id="nr_events_table"></table>
             </details>
         </div>
 

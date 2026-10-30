@@ -35,6 +35,14 @@ Run all three after every edit of the script, before pasting it into Firefox or 
 - **Tones:** targets (RSRP -70 dBm, RSRQ -10 dB, 5G SINR 15/20 dB, LTE SINR 6 dB), closeness direction, relative pitch,
   rx0/rx1 direction, branch warning.
 - **Lock experiment:** waits through the reboot delay, waits again when the target cell is lost, records a 60 s result.
+- **RSSI:** 5G / LTE RSSI rows shown grey (no green/red), no "best" highlight in saved tables, per-cell average in the 5G log.
+- **Peak guide:** new peaks on a rising sweep (negative values too), "past" only after a 1.5 dB drop, "go back" seconds
+  include the 2 s lag, "back" within 0.5 dB, "confirmed" after 3 s there, no repeats, noise below the drop stays silent.
+- **5G cells seen log:** time per cell (gaps > 5 s not counted), switches with the SINR just before, `no 5G` state,
+  rx dropouts (-140) counted once per run, negative SINR kept, sorting by time, event list cap.
+- **Antenna mode sweep:** 5G + LTE SINR score with signs, missing readings rank last, `-20.0` no-value marker skipped,
+  hex PCI and cell change shown (`636576/534 > 636576/786`), best mode applied, a failed command restores the previous
+  auto-select with omni/omni. `zte_set`/`ant_get`/`ant_sleep` are stubbed, timings shortened.
 - **MikroTik (`test_mikrotik.js`):** `ca-band`/`primary-band` parsing, `AT+QNWLOCK` answers (off, multi-cell, PCI 0), lock
   input validation and AT commands, NR SCS, `cell-monitor` dedupe/sort (newest section wins, missing RSRP last),
   colours for negative/zero/missing values, HTML escaping; antenna alignment: `AT+QENG`/`AT+QRSRP` parsing (NSA, LTE only,
