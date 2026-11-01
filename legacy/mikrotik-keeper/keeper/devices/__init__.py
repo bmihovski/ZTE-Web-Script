@@ -10,8 +10,10 @@ One driver per DEVICE value (`zte`, `mikrotik`), selected once at start by `curr
 | `EXTRA` | sample fields only this device has (`zte_*` / `mikrotik_*` prefix, or a shared name the other can't fill) |
 | `row(vals)` | one read -> one sample dict with the shared fields (`nr_cell`, `lte_cell`, `lte_ca`, ... see `keeper.monitor.SAMPLE_COLS`) |
 | `minute_jobs()` | functions called with each sample, in order (lock guard, night screen, sweep, scan ...) |
-| `locks_apply(lte, nr)` | set / remove cell locks (`'pci@channel'`, `'none'`, None = leave), blocking until applied |
-| `lock_lte(spec)` | LTE lock + reboot for a lock test (`None` = unlock) |
+| `locks_apply(lte, nr)` | set / remove cell locks (`'pci@channel'`, `'none'`, None = leave), blocking until applied; used by the guard AND the lock tests (both legs in one change) |
+| `LOCKS_REBOOT` | a lock costs a modem reboot (ZTE: true - a lock test step waits for the BOOT inform; ATL: false) |
+| `ready(timeout)` | wait until the CPE is usable again after a reboot (ZTE: its web page; ATL: immediately) |
+| `antennas.sweep_for_test(cell)` | ZTE only: the 5G lock test's antenna sweep, returns the mode left set for the step (drivers without antennas simply have none) |
 | `lock_value(key)` | (label, raw value) of the lock the modem itself holds for `lte_lock` / `nr_lock`, None = unknown - the guard reconciles with it |
 | `nr_on(row, cell)` | is the sample served by the locked 5G cell |
 | `on_start()`, `on_boot()` | hooks: keeper start; a BOOT inform from the modem |

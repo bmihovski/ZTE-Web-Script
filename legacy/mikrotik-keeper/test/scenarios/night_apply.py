@@ -28,4 +28,15 @@ for lock, t in (("none", "2026-10-31 03:00:00"), ("340@100", "2026-10-31 03:16:0
 run, base, others, win = brain.night_best()
 assert run == R2 and not win, (run, [w["lock"] for w in win])
 assert brain.night_finding()[0].startswith("INFO")
-print("OK night_apply")
+# daytime ranking (loaded) -> anchor_best picks the winner with a clear gain (this is what auto-applies by day)
+for lock, t, cok, asinr, nsinr in (("none", "2026-10-31 10:00:00", 90, 2, 8), ("340@100", "2026-10-31 10:20:00", 100, 8, 11)):
+    store.add(D, "lock_tests", {"time": t, "lock": lock, "mode": "manual", "run": "", "on_target_pct": 100,
+                                "call_ok_pct": cok, "anchor_sinr_p50": asinr, "nr_sinr_p50": nsinr, "nr_cells": "534"})
+best, base, gain = brain.anchor_best()
+assert best["lock"] == "340@100" and base["lock"] == "none" and gain, (best and best["lock"], base and base["lock"], gain)
+# a daytime ranking with no real gain -> gain False (no auto-apply)
+store.add(D, "lock_tests", {"time": "2026-10-31 11:00:00", "lock": "none", "mode": "manual", "run": "", "on_target_pct": 100,
+                            "call_ok_pct": 100, "anchor_sinr_p50": 8, "nr_sinr_p50": 11, "nr_cells": "534"})
+best, base, gain = brain.anchor_best()
+assert not gain, (best["lock"], gain)
+print("OK night_apply (+daytime)")

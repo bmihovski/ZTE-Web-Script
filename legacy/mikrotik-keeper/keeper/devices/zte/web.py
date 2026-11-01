@@ -2,6 +2,7 @@
 
 Only for what TR-069 can't do: antenna modes, and lock fallbacks. The web page has ONE session - a keeper login logs the
 browser out, so every use logs out again right after. Env: ZTE_HOST (192.168.6.3), ZTE_PASS_HASH (or ZTE_PASS) - never logged.
+`ready()` waits for a rebooted CPE's web to answer (it needs minutes) before the keeper logs in or a lock-test step goes on.
 """
 import hashlib, http.cookiejar, json, threading, time, urllib.parse, urllib.request
 
@@ -56,3 +57,21 @@ class Web:
         """Free the single web session for the browser (errors ignored)."""
         try: self.post({"goformId": "LOGOUT"})
         except Exception: pass
+
+
+READY_TRIES, READY_GAP = int(E("CPE_READY_TRIES", "3")), float(E("CPE_READY_GAP_S", "5"))
+
+
+def ready(timeout=120, tries=None, gap=None):
+    """Wait until the CPE web answers `tries` times in a row (a rebooted ZTE needs minutes; CPE_READY_TRIES 3, CPE_READY_GAP_S 5):
+    True when it is ready. Reads one public goform value - no login, so the browser's session is not taken - up to `timeout` s."""
+    tries = READY_TRIES if tries is None else tries; gap = READY_GAP if gap is None else gap
+    t0 = time.time(); ok = 0
+    while time.time() - t0 < timeout:
+        try:
+            Web().get("wa_inner_version"); ok += 1
+            if ok >= tries: return True
+        except Exception:
+            ok = 0
+        time.sleep(gap)
+    return False

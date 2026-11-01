@@ -7,7 +7,7 @@
  * 
  */
 
-console.log("Loading ZTE Script v" + "2026-10-27-#26");
+console.log("Loading ZTE Script v" + "2026-11-01-#28");
 
 siginfo =
     "wan_active_band,wan_active_channel,wan_lte_ca,wan_apn,wan_ipaddr," +
@@ -1881,8 +1881,8 @@ function keeper_table(rows, cols)
 function keeper_poll()
 {
     if (!$("#keeper_status").length) return;
-    Promise.all([keeper_get("/status"), keeper_get("/report?hours=24"), keeper_get("/events?n=15"), keeper_get("/antenna-sweeps"), keeper_get("/lock-tests"), keeper_get("/anchors"), keeper_get("/cells")]).then(function(res) {
-        var s = res[0], r = res[1], ev = res[2], sw = res[3], lk = res[4] || {}, an = res[5] || {}, cl = res[6] || {};
+    Promise.all([keeper_get("/status"), keeper_get("/report?hours=24"), keeper_get("/events?n=30"), keeper_get("/antenna-sweeps"), keeper_get("/lock-tests"), keeper_get("/anchors"), keeper_get("/cells"), keeper_get("/anchors?rat=nr")]).then(function(res) {
+        var s = res[0], r = res[1], ev = res[2], sw = res[3], lk = res[4] || {}, an = res[5] || {}, cl = res[6] || {}, an5 = res[7] || {};
         var col = { good: "#2a2", fair: "#c80", poor: "#c22" }[s.verdict] || "#888";
         var L = s.latency || {};
         $("#keeper_status").html(
@@ -1911,11 +1911,12 @@ function keeper_poll()
         $("#keeper_sweep_sum").text((cfg.sweep_running ? "antenna sweep running... " : "") + "kept: " + (a.auto == "0" ? "ant5 " + (a.ant5 == "4" ? "dir" : "omni") +
             " / ant6 " + (a.ant6 == "4" ? "dir" : "omni") : "auto-select") + ", automatic sweep every " + cfg.sweep_days + " days" +
             (cfg.last_sweep ? ", last " + new Date(cfg.last_sweep * 1000).toLocaleString() : ""));
-        $("#keeper_lt_sum").html(lk.waiting ? "<b style='color:#c80'>" + esc_html(lk.running) + " is locked - align the antenna for it now</b> (Peak guide, metric LTE SINR), then " +
-            "<a onclick='keeper_aligned()'><b>Aligned - measure now</b></a> [<a onclick='keeper_cut(\"skip\")'>skip this step</a> | <a onclick='keeper_cut(\"stop\")'>stop the test</a>]" : lk.running ? "running: " + esc_html(lk.running) + (lk.align ? " (align mode)" : "") + (lk.phase ? " - <b>" + esc_html(lk.phase) + "</b>" : "") + " [<a onclick='keeper_cut(\"skip\")'>skip this step</a> | <a onclick='keeper_cut(\"stop\")'>stop the test</a>]" +
+        var test = lk.rat == "nr" ? "5G test" + (lk.anchor ? ", anchor " + esc_html(lk.anchor) + " pinned" : "") : "LTE";
+        $("#keeper_lt_sum").html(lk.waiting ? "<b style='color:#c80'>" + esc_html(lk.running) + " is locked - align the antenna for it now</b> ((Peak guide, metric " + (lk.rat == "nr" ? "5G SINR of the locked cell" : "LTE SINR") + "), then " +
+            "<a onclick='keeper_aligned()'><b>Aligned - measure now</b></a>" + (lk.rat == "nr" ? " - the keeper then sweeps the antennas and internet-tests each mode" : "") + " [<a onclick='keeper_cut(\"skip\")'>skip this step</a> | <a onclick='keeper_cut(\"stop\")'>stop the test</a>]" : lk.running ? "running (" + test + "): " + esc_html(lk.running) + (lk.align ? " (align mode)" : "") + (lk.phase ? " - <b>" + esc_html(lk.phase) + "</b>" : "") + " [<a onclick='keeper_cut(\"skip\")'>skip this step</a> | <a onclick='keeper_cut(\"stop\")'>stop the test</a>]" +
             " - plan: " + esc_html((lk.plan || []).join(", ")) : "idle");
-        $("#keeper_lt").html(keeper_table((lk.results || []).slice(-12).reverse(), ["time", "lock", "minutes", "on_target_pct", "anchor", "site", "anchor_sinr_p50", "anchor_sinr_p10",
-            "anchor_rsrp_p50", "anchor_rsrq_p50", "ca", "nr_cells", "nr_sinr_p50", "no5g_min", "call_ok_pct", "lat_p95", "jitter_ms", "heading", "mode", "note"]));
+        $("#keeper_lt").html(keeper_table((lk.results || []).slice().reverse(), ["time", "rat", "unstable", "lock", "minutes", "on_target_pct", "anchor", "pin", "anchor_pct", "anchor_switches", "gap_min", "site", "anchor_sinr_p50", "anchor_sinr_p10",
+            "anchor_rsrp_p50", "anchor_rsrq_p50", "ca", "nr_cells", "nr_arfcn", "nr_sinr_p50", "nr_rsrp_p50", "no5g_min", "call_ok_pct", "lat_p95", "jitter_ms", "loss_pct", "antennas", "heading", "mode", "note"]));
         var L = (s.config || {}).lte_lock;
         $("#keeper_lock_sum").html("LTE lock: " + (L ? "<b>" + esc_html(L.cell) + "</b> " + esc_html(L.state) + (L.reason ? " (" + esc_html(L.reason) + ")" : "") +
             " &nbsp; <a onclick=\"keeper_lock('none')\">remove</a>" : "none (network decides)") +
@@ -1924,12 +1925,17 @@ function keeper_poll()
                 var N = (s.config || {}).nr_lock, cur = (s.nr_cell || "").split("/"), spec = cur.length == 2 ? cur[1] + "@" + cur[0] : "";
                 return "<br>5G lock: " + (N ? "<b>" + esc_html(N.cell) + "</b> " + esc_html(N.state) + (N.reason ? " (" + esc_html(N.reason) + ")" : "") +
                     " &nbsp; <a onclick=\"keeper_lock('none','nr')\">remove</a>" : "none (network decides)" +
-                    (spec ? " &nbsp; current " + esc_html(spec) + " <a onclick=\"keeper_lock('" + esc_html(spec) + "','nr')\">lock it (guarded)</a>" : ""));
+                    (spec ? " &nbsp; current " + esc_html(spec) + " <a onclick=\"keeper_lock('" + esc_html(spec) + "','nr')\">lock it (guarded)</a>" : "") +
+                    (an5.ranked && an5.ranked.length ? " &nbsp; best tested: <b>" + esc_html(an5.ranked[0].lock) + "</b> <a onclick=\"keeper_lock('" + esc_html(an5.ranked[0].lock) + "','nr')\">lock it (guarded)</a>" : "") +
+                    (cfg.antennas_cell ? " &nbsp; mode: <b>" + esc_html(ant_mode_name(cfg.antennas_effective)) + "</b> (" + esc_html(cfg.antennas_source) + ")" +
+                        (s.auto != "on" ? " &nbsp; learned <b>" + esc_html(cfg.antennas_cell.mode) + "</b> on " + esc_html(String(cfg.antennas_cell.time).slice(0, 10)) +
+                            (cfg.antennas_cell.heading ? ", heading " + esc_html(cfg.antennas_cell.heading) : "") + " (AUTO=" + esc_html(s.auto) + ")" : "") : ""));
             })());
         $("#keeper_anchors").html(keeper_table((an.ranked || []), ["lock", "site", "call_ok_pct", "nr_cells", "nr_sinr_p50", "no5g_min", "anchor_sinr_p50", "capacity", "lat_p95"]));
+        $("#keeper_anchors5").html(keeper_table((an5.ranked || []), ["lock", "call_ok_pct", "nr_sinr_p50", "nr_rsrp_p50", "no5g_min", "antennas", "capacity", "lat_p95"]));
         $("#keeper_cells_reg").html(keeper_table((cl.lte || []).filter(function(c) { return c.seen_min >= 60; }),
             ["cell", "band", "rsrp", "sinr_when_used", "bw_mhz", "seen_min", "ca_min", "anchor_min", "site", "site_name", "site_dist_m", "site_bearing", "last"]));
-        $("#keeper_sweeps").html(keeper_table((sw || []).slice(-8).reverse(), ["time", "trigger", "mode", "nr_cell", "sinr_p50", "rsrp_p50", "rx0_p50", "rx1_p50", "lat_p95", "note"]));
+        $("#keeper_sweeps").html(keeper_table((sw || []).slice().reverse(), ["time", "trigger", "mode", "nr_cell", "sinr_p50", "rsrp_p50", "lat_p95", "jitter_ms", "loss_pct", "call_ok", "down_mbps", "note"]));
     }).catch(function(e) {
         $("#keeper_status").html("<b style='color:#c22'>keeper not reachable</b> " + (keeper_api() ? "(via the app)" : "at " + esc_html(KEEPER_URL)) + " (" + esc_html(e.message) + ")");
     });
@@ -1947,19 +1953,28 @@ function keeper_sweep()
 function keeper_cut(what)
 {
     if (!confirm(what == "skip" ? "Skip this step? What was measured so far is kept, the test goes on with the next cell." :
-                 "Stop the whole test? The LTE lock is removed (ZTE reboots).")) return;
+                 "Stop the whole test? The locks are removed (the ZTE reboots).")) return;
     keeper_call("POST", "/lock-test-" + what).then(function() { window.setTimeout(keeper_poll, 2000); });
 }
 
-function keeper_lock_test()
+function keeper_lock_test(kind)
 {
-    var cells = prompt("LTE anchors to test as PCI@EARFCN, comma separated (an unlocked baseline runs first; each: lock + reboot + ~15 min; the lock is removed at the end). This page can stay open - you need it for the peak guide in align mode:",
-                       "434@1550,340@1550,66@1550,375@1550,340@100,434@100,66@100,375@100");
+    var nr = kind == "nr";
+    var cells = prompt(nr ? "5G cells to test as PCI@ARFCN, comma separated (the LTE anchor is pinned for the test - lock the anchor you want first; an unlocked 5G baseline runs first; each: lock + reboot + ~15 min, then the antenna sweep - every mode is internet-tested and INTERNET QUALITY wins over signal; the locks are removed at the end). Close the ZTE page - the sweep needs the web login:"
+                           : "LTE anchors to test as PCI@EARFCN, comma separated (an unlocked baseline runs first; each: lock + reboot + ~15 min; the lock is removed at the end). This page can stay open - you need it for the peak guide in align mode:",
+                       nr ? "534@636576,747@629988" : "434@1550,340@1550,66@1550,375@1550,340@100,434@100,66@100,375@100");
     if (!cells) return;
-    var align = confirm("Align the antenna for each cell before it is measured?\nOK = align mode: after each lock the keeper waits until you aligned and click 'Aligned - measure now'.\n" +
-                        "Cancel = measure every cell at the current heading.");
-    keeper_call("POST", (align ? "" : "") + "/lock-test?" + (align ? "align=1&" : "") + "cells=" + encodeURIComponent(cells.replace(/\s+/g, "")).replace(/%40/g, "@").replace(/%2C/g, ",").replace(/%3B/g, ";")).then(function(r) {
-        $("#keeper_lt_sum").text(r.status == 202 ? "lock test started - the internet drops ~2 min per reboot" : r.status == 400 ? "no valid PCI@EARFCN given" : "a test or sweep is already running");
+    var align = confirm("Align the antenna for each cell before it is measured?\nOK = on-go: after each lock the keeper waits until you aligned and click 'Aligned - measure now'" + (nr ? " (it then sweeps the antennas and internet-tests each mode)." : ".") + "\n" +
+                        "Cancel = already aligned / fixed position: measure every cell where the antenna is now" + (nr ? " (each mode is still internet-tested)." : "."));
+    var h = "";
+    if (nr && !align) {                             // fixed position: record the heading the cells are measured at
+        h = prompt("Heading of the antenna now (degrees, blank = unknown):", "");
+        if (h === null) return;
+        h = h.replace(/[^0-9.]/g, "");
+    }
+    keeper_call("POST", "/lock-test?rat=" + (nr ? "nr" : "lte") + "&" + (align ? "align=1&" : "") + (h ? "heading=" + encodeURIComponent(h) + "&" : "") + "cells=" + encodeURIComponent(cells.replace(/\s+/g, "")).replace(/%40/g, "@").replace(/%2C/g, ",").replace(/%3B/g, ";")).then(function(r) {
+        $("#keeper_lt_sum").text(r.status == 202 ? (nr ? "5G lock test started - the internet drops ~2 min per reboot" : "lock test started - the internet drops ~2 min per reboot") :
+                                 r.status == 400 ? (nr ? "no valid PCI@ARFCN given (or no LTE anchor to pin)" : "no valid PCI@EARFCN given") : "a test or sweep is already running");
         window.setTimeout(keeper_poll, 5000);
     }).catch(function(e) { $("#keeper_lt_sum").text("keeper not reachable: " + e.message); });
 }
@@ -2898,6 +2913,17 @@ function inject_html()
     .tools_container details {
         overflow-x: auto;
     }
+    .keeper_scroll {
+        max-height: 320px;
+        overflow: auto;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        margin-top: 4px;
+        background: #fff;
+    }
+    .keeper_scroll table.tools_table { margin-top: 0; }
+    .keeper_scroll tr:first-child th { position: sticky; top: 0; background: #fff; z-index: 1; }
+    .keeper_scroll:has(> table:empty) { display: none; }        /* no results yet: no empty box */
 
     .ngbr_cell_table td, .ngbr_cell_table th {
         all: revert;
@@ -3425,25 +3451,27 @@ function inject_html()
                 <div style="font-size:11px">Findings (last 24 h, goal: call-ready all the time) - the keeper decides reboots itself (within limits); locks stay your decision:</div>
                 <ul id="keeper_findings" style="margin:2px 0 6px 18px"></ul>
                 <div style="font-size:11px">5G cells (24 h):</div>
-                <table class="tools_table" id="keeper_cells"></table>
+                <div class="keeper_scroll"><table class="tools_table" id="keeper_cells"></table></div>
                 <div style="font-size:11px">LTE carriers (24 h, first = anchor; capacity = est. Mbit/s per MIMO layer before load (MHz x 3GPP TR 36.942 truncated Shannon) - RSRP is only comparable within one band):</div>
-                <table class="tools_table" id="keeper_carriers"></table>
+                <div class="keeper_scroll"><table class="tools_table" id="keeper_carriers"></table></div>
                 <div id="keeper_hours" style="font-size:11px;margin:4px 0"></div>
                 <div style="font-size:11px">LTE cells measured (24 h, RSRP only - compare within one band; low bands read ~10 dB higher; in_ca = used now):</div>
-                <table class="tools_table" id="keeper_lte"></table>
+                <div class="keeper_scroll"><table class="tools_table" id="keeper_lte"></table></div>
                 <div id="keeper_lock_sum" style="margin:4px 0"></div>
-                <div style="font-size:11px">Best anchors from the lock tests (stayed on the cell, ranked for calls):</div>
-                <table class="tools_table" id="keeper_anchors"></table>
+                <div style="font-size:11px">Best anchors from the LTE lock tests (stayed on the cell, ranked for calls):</div>
+                <div class="keeper_scroll"><table class="tools_table" id="keeper_anchors"></table></div>
+                <div style="font-size:11px">Best 5G cells from the 5G lock tests (same anchor, ranked for calls):</div>
+                <div class="keeper_scroll"><table class="tools_table" id="keeper_anchors5"></table></div>
                 <div style="font-size:11px">Cell registry (every LTE cell the ZTE measured for >= 1 h; site = real eNB/cell from the ZTE, site_* = your notes):</div>
-                <table class="tools_table" id="keeper_cells_reg"></table>
-                <div style="font-size:11px">LTE anchor lock tests (keeper) - <a onclick="keeper_lock_test()">Run LTE lock test</a>:</div>
+                <div class="keeper_scroll"><table class="tools_table" id="keeper_cells_reg"></table></div>
+                <div style="font-size:11px">Lock tests (keeper) - <a onclick="keeper_lock_test('lte')">Run LTE lock test</a> | <a onclick="keeper_lock_test('nr')">Run 5G lock test</a>:</div>
                 <div id="keeper_lt_sum" style="font-size:11px"></div>
-                <table class="tools_table" id="keeper_lt"></table>
+                <div class="keeper_scroll"><table class="tools_table" id="keeper_lt"></table></div>
                 <div style="font-size:11px">Antenna modes (5G n78), tested by the keeper - <a onclick="keeper_sweep()">Run antenna sweep now</a>:</div>
                 <div id="keeper_sweep_sum" style="font-size:11px"></div>
-                <table class="tools_table" id="keeper_sweeps"></table>
+                <div class="keeper_scroll"><table class="tools_table" id="keeper_sweeps"></table></div>
                 <div style="font-size:11px">Last events (why = the keeper's explanation):</div>
-                <table class="tools_table" id="keeper_events"></table>
+                <div class="keeper_scroll"><table class="tools_table" id="keeper_events"></table></div>
             </details>
             <details open>
                 <summary><b>Antenna alignment</b></summary>

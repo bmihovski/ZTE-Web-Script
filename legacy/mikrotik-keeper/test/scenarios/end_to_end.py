@@ -32,7 +32,7 @@ class Op(http.server.BaseHTTPRequestHandler):
         return send(204)
 ops = http.server.ThreadingHTTPServer(("127.0.0.1", 18102), Op); threading.Thread(target=ops.serve_forever, daemon=True).start()
 
-env = dict(os.environ, NIGHT_SCREEN="off", MIN_SAMPLE_S="0", ZTE_HOST="127.0.0.1:18101", ZTE_PASS_HASH=m.S(m.PW), PORT="18100", INFORM_INTERVAL="60", DATA=DATA,
+env = dict(os.environ, NIGHT_SCREEN="off", MIN_SAMPLE_S="0", ZTE_HOST="127.0.0.1:18101", ZTE_PASS_HASH=m.S(m.PW), PORT="18100", INFORM_INTERVAL="60", DATA=DATA, CPE_READY_TRIES="1", CPE_READY_GAP_S="0",
            CHECKIN_DAYS="30", YETTEL_URL="http://127.0.0.1:18102/acs/bulgaria", RAW="1")
 p = subprocess.Popen([sys.executable, "-m", "keeper"], cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 time.sleep(0.8)

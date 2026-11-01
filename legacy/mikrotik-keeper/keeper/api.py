@@ -22,16 +22,21 @@ ROUTES = [   # method, path, summary, [(param, example, description)], capabilit
     ("get", "/export", "CSV download for your own analysis",
      [("kind", "samples", " | ".join(KINDS)), ("from", "2026-10-28", "from time"), ("to", "2026-10-29", "to time"),
       ("device", "zte", "zte | mikrotik | * (default: the active DEVICE)")], None),
-    ("get", "/anchors", "LTE lock-test ranking (latest result per cell) and the unlocked baseline", [], None),
-    ("get", "/lock-tests", "Lock test now (step, phase, plan) + the last 40 results", [], None),
+    ("get", "/anchors", "Lock-test ranking (latest result per cell) and the unlocked baseline, per RAT", [("rat", "lte", "lte | nr (default lte)")], None),
+    ("get", "/lock-tests", "Lock test now or last (step, phase, plan, RAT, pinned anchor) + the last 40 results", [("rat", "", "lte | nr (default: all results)")], None),
     ("get", "/antenna-sweeps", "The last 40 rows of keeper antenna sweeps", [], None),
     ("post", "/lte-lock", "Keep an LTE cell locked (guarded: released when lost, restored when back) or remove it", [("cell", "340@100", "PCI@EARFCN or none")], None),
     ("post", "/nr-lock", "Keep a 5G cell locked (guarded) or remove it", [("cell", "534@636576", "PCI@ARFCN or none")], None),
     ("post", "/antennas", "Antenna mode the keeper re-applies at every ZTE boot (overrides ANT_AUTO / ANT5 / ANT6)",
      [("auto", "0", "1 = ZTE auto-select"), ("ant5", "4", "1 omni, 4 dir"), ("ant6", "4", "1 omni, 4 dir"), ("none", "", "back to the env")], "antennas"),
-    ("post", "/lock-test", "Start an LTE lock test: unlocked baseline, then each cell (lock + reboot + ~15 min)",
-     [("cells", "340@100,434@100", "PCI@EARFCN, comma separated"), ("align", "0", "1 = wait for 'aligned' before measuring each cell")], "lock_test"),
-    ("post", "/lock-test-continue", "Align mode: the antenna is aligned for the locked cell - measure now", [("heading", "108", "antenna heading, degrees")], "lock_test"),
+    ("post", "/lock-test", "Start a lock test (rat=lte: PCI@EARFCN; rat=nr: PCI@ARFCN with the LTE anchor pinned): baseline, then each "
+     "cell (ZTE: lock + reboot; ATL: lock script, no reboot) + ~15 min. align=1 waits for you per cell; align=0 tests a fixed position",
+     [("cells", "340@100,434@100", "PCI@EARFCN (rat=nr: PCI@ARFCN), comma separated"), ("rat", "lte", "lte | nr (nr pins the LTE anchor)"),
+      ("align", "0", "1 = on-go: wait for 'aligned' before each cell; 0 = fixed position (the antenna is where it is)"),
+      ("anchor", "340@1550", "rat=nr: the LTE anchor to pin (default: the keeper's LTE lock, else the serving cell)"),
+      ("heading", "108", "align=0 and rat=nr: the antenna heading to record with the results (degrees)")], "lock_test"),
+    ("post", "/lock-test-continue", "Align mode: the antenna is aligned for the locked cell - measure now (the 5G test then sweeps the antennas)",
+     [("heading", "108", "antenna heading, degrees")], "lock_test"),
     ("post", "/lock-test-skip", "Skip the current lock-test step (what was measured is kept)", [], "lock_test"),
     ("post", "/lock-test-stop", "Stop the lock test (the lock is removed)", [], "lock_test"),
     ("post", "/antenna-sweep", "Run the keeper's antenna sweep (close every ZTE web page first)", [], "sweep"),
@@ -61,13 +66,17 @@ ROUTES = [   # method, path, summary, [(param, example, description)], capabilit
 ]
 
 
+ENUMS = {"rat": ["lte", "nr"], "align": ["0", "1"], "auto": ["0", "1"], "ant5": ["1", "4"], "ant6": ["1", "4"]}
+
+
 def openapi():
-    """OpenAPI 3 document from ROUTES."""
+    """OpenAPI 3 document from ROUTES (params with a known value set get an `enum`)."""
     paths = {}
     for m, path, summary, params, cap in ROUTES:
         paths.setdefault(path, {})[m] = {"summary": summary + (" [%s only]" % cap if cap else ""), "responses": {"200": {"description": "OK"}},
                                          "parameters": [{"name": n, "in": "query", "required": False, "description": d,
-                                                         "schema": {"type": "string"}, "example": ex} for n, ex, d in params]}
+                                                         "schema": dict({"type": "string"}, **({"enum": ENUMS[n]} if n in ENUMS else {})),
+                                                         "example": ex} for n, ex, d in params]}
         if m == "post" and path in ("/userdata", "/cell-ids"):
             paths[path][m]["requestBody"] = {"content": {"text/plain": {"schema": {"type": "string"}, "example": '{"lte:100:340": 318289}'}}}
     return {"openapi": "3.0.3", "info": {"title": "zte-keeper", "version": VERSION,
@@ -91,7 +100,8 @@ def capability(method, path):
 def config():
     """/status -> config: what the keeper is set to and doing now (core + the driver's part)."""
     dev = devices.current()
-    return dict({"device": common.DEVICE, "lock_test": locktest.lt["running"], "lte_lock": state().get("lte_lock"), "nr_lock": state().get("nr_lock"),
+    return dict({"device": common.DEVICE, "lock_test": locktest.lt["running"], "lock_test_rat": locktest.lt.get("rat"),
+                 "lock_test_anchor": locktest.lt.get("anchor"), "lte_lock": state().get("lte_lock"), "nr_lock": state().get("nr_lock"),
                  "fast_mode": acs.fast(), "busy": common.busy(), "inform_s": acs.INTERVAL,
                  "clock": {"verified": common.clock_ok(), "modem_skew_s": common.clock["skew"], "unverified_since": common.clock["bad_since"]},
                  "manages": common.E("CPE", "") or state().get("cpe") or dev.MAKER,
@@ -150,9 +160,12 @@ class H(BaseHTTPRequestHandler):
         dev = devices.current()
         try:
             if path == "/lock-tests":
-                lt = locktest.lt
+                lt = locktest.lt; rat = g("rat")
+                if rat not in ("", "lte", "nr"): raise ValueError("rat=lte|nr")
+                rows = store.rows(DATA, "lock_tests")
+                if rat: rows = [r for r in rows if r.get("rat", "lte") == rat]
                 code, obj = 200, {"running": lt["running"], "phase": lt.get("phase", ""), "plan": lt["plan"], "align": lt["align"],
-                                  "waiting": lt["waiting"], "results": store.rows(DATA, "lock_tests", last=40)}
+                                  "rat": lt.get("rat"), "anchor": lt.get("anchor"), "waiting": lt["waiting"], "results": rows[-40:]}
             elif path == "/antenna-sweeps":
                 code, obj = 200, store.rows(DATA, "antenna_sweeps", last=40)
             elif path == "/userdata":
@@ -232,10 +245,19 @@ class H(BaseHTTPRequestHandler):
                 ok = locktest.lt["waiting"]
                 if ok: locktest.lt["heading"] = (g("heading") or "?")[:12]; locktest.lt["go"].set()
                 code, res = 200 if ok else 409, {"measuring": ok, "cell": locktest.lt["running"]}
-            elif path == "/lock-test":        # /lock-test?cells=434@1550,340@100 (a baseline "none" runs first)
+            elif path == "/lock-test":        # /lock-test?cells=434@1550,340@100[&rat=nr&anchor=340@1550&align=1] (a baseline "none" runs first)
+                rat = g("rat", "lte")
+                if rat not in ("lte", "nr"): raise ValueError("rat=lte|nr")
                 cells = [c for c in g("cells").split(",") if re.fullmatch(guard.SPEC_RE, c)]
-                ok = bool(cells) and locktest.start(cells, g("align") == "1")
-                code, res = 202 if ok else (400 if not cells else 429), {"started": ok, "plan": ["none"] + cells if ok else []}
+                if rat == "nr":
+                    for c in cells:
+                        try: guard.nr_band(c.split("@")[1])
+                        except ValueError: raise ValueError("cells=PCI@ARFCN with a known 5G band (n78 620000-653333, n28 151600-160600): " + c)
+                anchor = locktest.anchor_for(rat, g("anchor")) if cells else None      # ValueError -> 400: a 5G test needs an anchor
+                heading = (g("heading") or "")[:12]
+                ok = bool(cells) and locktest.start(cells, g("align") == "1", rat, anchor, heading)
+                code, res = 202 if ok else (400 if not cells else 429), {"started": ok, "rat": rat, "anchor": anchor if ok else None,
+                                                                        "heading": heading if ok else "", "plan": ["none"] + cells if ok else []}
             elif path == "/antenna-sweep":
                 ok = dev.antennas.start_sweep()
                 code, res = 202 if ok else 429, {"started": ok}

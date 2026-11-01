@@ -11,3 +11,8 @@
 /legacy/mikrotik-keeper/keeper/devices/zte/__pycache__
 /legacy/mikrotik-keeper/test/__pycache__
 /legacy/mikrotik-keeper/test/fixtures/__pycache__
+/legacy/mikrotik-keeper/test/scenarios/__pycache__
+
+# local dsh plugins (machine-specific links; the repo skill stays in .dsh/skills)
+.dsh/plugins/
+/legacy/mikrotik-keeper/tools/__pycache__

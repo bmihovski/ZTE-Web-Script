@@ -12,6 +12,15 @@ ssh "$R" '
 :put "== cpu frequency setting"; /system routerboard settings print
 :put "== bridge settings"; /interface bridge settings print
 :put "== bridge ports"; /interface bridge port print
+:put "== ip addresses"; /ip address print
+:put "== ip routes"; /ip route print
+:put "== dhcp client"; /ip dhcp-client print detail
+:put "== dhcp server"; /ip dhcp-server print; /ip dhcp-server network print
+:put "== firewall filter"; /ip firewall filter print
+:put "== firewall nat"; /ip firewall nat print
+:put "== firewall mangle"; /ip firewall mangle print
+:put "== firewall raw"; /ip firewall raw print
+:put "== interfaces"; /interface print
 :put "== fasttrack rules"; /ip firewall filter print where action=fasttrack-connection
 :put "== queue type cake"; /queue type print detail where name=cake
 :put "== simple queues (order = match order)"; /queue simple print detail

@@ -5,14 +5,16 @@ CAKE queue on the main MikroTik (one simple queue, created once by you - see REA
   a direction is busy and latency stays near the baseline          -> its limit up 5 %                     (use what the cell gives)
   limits stay within SQM_MIN_* .. SQM_MAX_* (plan: 200 / 30 Mbit/s).  Idea from cake-autorate (lynxthecat), much simplified.
 Latency = the keeper's own probe (brain.lat_buf: TCP connect to 1.1.1.1 / 8.8.8.8 every 2 s) - the same thing a call feels.
-Env: SQM_URL (http://192.168.6.1/rest; off when empty), SQM_USER, SQM_PASS, SQM_QUEUE (sqm), SQM_IFACE (ether5 = the ZTE),
-     SQM_MIN_UP / SQM_MAX_UP / SQM_MIN_DOWN / SQM_MAX_DOWN (Mbit/s: 5 / 30 / 20 / 200), SQM_DELAY_MS (15), SQM_TICK (10),
+Env: SQM_URL (http://192.168.6.1/rest; off when empty), SQM_USER, SQM_PASS, SQM_QUEUE (sqm), SQM_IFACE (ether5 = the WAN),
+     SQM_MIN_UP / SQM_MAX_UP / SQM_MIN_DOWN / SQM_MAX_DOWN (Mbit/s: 5 / 26 / 20 / 150 here), SQM_DELAY_MS (15), SQM_TICK (10),
      SQM_INSECURE=1 only if the router's HTTPS certificate is self-signed (LAN only),
      SQM_DOWN_HOURS ("Mon-Fri 09:00-18:00": shape the download only then - outside it the download is unlimited, full speed and no
      CAKE work for the CPU; empty = always). The upload is always shaped: cheap, and the biggest gain for calls.
-Measured 2026-10-28 (RB450Gx4, ether5 bridged in software, latency above idle p50 / p90): upload CAKE 28 Mbit/s +9 / +40 ms;
-download unshaped 163 Mbit/s +48 / +172 ms; download CAKE 142 Mbit/s +36 / +57 ms with one core at 100 %; download fq_codel at 140
-136 Mbit/s +0 / +9 ms, cores 25-45 % -> queue=cake/fqc, SQM_MAX_DOWN=150 (README)."""
+A TR-069 cell/RAT/boot change rebases the delay baseline once (a new cell has a different round trip; without it a slower cell
+reads as permanent congestion and the limit can stay pinned low). The probe alone cannot tell "new path" from "bufferbloat".
+Measured 2026-10-31 (RB450Gx4, ether5 = routed WAN, NAT on the RB450, use-ip-firewall=no; single-stream, latency above idle):
+download unshaped ~178 Mbit/s; at 120M fq_codel 112 Mbit/s p95 58-80 ms, CAKE 109-111 Mbit/s p95 62-93 (no better); uplink 28.2
+Mbit/s unshaped vs 25.2 at 26M with p95 26 vs 33 ms -> queue=cake/fqc, SQM_MAX_UP=26, SQM_MAX_DOWN=150 (README)."""
 import base64, json, os, ssl, statistics, threading, time, urllib.error, urllib.request
 
 E = os.environ.get
@@ -23,7 +25,7 @@ DELAY, TICK = float(E("SQM_DELAY_MS", "15")), float(E("SQM_TICK", "10"))
 ERROR_WAIT_S = 300
 DOWN_HOURS = E("SQM_DOWN_HOURS", "")
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-st = {"limit": None, "id": None, "last": None, "changes": 0, "error": None}
+st = {"limit": None, "id": None, "last": None, "changes": 0, "error": None, "path_seen": 0.0}
 
 
 def rest(method, path, body=None):
@@ -67,11 +69,13 @@ def step(limit, rate, delay):
     return new
 
 
-def delay_now(lat_buf, now, idle):
+def delay_now(lat_buf, now, idle, rebase=False):
     """ms above the idle round trip, per probe target: median of the last TICK s minus that target's idle baseline, averaged over
     the targets. The baseline is a running average of the medians seen while the link was idle (idle=True updates it), so
     cellular jitter at idle reads ~0 and a long download doesn't raise its own baseline. Per target: 1.1.1.1 and 8.8.8.8 have
-    different round trips. None until a baseline exists (the first idle tick)."""
+    different round trips. None until a baseline exists (the first idle tick). rebase=True (the cell/RAT/boot just changed) lets a
+    *higher* round trip replace the baseline once: the old baseline belonged to the old cell, so without it a slower cell reads as
+    permanent congestion. The probe loop alone cannot tell "new path" from "bufferbloat"."""
     by = {}
     for x in list(lat_buf):
         if x[1] is not None and now - x[0] <= max(TICK, 6): by.setdefault(x[2] if len(x) > 2 else "", []).append(x[1])
@@ -79,14 +83,16 @@ def delay_now(lat_buf, now, idle):
     for k, xs in by.items():
         m = statistics.median(xs)
         if k in base and m < base[k]: base[k] = m              # a lower round trip proves the baseline is lower: follow at once
+        elif k in base and rebase and m > base[k]: base[k] = m  # the path changed and the new cell is slower: adopt its round trip
         elif idle: base[k] = m if k not in base else base[k] + 0.2 * (m - base[k])   # (a baseline from a slow start, e.g. right
                                                                                       # after a ZTE boot on LTE only, read -126 ms)
         if k in base: d.append(m - base[k])
     return round(statistics.mean(d), 1) if d else None
 
 
-def tick(lat_buf, now=None):
-    """One SQM step: read the queue / traffic, decide, PATCH the limit when it changes >= 2 %."""
+def tick(lat_buf, now=None, path_change=0.0):
+    """One SQM step: read the queue / traffic, decide, PATCH the limit when it changes >= 2 %.
+    path_change = epoch of the last TR-069 cell/RAT/boot change (0 = none); the delay baseline is rebased once per change."""
     now = now or time.time()
     if st["id"] is None:
         q = [x for x in rest("GET", "/queue/simple") if x.get("name") == QUEUE]
@@ -102,7 +108,12 @@ def tick(lat_buf, now=None):
         raise RuntimeError("queue %r is not shaping: %s %.0f Mbit/s for 30 s with limit %.0f - fasttrack still on, or the queue's "
                            "target / dst don't match the traffic" % (QUEUE, over[0], rate[over[0]], st["limit"][over[0]]))
     idle = all(rate[k] < 0.1 * (st["limit"][k] or MAX[k]) for k in rate)
-    d = delay_now(lat_buf, now, idle); new = step(st["limit"], rate, d)
+    rebase = bool(path_change) and path_change > st.get("path_seen", 0) and now - path_change < 180
+    if rebase: st["path_seen"] = path_change
+    d = delay_now(lat_buf, now, idle, rebase); new = step(st["limit"], rate, d)
+    if rebase:                      # do not raise the limit on the rebase tick: let the next ticks see if the new path is calm
+        for k in new:
+            if st["limit"][k] and new[k] > st["limit"][k]: new[k] = st["limit"][k]
     if not down_on(now):                                  # outside SQM_DOWN_HOURS: download unlimited, remember the shaped limit
         if st["limit"]["down"]: st["down_kept"] = st["limit"]["down"]
         new["down"] = 0
@@ -121,13 +132,13 @@ def tick(lat_buf, now=None):
     return None
 
 
-def loop(lat_buf, log):
+def loop(lat_buf, log, path_change=None):
     """Thread: `tick()` every SQM_TICK s. After an error (wrong password, no queue, router busy) it waits ERROR_WAIT_S (300) -
     a failing login every 10 s would flood the router's log; the queue keeps its last limit meanwhile."""
     while True:
         time.sleep(TICK)
         try:
-            ch = tick(lat_buf); st["error"] = None
+            ch = tick(lat_buf, path_change=(path_change() if path_change else 0.0)); st["error"] = None
             if ch and st["changes"] % 30 == 1: log("SQM limit now %s/%s Mbit/s up/down (delay %s ms)" % (ch["up"], ch["down"], st["last"]["delay_ms"]))
         except Exception as e:
             if st["error"] != str(e): log("SQM: %s - retry in %d s" % (e, ERROR_WAIT_S))
@@ -135,9 +146,9 @@ def loop(lat_buf, log):
             time.sleep(ERROR_WAIT_S)
 
 
-def start(lat_buf, log):
-    """Start the SQM thread when SQM_URL is set."""
-    if URL: threading.Thread(target=loop, args=(lat_buf, log), daemon=True).start()
+def start(lat_buf, log, path_change=None):
+    """Start the SQM thread when SQM_URL is set. path_change() -> epoch of the last TR-069 cell/RAT/boot change."""
+    if URL: threading.Thread(target=loop, args=(lat_buf, log, path_change), daemon=True).start()
 
 
 if __name__ == "__main__":          # self-check of the decision rule
@@ -156,6 +167,8 @@ if __name__ == "__main__":          # self-check of the decision rule
     assert delay_now(load, now, False) == 40.0 and st["base"] == {"1.1.1.1": 32.0, "8.8.8.8": 52.0}    # loaded: baseline kept
     low = [(now - 4, 20.0, "1.1.1.1"), (now - 2, 40.0, "8.8.8.8")]
     assert delay_now(low, now, False) == 0.0 and st["base"] == {"1.1.1.1": 20.0, "8.8.8.8": 40.0}        # lower: baseline follows down
+    st["base"] = {"1.1.1.1": 32.0, "8.8.8.8": 52.0}
+    assert delay_now(load, now, False, rebase=True) == 0.0 and st["base"] == {"1.1.1.1": 72.0, "8.8.8.8": 92.0}  # new cell, slower path: adopt it once
     st["base"] = {}
     assert step({"up": 20.0, "down": 0}, {"up": 19, "down": 180}, 40) == {"up": 17.0, "down": 0}          # unlimited stays unlimited
     DOWN_HOURS = "Mon-Fri 09:00-18:00"
@@ -178,4 +191,13 @@ if __name__ == "__main__":          # self-check of the decision rule
     assert [b for m, b in calls if m == "PATCH"] == [{"max-limit": "30000k/0"}] and st["down_kept"] == 150.0, calls   # once, no "not shaping"
     DOWN_HOURS = ""; tick([], now)
     assert [b for m, b in calls if m == "PATCH"][-1] == {"max-limit": "30000k/150000k"}                                 # back: the kept limit
+    calls.clear(); st.update(id=None, limit=None, over=0, base={"1.1.1.1": 32.0, "8.8.8.8": 52.0}, path_seen=0.0)
+    DOWN_HOURS = ""
+    rest = lambda method, path, body=None: (calls.append((method, body)) or
+        ([{".id": "*1", "name": QUEUE, "max-limit": "20M/100M"}] if method == "GET" else [{"tx-bits-per-second": "1000000", "rx-bits-per-second": "5000000"}]))
+    tick(load, now, path_change=now)              # cell change: rebase the baseline, but do not raise the limit on this tick
+    assert st["base"] == {"1.1.1.1": 72.0, "8.8.8.8": 92.0} and st["path_seen"] == now, st["base"]
+    assert not [b for m, b in calls if m == "PATCH"], calls
+    tick(load, now)                               # next tick: normal behaviour, and the same event is not rebased twice
+    assert [b for m, b in calls if m == "PATCH"] == [{"max-limit": "30000k/150000k"}], calls
     print("OK sqm")

@@ -8,9 +8,12 @@ Never touches the network mode (Yettel = NSA only), never locks anything on its 
 
 Env: AUTO (off | dryrun | on, default dryrun), MIN_SINR (3), BAD_MIN (15), NO5G_MIN (10), NOSVC_MIN (5), PREFERRED_NR (e.g. 636576/534),
      MAX_REBOOTS_DAY (3), REBOOT_GAP_H (2), IDLE_DOWN_BYTES (250000), IDLE_UP_BYTES (62500), BUSY_UP_BYTES (125000) - bytes/s,
-     LAT_TARGETS (1.1.1.1:443,8.8.8.8:443; off = no probe), CALL_P95_MS (150), CALL_JITTER_MS (30), CALL_LOSS_PCT (3.4 = 1 of 30 probes)
+     LAT_TARGETS (1.1.1.1:443,8.8.8.8:443; off = no probe), CALL_P95_MS (150), CALL_JITTER_MS (30), CALL_LOSS_PCT (3.4 = 1 of 30 probes),
+     INTTEST_URL (https://speed.cloudflare.com/__down?bytes=2000000; off = no download), INTTEST_MB (2) - the lock test's load generator,
+     ONLINE_STABLE (5) - consecutive successful probes before a lock-test step measures,
+     WAKE_HOST (1.1.1.1), WAKE_SIZE (1000) - the NSA wake traffic when the target 5G cell is not up
 """
-import collections, datetime, json, math, os, re, socket, statistics, threading, time, urllib.parse
+import collections, datetime, json, math, os, re, socket, statistics, subprocess, threading, time, urllib.parse, urllib.request
 
 from keeper import common, store
 
@@ -29,6 +32,8 @@ TARGETS = [(h, int(p)) for h, p in (t.rsplit(":", 1) for t in E("LAT_TARGETS", "
 # Teams network targets (Microsoft): round trip < 100 ms, jitter < 30 ms, loss < 1% - per minute with ~30 probes a bit of slack
 CALL_P95, CALL_JITTER, CALL_LOSS = float(E("CALL_P95_MS", "150")), float(E("CALL_JITTER_MS", "30")), float(E("CALL_LOSS_PCT", "3.4"))
 LAT_COLS = ["lat_p50", "lat_p95", "lat_max", "jitter_ms", "loss_pct", "call_ok"]
+INTTEST_URL, INTTEST_MB = E("INTTEST_URL", "https://speed.cloudflare.com/__down?bytes=2000000"), float(E("INTTEST_MB", "2"))
+ONLINE_STABLE = int(E("ONLINE_STABLE", "5"))
 HIST = collections.deque(maxlen=48 * 60 + 60)          # ~48 h at one sample a minute
 ACTIONS = collections.deque(maxlen=50)                  # (epoch, what, reason, mode)
 lat_buf = collections.deque(maxlen=400)                 # (epoch, ms or None)
@@ -148,7 +153,7 @@ def probe_loop():
 def latency_row(window=60):
     """Latency fields of the last `window` s: p50 / p95 / max, jitter, loss %, call_ok (1 = within the Teams limits)."""
     now = time.time()
-    pts = [x for x in lat_buf if now - x[0] <= window]
+    pts = [x for x in list(lat_buf) if now - x[0] <= window]
     xs = [x[1] for x in pts]
     if not xs: return {c: "" for c in LAT_COLS}
     ok = [x for x in xs if x is not None]
@@ -161,6 +166,99 @@ def latency_row(window=60):
     good = p95 is not None and p95 <= CALL_P95 and jitter != "" and jitter <= CALL_JITTER and loss <= CALL_LOSS
     return {"lat_p50": pct(ok, 50) or "", "lat_p95": p95 or "", "lat_max": round(max(ok), 1) if ok else "",
             "jitter_ms": jitter, "loss_pct": loss, "call_ok": 1 if good else 0}
+
+
+def internet_test(seconds=30, url=None, mb=None, stop=None):
+    """A short download (`INTTEST_MB` from `INTTEST_URL`, "off" = none) while the latency probe keeps running, for `seconds`.
+    The download is a load generator, not a speed test: it raises the NSA 5G leg, so the probe measures 5G and not only LTE; the
+    rate is context only. Returns the probe's fields (lat_p50, lat_p95, jitter_ms, loss_pct, call_ok) plus down_mbps / tested_mb /
+    error. A failed download leaves the probe values in place."""
+    url = INTTEST_URL if url is None else url
+    mb = INTTEST_MB if mb is None else mb
+    out = {"down_mbps": None, "tested_mb": 0.0, "error": ""}
+    stop = stop or threading.Event()
+    if url and url != "off" and mb > 0:
+        def pull():
+            t0 = time.time(); n = 0
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "zte-keeper"})
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    while not stop.is_set() and n < mb * 1e6:
+                        b = r.read(int(min(65536, mb * 1e6 - n)))
+                        if not b: break
+                        n += len(b)
+                out["tested_mb"] = round(n / 1e6, 2)
+                if n: out["down_mbps"] = round(n * 8 / 1e6 / max(0.001, time.time() - t0), 2)
+            except Exception as e:
+                out["error"] = repr(e)
+        threading.Thread(target=pull, daemon=True).start()
+    time.sleep(seconds)
+    stop.set()
+    out.update(latency_row(seconds + 2))
+    return out
+
+
+def wake(seconds=60, host=None, size=None, stop=None):
+    """Continuous small traffic for `seconds` to raise the NSA 5G leg when the target cell is not up: ping `host` with `size`-byte
+    packets (`WAKE_HOST` 1.1.1.1, `WAKE_SIZE` 1000); `stop` (threading.Event) ends it early. If ping is not usable in the container
+    it falls back to back-to-back small downloads. Returns True when traffic ran."""
+    host, size = host or E("WAKE_HOST", "1.1.1.1"), int(size or E("WAKE_SIZE", "1000"))
+    stop = stop or threading.Event()
+    if seconds <= 0: return False
+    t0 = time.time(); p = None
+    try:
+        p = subprocess.Popen(["ping", "-s", str(size), "-i", "1", "-c", str(max(1, int(seconds))), host],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, ValueError):
+        p = None
+    if p is not None:                                  # ping: 1000-byte packets for the whole window (stops when the cell is up)
+        while time.time() - t0 < seconds + 5 and p.poll() is None and not stop.is_set(): time.sleep(0.5)
+        ran = time.time() - t0
+        try: p.terminate()
+        except Exception: pass
+        if ran >= 1: return True                       # traffic went out even if ICMP is filtered (exit code 1)
+    # fallback (no ping / no permission): small downloads back to back, ~16 KB each
+    url = INTTEST_URL
+    if not url or url == "off": return False
+    while time.time() - t0 < seconds and not stop.is_set():
+        try:
+            with urllib.request.urlopen(url, timeout=5) as r: r.read(16384)
+        except Exception:
+            time.sleep(1)
+        time.sleep(0.2)
+    return True
+
+
+def wait_online(timeout=180, stable=None):
+    """Wait until the last `stable` (ONLINE_STABLE, 5) latency probes all succeeded - the link is back after a reboot - up to
+    `timeout` s. True when it is (also immediately with LAT_TARGETS=off: no probe). Checks that the newest probe is recent."""
+    if not TARGETS: return True
+    stable = stable or ONLINE_STABLE
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        recent = list(lat_buf)[-stable:]
+        if len(recent) >= stable and all(x[1] is not None for x in recent) and time.time() - recent[-1][0] <= 30: return True
+        time.sleep(1)
+    return False
+
+
+def quality_values(call_ready=None, loss=None, lat=None, jitter=None, sinr=None, rsrp=None):
+    """The keeper's decision tuple, highest wins: internet quality first - call-ready %, loss %, latency p95, jitter - and signal
+    (5G SINR, RSRP) only as a tie-breaker. Missing values count as the worst."""
+    n = lambda v, worst: worst if v is None else v
+    return (n(f(call_ready), -1), -n(f(loss), 999), -n(f(lat), 9999), -n(f(jitter), 9999), n(f(sinr), -99), n(f(rsrp), -999))
+
+
+def clearly_better(a, b):
+    """Does quality tuple `a` clearly beat `b`? The first metric that differs beyond its margin decides (call-ready +5 pp,
+    loss -1 pp, latency p95 -10 ms, jitter -10 ms), so a noisy short window does not flip a mode or a cell; signal (SINR +1 dB,
+    then RSRP +2) only breaks a tie. a, b = quality_values(...)."""
+    (ac, al, ap, aj, asr, arp), (bc, bl, bp, bj, bsr, brp) = a, b
+    if abs(ac - bc) >= 5: return ac > bc
+    if abs(al - bl) >= 1.0: return al > bl
+    if abs(ap - bp) >= 10: return ap > bp
+    if abs(aj - bj) >= 10: return aj > bj
+    return asr - bsr >= 1 or (asr == bsr and arp - brp >= 2)
 
 
 # ---------- history ----------
@@ -185,7 +283,7 @@ def add(row, live=True):
 def window(hours):
     """Samples of the last `hours` from the in-memory history."""
     cutoff = time.time() - hours * 3600
-    return [r for r in HIST if ts(r) >= cutoff]
+    return [r for r in list(HIST) if ts(r) >= cutoff]
 
 
 # ---------- decisions ----------
@@ -212,7 +310,7 @@ def decide(row, events_log, now=None):
             reason = "5G on %s, not a preferred cell (%s) for %d min" % (row["nr_cell"], ",".join(PREFERRED), BAD_MIN)
     if not reason:
         return None
-    done = [a for a in ACTIONS if a[3] == "on"]
+    done = [a for a in list(ACTIONS) if a[3] == "on"]
     blocked = None
     if done and now - done[-1][0] < REBOOT_GAP:
         blocked = "last reboot %d min ago" % ((now - done[-1][0]) / 60)
@@ -407,25 +505,42 @@ def network_changes(now=None):
 
 
 # ---------- best anchor from the lock tests ----------
-def anchor_ranking():
-    """latest lock-test result per candidate, ranked for calls: call-ready %, then no 5G drops, 5G SINR, anchor capacity.
-    A candidate only counts if the ZTE really stayed on it (>= 80 % of the minutes)."""
-    if not reg_st["dir"]: return {"baseline": None, "ranked": []}
+def nr_capacity(r):
+    """5G cell of a lock-test row -> estimated Mbit/s per MIMO layer (Yettel n78 100 MHz / 20 MHz, n28 10 MHz; TDD share applied).
+    The ARFCN comes from `nr_arfcn` (the cell the step measured - the unlocked baseline has no lock spec), else from the lock."""
+    arfcn = r.get("nr_arfcn") or (r.get("lock") or "").split("@")[-1]
+    bw = NR_BW.get(arfcn) or (100 if arfcn.isdigit() and 620000 <= int(arfcn) <= 653333 else 10 if arfcn.isdigit() and 151600 <= int(arfcn) <= 160600 else None)
+    c = capacity(bw, f(r.get("nr_sinr_p50")))
+    return round(c * NR_DL_SHARE, 1) if c and arfcn.isdigit() and int(arfcn) >= 620000 else c
+
+
+def anchor_ranking(rat="lte"):
+    """latest lock-test result per candidate of one RAT (lte: anchors, nr: 5G cells), ranked for calls: call-ready %, then no 5G
+    drops, 5G SINR, capacity. A candidate only counts if the modem really stayed on it (>= 80 % of the minutes); the baseline is None
+    when its newest row was not measured (a skipped step is no reference) or was unstable."""
+    if not reg_st["dir"]: return {"rat": rat, "baseline": None, "ranked": [], "failed": [], "unstable": []}
     rows = store.rows(reg_st["dir"], "lock_tests")
     latest = {}
     for r in rows:                     # cell lists (the MC889 keeps only the first cell) and skipped / stopped steps are no results
-        if ";" not in r["lock"] and r.get("mode") not in ("cut", "night"): latest[r["lock"]] = r     # night = unloaded: shortlist only
+        if r.get("rat", "lte") == rat and ";" not in r["lock"] and r.get("mode") not in ("cut", "night"): latest[r["lock"]] = r
     def cap(r):
+        if rat == "nr": return nr_capacity(r)
         if not r.get("anchor"): return None
         e = REG["lte"].get(r["anchor"]) or {}
         return capacity(e.get("bw") or BANDS.get(band_of(r["anchor"].split("/")[0])[1:], (0, None))[1], f(r.get("anchor_sinr_p50")))
     def key(r):
-        # both legs count: a weak anchor drops the 5G leg, so anchor SINR + 5G SINR (a 1 dB better 5G must not beat a -1 dB anchor)
+        if rat == "nr":                 # 5G cells: internet quality first, signal only breaks a tie, capacity last
+            return quality_values(r.get("call_ok_pct"), r.get("loss_pct"), r.get("lat_p95"), r.get("jitter_ms"),
+                                  r.get("nr_sinr_p50"), r.get("nr_rsrp_p50")) + (nr_capacity(r) or 0,)
+        # LTE: both legs count: a weak anchor drops the 5G leg, so anchor SINR + 5G SINR (a 1 dB better 5G must not beat a -1 dB anchor)
         return (f(r.get("call_ok_pct")) or 0, -(f(r.get("no5g_min")) or 0), (f(r.get("anchor_sinr_p50")) or -20) + (f(r.get("nr_sinr_p50")) or -20), cap(r) or 0)
+    unstable = lambda r: str(r.get("unstable")) == "1"      # the 5G leg follows its LTE anchor: not a result when the anchor was unstable
     base = latest.get("none")
-    ok = [dict(r, capacity=cap(r)) for k, r in latest.items() if k != "none" and (f(r.get("on_target_pct")) or 0) >= 80]
-    return {"baseline": dict(base, capacity=cap(base)) if base else None, "ranked": sorted(ok, key=key, reverse=True),
-            "failed": [k for k, r in latest.items() if k != "none" and (f(r.get("on_target_pct")) or 0) < 80]}
+    if base and (unstable(base) or f(base.get("call_ok_pct")) is None): base = None   # skipped / not measured: not a reference
+    ok = [dict(r, capacity=cap(r)) for k, r in latest.items() if k != "none" and not unstable(r) and (f(r.get("on_target_pct")) or 0) >= 80]
+    return {"rat": rat, "baseline": dict(base, capacity=cap(base)) if base else None, "ranked": sorted(ok, key=key, reverse=True),
+            "failed": [k for k, r in latest.items() if k != "none" and not unstable(r) and (f(r.get("on_target_pct")) or 0) < 80],
+            "unstable": sorted(k for k, r in latest.items() if unstable(r))}
 
 
 def night_best():
@@ -453,6 +568,22 @@ def night_finding():
         return ["RECOMMEND: night screen %s: %s beat %s (%s) on an unloaded network -> run an aligned daytime lock test for it"
                 % (run[:10], ", ".join(d(r) for r in win), base["lock"], d(base))]
     return ["INFO: night screen %s: %s - none beat %s (%s)" % (run[:10], ", ".join(d(r) for r in others) or "nothing measured", base["lock"], d(base))]
+
+
+def anchor_best(rat="lte"):
+    """Daytime ranking of one RAT (`lte`: anchors, `nr`: 5G cells) -> (best_row, base_row, gain) where gain = best clearly beats the
+    unlocked baseline (under load). (None, None, False) with no ranked results or no baseline (we don't auto-apply without a baseline)."""
+    rk = anchor_ranking(rat)
+    if not rk["ranked"] or not rk["baseline"]: return (rk["ranked"][0] if rk["ranked"] else None), rk["baseline"], False
+    best, base = rk["ranked"][0], rk["baseline"]
+    if rat == "nr":                     # 5G: the same clear-win rule as the antenna mode (signal only when the quality is a tie)
+        q = lambda r: quality_values(r.get("call_ok_pct"), r.get("loss_pct"), r.get("lat_p95"), r.get("jitter_ms"),
+                                     r.get("nr_sinr_p50"), r.get("nr_rsrp_p50"))
+        return best, base, clearly_better(q(best), q(base))
+    gain = ((f(best.get("call_ok_pct")) or 0) - (f(base.get("call_ok_pct")) or 0) >= 1 or
+            (f(best.get("nr_sinr_p50")) or -99) - (f(base.get("nr_sinr_p50")) or -99) >= 2 or
+            (f(best.get("anchor_sinr_p50")) or -99) - (f(base.get("anchor_sinr_p50")) or -99) >= 3)
+    return best, base, gain
 
 
 def anchor_finding(rk):
@@ -531,7 +662,7 @@ def report(hours=24):
     out["lte_cells"] = [x for band in sorted({c["band"] for c in cells_all})
                         for x in sorted((c for c in cells_all if c["band"] == band), key=lambda c: -(c["rsrp_p50"] or -999))[:6]]
     out["actions"] = [{"time": datetime.datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M"), "what": w, "reason": why, "mode": m}
-                      for t, w, why, m in ACTIONS if time.time() - t < hours * 3600]
+                      for t, w, why, m in list(ACTIONS) if time.time() - t < hours * 3600]
     out["findings"] = findings(out)
     return out
 
@@ -626,7 +757,9 @@ def api(path, cfg, data_dir):
         cols = [c for c in uq(q.get("cols", "")).split(",") if c]
         rows = store.rows(data_dir, "samples", lo, hi, last=500)            # from the store: the whole retention (KEEP_DAYS), not just 48 h
         return 200, {"rows": [{c: r.get(c) for c in cols} if cols else r for r in rows]}
-    if u[0] == "/anchors": return 200, anchor_ranking()
+    if u[0] == "/anchors":                  # ?rat=lte|nr (default lte): the lock-test ranking of that RAT
+        rat = q.get("rat") or "lte"
+        return (200, anchor_ranking(rat)) if rat in ("lte", "nr") else (400, {"error": "rat=lte|nr"})
     if u[0] == "/events":
         return 200, store.rows(data_dir, "events", last=int(q.get("n", "50")))
     return 404, {"error": "unknown path", "paths": ["/status", "/report?hours=24", "/events?n=50", "/cells"]}

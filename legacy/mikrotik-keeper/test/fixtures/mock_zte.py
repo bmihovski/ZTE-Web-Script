@@ -2,7 +2,8 @@
 import hashlib, http.server, json, threading, time, urllib.parse, sys
 S = lambda x: hashlib.sha256(x.encode()).hexdigest().upper()
 PW = "secret"
-st = {"boot": time.time() - 120, "sessions": set(), "sets": [], "LD": "LD1234", "RD": "RD5678", "logins": 0, "bad_ad": 0, "no_referer": 0, "ppp_up_at": 0}
+st = {"boot": time.time() - 120, "sessions": set(), "sets": [], "LD": "LD1234", "RD": "RD5678", "logins": 0, "bad_ad": 0, "no_referer": 0, "ppp_up_at": 0,
+      "refuse": set()}   # goformIds the fake ZTE refuses (the browser page took the session, like the real one)
 script = []   # (from_s, fields) timeline relative to start
 T0 = time.time()
 def fields():
@@ -42,6 +43,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 sid = str(st["logins"]); st["sessions"] = {sid}; return self.reply({"result": "0"}, sid)   # one web session at a time, like the real ZTE
             return self.reply({"result": "3"})
         if self.sid() not in st["sessions"]: return self.reply({"result": "failure"})
+        if d["goformId"] in st["refuse"]: return self.reply({"result": "failure"})   # refused: the mode did not change (not recorded as set)
         st["sets"].append((round(time.time() - T0, 1), d["goformId"], d.get("antenna_name", ""), d.get("state", d.get("ant_switch_enable", "%s@%s" % (d.get("lte_pci_lock"), d.get("lte_earfcn_lock")) if "lte_pci_lock" in d else d.get("nr5g_cell_lock", "")))))
         self.reply({"result": "success"})
 def browser_login_at(sec):   # someone logs in on the router web page -> the keeper's session ends

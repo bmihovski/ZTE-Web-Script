@@ -25,6 +25,12 @@ def nr_value(spec):
     return "%s,%s,%d,%d" % (pci, arfcn, band, scs)
 
 
+def unlock_val(fmt):
+    """TR-069 value that CLEARS the LTE lock: the learned unlock read-back if non-empty, else the lock template filled with 0,0
+    (the ZTE reads LockLTECell back empty when unlocked, and an empty SPV is rejected - write 0,0 like the web page does)."""
+    return fmt.get("unlock") or fmt["lock"].format(pci=0, earfcn=0)
+
+
 def web_set(pci, earfcn, reboot):
     """LTE_LOCK_CELL_SET on the web page (0/0 = unlock), optionally REBOOT_DEVICE."""
     with web_lock:
@@ -41,6 +47,18 @@ def web_set(pci, earfcn, reboot):
 def web_lock_reboot(pci, earfcn):
     """LTE lock (0/0 = unlock) + reboot on the web page."""
     web_set(pci, earfcn, True)
+
+
+def web_clear(nr=True):
+    """Clear the LTE lock and (nr=True) the 5G lock on the web page, then reboot: a keeper that died mid-test left them on the ZTE."""
+    with web_lock:
+        w = Web(); err = w.login()
+        if err: raise RuntimeError(err)
+        r = w.post({"goformId": "LTE_LOCK_CELL_SET", "lte_pci_lock": "0", "lte_earfcn_lock": "0"}).get("result")
+        r2 = w.post({"goformId": "NR5G_LOCK_CELL_SET", "nr5g_cell_lock": "0,0,0,0"}).get("result") if nr else "success"
+        try: w.post({"goformId": "REBOOT_DEVICE"})
+        except Exception: pass                                  # the ZTE may drop the connection while it goes down
+        if r != "success" or r2 != "success": raise RuntimeError("clearing the locks -> %s / %s" % (r, r2))
 
 
 def learn_lock_format(pci="434", earfcn="1550"):
@@ -68,7 +86,7 @@ def lte_lock_reboot(pci, earfcn):
     fmt = state().get("lte_lock_fmt")
     if not fmt and LOCK_VIA == "tr069" and str(pci) != "0": fmt = learn_lock_format()     # never learn on an unlock (learning sets a lock)
     if fmt and LOCK_VIA == "tr069":
-        val = fmt["unlock"] if str(pci) == "0" else fmt["lock"].format(pci=pci, earfcn=earfcn)
+        val = unlock_val(fmt) if str(pci) == "0" else fmt["lock"].format(pci=pci, earfcn=earfcn)
         if acs.tr069_set([(LOCK_PARAM, "xsd:string", val)], reboot=True): return "tr069"
         log("TR-069 lock write %r not accepted - using the web page" % val)
     web_lock_reboot(pci, earfcn)
@@ -76,19 +94,24 @@ def lte_lock_reboot(pci, earfcn):
 
 
 def lock_lte(spec):
-    """Lock one cell `'434@1550'` + reboot; None / 'none' = unlock (driver interface, used by lock tests)."""
+    """LTE lock + reboot (internal; the driver interface is `locks_apply`). None / 'none' = unlock."""
     if not spec or spec == "none": return lte_lock_reboot(0, 0)
     return lte_lock_reboot(*guard.spec_cells(spec)[0])
 
 
 def locks_apply(lte=None, nr=None):
-    """Set the LTE and/or 5G lock (`'pci@channel'`, 'none' = remove, None = leave), then ONE reboot. TR-069 first, web fallback."""
-    if nr is None: return lock_lte(lte)
-    pairs = [(NR_PARAM, "xsd:string", "" if nr == "none" else nr_value(nr))]
+    """Set the LTE and/or 5G lock (`'pci@channel'`, 'none' = remove, None = leave), then ONE reboot. TR-069 first, web fallback.
+    Only `lte` (nr None) is the LTE lock test / the night restore; both legs go in one SetParameterValues, so one reboot carries them."""
+    if lte is None and nr is None: return None
+    if nr is None: return lock_lte(lte)                  # LTE only (lock tests, night restore)
+    pairs, fmt = [], None
     if lte is not None:
         fmt = state().get("lte_lock_fmt") or (learn_lock_format() if LOCK_VIA == "tr069" and lte != "none" else None)
-        p, e = ("0", "0") if lte == "none" else guard.spec_cells(lte)[0]
-        pairs = pairs + [(LOCK_PARAM, "xsd:string", fmt["unlock"] if lte == "none" else fmt["lock"].format(pci=p, earfcn=e))] if fmt else None
+    if lte is None or fmt:
+        pairs = [(NR_PARAM, "xsd:string", "0,0,0,0" if nr == "none" else nr_value(nr))]
+        if lte is not None:
+            p, e = ("0", "0") if lte == "none" else guard.spec_cells(lte)[0]
+            pairs.append((LOCK_PARAM, "xsd:string", unlock_val(fmt) if lte == "none" else fmt["lock"].format(pci=p, earfcn=e)))
     if pairs and LOCK_VIA == "tr069":
         if acs.tr069_set(pairs, reboot=True): return "tr069"
         log("TR-069 lock write %r not accepted - using the web page" % [v for _, _, v in pairs])
@@ -99,8 +122,9 @@ def locks_apply(lte=None, nr=None):
             p, e = ("0", "0") if lte == "none" else guard.spec_cells(lte)[0]
             r = w.post({"goformId": "LTE_LOCK_CELL_SET", "lte_pci_lock": p, "lte_earfcn_lock": e}).get("result")
             if r != "success": raise RuntimeError("LTE_LOCK_CELL_SET %s@%s -> %s" % (p, e, r))
-        r = w.post({"goformId": "NR5G_LOCK_CELL_SET", "nr5g_cell_lock": "0,0,0,0" if nr == "none" else nr_value(nr)}).get("result")
-        if r != "success": raise RuntimeError("NR5G_LOCK_CELL_SET %s -> %s" % (nr, r))
+        if nr is not None:
+            r = w.post({"goformId": "NR5G_LOCK_CELL_SET", "nr5g_cell_lock": "0,0,0,0" if nr == "none" else nr_value(nr)}).get("result")
+            if r != "success": raise RuntimeError("NR5G_LOCK_CELL_SET %s -> %s" % (nr, r))
         try: w.post({"goformId": "REBOOT_DEVICE"})
         except Exception: pass
     return "web"

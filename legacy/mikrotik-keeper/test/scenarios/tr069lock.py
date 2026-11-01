@@ -50,10 +50,10 @@ time.sleep(0.5); assert zte["intervals"][-1] == "60"                    # ... an
 assert common.state().get("lock_test") is None
 assert api.config()["zte_locks_raw"]["LockLTECell"] == "340,1550" and api.config()["lte_lock_fmt"]["lock"] == "{pci},{earfcn}"
 # unlock over TR-069
-assert zlocks.lte_lock_reboot(0, 0) == "tr069" and zte["lock"] == "" and zte["reboots"] == 2 and web_sets() == ["434@1550", "0@0"]
+assert zlocks.lte_lock_reboot(0, 0) == "tr069" and zte["lock"] == "0,0" and zte["reboots"] == 2 and web_sets() == ["434@1550", "0@0"]   # clear writes 0,0 over TR-069 (not an empty string -> no web fallback)
 # LTE + 5G lock in one SetParameterValues, one reboot; 5G unlock = ""
 assert zlocks.locks_apply("340@100", "534@636576") == "tr069" and zte["lock"] == "340,100" and zte["nr"] == "534,636576,78,30" and zte["reboots"] == 3
-assert zlocks.locks_apply("none", "none") == "tr069" and zte["lock"] == "" and zte["nr"] == "" and zte["reboots"] == 4
+assert zlocks.locks_apply("none", "none") == "tr069" and zte["lock"] == "0,0" and zte["nr"] == "0,0,0,0" and zte["reboots"] == 4   # clears write 0,0 / 0,0,0,0, not empty
 # cell lists are not taken (the MC889 keeps only the first cell of a list)
 assert re.fullmatch(guard.SPEC_RE, "434@1550") and not re.fullmatch(guard.SPEC_RE, "434@1550;121@6400")
 # a value the ZTE refuses -> no TR-069 reboot, web page used instead
@@ -71,3 +71,8 @@ import csv; from keeper import store
 ev = [e["event"] for e in store.rows(DATA, "events")]; print(ev)
 assert ev.index("lock format learned") < ev.index("lock format unknown") and ev.count("reboot sent") == 4   # 4 TR-069 reboots
 print("OK test_tr069lock")
+
+from keeper.devices.zte import locks as _locks
+assert _locks.unlock_val({"lock": "{pci},{earfcn},0,0", "unlock": ""}) == "0,0,0,0"      # empty read-back -> write 0,0, not ''
+assert _locks.unlock_val({"lock": "{pci},{earfcn}", "unlock": "0,0,0,0"}) == "0,0,0,0"   # non-empty read-back kept
+print("OK unlock_val")

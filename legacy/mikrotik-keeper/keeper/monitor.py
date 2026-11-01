@@ -6,12 +6,14 @@ device model; fields only one device has are its `EXTRA`.
 from keeper import alert, brain, devices
 from keeper.common import event, log, record, stamp
 
+import time
+
 SAMPLE_COLS = ["time", "uptime_s", "tech", "nr_cell", "nr_rsrp", "nr_rsrq", "nr_sinr", "nr_rssi", "nr_ssb_rsrp", "nr_ssb_sinr",
                "lte_cell", "lte_site", "lte_rsrp", "lte_rsrq", "lte_sinr", "lte_rssi", "lte_ca", "lte_neighbours", "rrc",
                "down_bps", "up_bps", "net_delay", "temps", "fota", "nr_ca"] + brain.LAT_COLS
 """Shared sample fields. `nr_cell` = `ARFCN/PCI` or `no5G`; `lte_cell` = `EARFCN/PCI` or '' (no service);
 `lte_ca` = `B7/3350/340:-91/1@20 ...` (band/EARFCN/PCI:RSRP/SINR@MHz, anchor first); rates in bytes/s."""
-st = {"prev_cell": None, "prev_sinr": ""}
+st = {"prev_cell": None, "prev_sinr": "", "prev_lte": None, "prev_uptime": None}
 
 
 def sample(vals):
@@ -36,6 +38,15 @@ def finish(row):
         log("5G %s -> %s: %s" % (st["prev_cell"], nr, why))
     st["prev_cell"] = nr
     if row["nr_sinr"]: st["prev_sinr"] = row["nr_sinr"]
+    lte = row.get("lte_cell")                                  # a cell / anchor / reboot change makes the SQM delay baseline
+    try: upn = float(row.get("uptime_s"))                      # meaningless (a new path has a different round trip): rebase it
+    except (TypeError, ValueError): upn = None
+    if (switched or (st["prev_lte"] is not None and lte != st["prev_lte"]) or
+            (st["prev_uptime"] is not None and upn is not None and upn < st["prev_uptime"])):
+        ctx = getattr(brain, "ctx", None)
+        if ctx is not None: ctx["path_change_at"] = time.time()
+    st["prev_lte"] = lte
+    if upn is not None: st["prev_uptime"] = upn
     for job in dev.minute_jobs(): job(row)
     alert.check_calls(dev.NAME, list(brain.HIST)[-15:])
     why = brain.decide(row, event)

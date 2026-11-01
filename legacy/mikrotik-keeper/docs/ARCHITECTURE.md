@@ -28,12 +28,12 @@ keeper/                    the package; on the router disk1/zte-keeper/keeper/ =
   monitor.py               per-minute pipeline: read -> sample -> store -> brain -> driver jobs -> alerts -> decisions
   brain.py                 latency probe, 48 h history, cell registry, report / findings, auto reboot, GET API
   guard.py                 lock guard: set when idle, release when lost, restore when back, reconcile with the modem
-  locktest.py              LTE lock tests (align / skip / stop) and the night screen
+  locktest.py              lock tests (LTE / 5G, pinned anchor, un/stable-anchor gate, internet-tested antenna sweep, on-go / fixed position, skip / stop) and the night screen
   api.py                   HTTP: ROUTES (-> /openapi.json, /docs), GET / POST handlers; POST / = CWMP
   sqm.py                   adaptive CAKE limit on the main router (RouterOS REST)
   alert.py                 Telegram messages, rate-limited per kind
   devices/__init__.py      the driver interface (table) + current()
-  devices/zte/             ZTE MC889: __init__ (driver), web (goform page), antennas (+ sweep), locks, checkin (operator relay)
+  devices/zte/             ZTE MC889: __init__ (driver), web (goform page), antennas (modes, sweep, per-cell mode at boot), locks, checkin (operator relay)
   devices/mikrotik.py      MikroTik ATL 5G: driver, cell-monitor scans, AT-command locks via RouterOS script Download
   start.sh, keeper.sh      container entry; v1 shell keeper (legacy fallback)
 docs/ARCHITECTURE.md       this file (also the front page of the API docs)
@@ -81,8 +81,8 @@ driver's `EXTRA` (`mikrotik_*`). Locks never mix: each device has its own state 
 - **ZTE MC889** (production): TR-069 for everything it exposes. It needs the web page for antenna modes, and the web page is
   the fallback for locks. A lock costs a reboot (~2 min offline), so locks change only when the link is idle.
 - **MikroTik ATL 5G** (backup, data-limited SIM; only the LAN TR-069 traffic is free): monitoring, guarded locks as AT
-  commands, scans. It forgets locks on reboot, so the guard sets them again. Lock tests, night screen and antennas are ZTE only
-  for now.
+  commands, scans. It forgets locks on reboot, so the guard sets them again. Lock tests run on both (an ATL step is one script, no
+  CPE reboot); night screen and antennas are ZTE only.
 - **ATL without the keeper** (summer house, no RB450): the ATL runs standalone and unlocked; its TR-069 client keeps trying
   the ACS, which is harmless. Nothing to install. A static queue on the ATL itself is optional. The keeper only sees a gap in
   the ATL's data.

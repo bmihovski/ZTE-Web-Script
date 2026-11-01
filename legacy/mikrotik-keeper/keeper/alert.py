@@ -6,7 +6,8 @@ import json, os, re, threading, time, urllib.parse, urllib.request
 
 TOKEN, CHAT = os.environ.get("TG_TOKEN", ""), os.environ.get("TG_CHAT", "")
 GAP = float(os.environ.get("ALERT_GAP_MIN", "30")) * 60
-_last, sent, _retry = {}, [], []          # _retry: messages that failed (no internet, modem rebooting) - sent again later
+_last, sent, _retry = {}, [], []
+_send_lock = threading.Lock()          # serialise actual sends: no interleaved "telegram alert failed" prints during a reboot storm          # _retry: messages that failed (no internet, modem rebooting) - sent again later
 # events (keeper.event "event" field) worth a message: regex -> alert kind
 RULES = [(r"lock .*removed|lock .* still set|lock .* missing", "lock"), (r"^(lte|5g) lock ", "lock"), (r"^reboot (queued|held)$", "reboot"),
          (r"^no inform$", "silent"), (r"^FOTA state$", "firmware"), (r"^night screen$", "night"), (r"^clock verified$", "clock")]
@@ -22,12 +23,13 @@ def send(text, kind, now=None):
 
 
 def _post(text):
-    try:
-        data = urllib.parse.urlencode({"chat_id": CHAT, "text": text[:3500], "disable_web_page_preview": "true"}).encode()
-        urllib.request.urlopen("https://api.telegram.org/bot%s/sendMessage" % TOKEN, data=data, timeout=10).read()
-    except Exception as e:
-        print("telegram alert failed: %s - retried within a minute" % type(e).__name__, flush=True)   # never the URL: it holds the token
-        if len(_retry) < 20: _retry.append((time.time(), text))
+    with _send_lock:
+        try:
+            data = urllib.parse.urlencode({"chat_id": CHAT, "text": text[:3500], "disable_web_page_preview": "true"}).encode()
+            urllib.request.urlopen("https://api.telegram.org/bot%s/sendMessage" % TOKEN, data=data, timeout=10).read()
+        except Exception as e:
+            print("telegram alert failed: %s - retried within a minute" % type(e).__name__, flush=True)   # never the URL: it holds the token
+            if len(_retry) < 20: _retry.append((time.time(), text))
 
 
 def report(text, now=None):

@@ -31,7 +31,8 @@ try:
     time.sleep(0.5)
     st = call("GET", "/status")[1]
     assert st["lte_anchor"] == "B7 3350/202 SINR 8.0" and st["nr_cell"] == "no5G", st
-    assert call("POST", "/lock-test?cells=202@3350")[0] == 409 and call("POST", "/antenna-sweep")[0] == 409             # ZTE-only actions
+    assert call("POST", "/lock-test?rat=x")[0] == 400 and call("POST", "/lock-test?rat=nr&cells=534@700000")[0] == 400  # validated, never started
+    assert call("POST", "/antenna-sweep")[0] == 409                                                                     # still ZTE-only
     # experiment 2: AT+QNWLOCK through a RouterOS script (TR-069 Download of a .alter file served by the keeper)
     s2, q = call("POST", '/mikrotik/at?cmd=AT%2BQNWLOCK%3D%22common%2F4g%22%2C1%2C3350%2C202&restart=1')
     assert s2 == 200 and 'input="AT+QNWLOCK=\\"common/4g\\",1,3350,202"' in q["script"] and "/interface lte enable" in q["script"], q

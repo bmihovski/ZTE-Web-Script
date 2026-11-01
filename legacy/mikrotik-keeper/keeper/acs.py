@@ -204,7 +204,7 @@ def watchdog():
     while True:
         time.sleep(60)
         quiet = time.monotonic() - st["last_inform"]
-        if st["last_inform"] and quiet > 5 * INTERVAL + 300:
+        if st["last_inform"] and quiet > 5 * INTERVAL + 300 and not common.busy():     # a lock test reboots the modem on purpose: not a real outage
             if not warned:
                 log("no inform from the %s for %d s - check its TR-069 Server URL" % (devices.current().NAME, quiet)); event({"event": "no inform"})
             warned = True

@@ -33,8 +33,11 @@ The `keeper` package is our own TR-069 ACS (code map: `docs/ARCHITECTURE.md`). T
   env `LOCK_UPGRADES=0` to skip) and logs a `FOTA state` event whenever the ZTE's own updater leaves `version_idle/fota_idle`.
   Operator check-ins: off (`CHECKIN_DAYS=0`) or `observe` mode - either way the operator cannot push firmware
 
-Deploy with `./deploy.sh` from the Mac (runs pytest, uploads only the code over SFTP - never `data/` - removes the old single-file
-`keeper.py` / `mikrotik.py`, restarts the container). One-time SSH setup on the router:
+Deploy with `python3 tools/deploy.py deploy` (or `./deploy.sh`): it runs the checks (compile, pytest, userscript syntax), refuses
+while a lock test is running, backs up what is on the router to `backups/<time>/` (manifest, hashes, DB snapshot), uploads only the
+code (never `data/`; the old single-file `keeper.py` / `mikrotik.py` are removed), restarts the container and verifies the live
+version, the OpenAPI contract, the config keys, a fresh sample and the DB - and puts the backup back when the verification fails.
+`check`, `status`, `logs`, `backup`, `verify` and `rollback <dir>` are the other subcommands. One-time SSH setup on the router:
 `/ip service set ssh disabled=no address=192.168.6.0/24`, upload your `~/.ssh/id_ed25519.pub` in WinBox Files, then
 `/user ssh-keys import public-key-file=id_ed25519.pub user=admin`. Test: `ssh admin@192.168.6.1 /system identity print`.
 If the upload can't create `devices/` (old SFTP), create the folders once on the router and run it again.
@@ -45,6 +48,10 @@ First install / by hand (replaces v1, same container, same envs - `INTERVAL`, `S
    (replace; WinBox Files takes folders by drag and drop). Old `keeper.py` / `mikrotik.py` there are unused - delete them.
 2. `/container stop [find name="zte-keeper"]` ... `/container start [find name="zte-keeper"]` (first start installs python3, ~10 MB).
 3. ZTE web page `#tr069config`: Server URL `http://192.168.6.250:7557/`, Apply. `/log print where message~"zte-keeper"` shows the informs.
+
+Tests: `python3 -m pytest -q` from this folder (every `test/scenarios/*.py` runs in its own process; the fake ZTE web + CWMP are in
+`test/`). A keeper change bumps `VERSION` in `keeper/__init__.py`; the business rules are in `docs/BUSINESS_RULES.md` and the project
+skill `.dsh/skills/keeper/SKILL.md` (repo root) loads them for the agent.
 
 Optional envs: `INFORM_INTERVAL` (60), `MAX_MB` (30 - per file before it rotates to `.1`; samples.csv grows ~2 MB/day, so ~30 days and at most ~65 MB on disk), `CHECKIN_DAYS` (30, 0 = never), `YETTEL_URL`, `PORT` (7557), `RAW=1` (log every TR-069
 message to `tr069-raw.log`, contains IMEI/IMSI and unmasked operator values - debugging only). Back to v1: last line of `start.sh`.
@@ -76,22 +83,59 @@ The keeper measures, analyses and decides; the userscript only shows the results
   TR-069 has no antenna settings; LTE is steered with the LTE cell / band lock.
 - **Antenna sweep** (`devices/zte/antennas.py`): the 4 modes of antennas 5/6 (omni/dir), each 10 s settle + 20 readings on the ZTE web page;
   winner = best median 5G SINR on the cell most modes saw (RSRP breaks ties), only if >= `SWEEP_MIN_GAIN_DB` (1) better than the
-  current mode. `AUTO=on`: the winner is kept (state.json) and set after every boot; dryrun: recommends and puts the current mode back.
+  current mode. (The 5G lock test's own sweep differs: it internet-tests every mode and the quality decides - see the lock test.) `AUTO=on`: the winner is kept (state.json) and set after every boot; dryrun: recommends and puts the current mode back.
   Every `SWEEP_DAYS` (7) when idle and the ZTE is up > 15 min, or on demand (`POST /antenna-sweep`, panel button). ~2 min; the
   browser's ZTE session is logged out meanwhile. Results: `antenna_sweeps.csv`, `GET /antenna-sweeps`, an `antenna sweep` event.
-- **LTE lock test** (`locktest.py`): `POST /lock-test?cells=434@1550,340@100` (panel: "Run LTE lock test"). Runs an unlocked baseline,
-  then each PCI@EARFCN: LTE lock + reboot (`LTE_LOCK_CELL_SET` / `REBOOT_DEVICE` on the web page), waits for the boot inform,
-  `LOCKTEST_SETTLE_S` (180) settle, `LOCKTEST_MEASURE_MIN` (12) of samples -> `lock_tests.csv` / `GET /lock-tests`: share of minutes on
-  the locked cell, anchor SINR/RSRP/RSRQ, CA combination, which 5G cells came with it and their SINR, call-ready %, latency, jitter.
-  The lock is ALWAYS removed at the end (and at the next start if the keeper was stopped mid-test); keeper reboots and sweeps pause
-  meanwhile. Each test drops the internet ~2 min (reboot). ~17 min per cell.
-  **Align mode** (`&align=1`, panel: OK on "Align the antenna for each cell"): the baseline is measured at the starting heading; after
-  each lock the keeper waits (lock stays) until you aligned the antenna for that cell (peak guide, LTE SINR) and send
-  `POST /lock-test-skip` / `POST /lock-test-stop` (panel: "skip this step" / "stop the test") end the current step / the whole test;
-  what was measured so far is kept (`mode` cut, note "skipped/stopped by you"), the lock is removed at the end as always.
-  `POST /lock-test-continue?heading=118` (panel: "Aligned - measure now") - so every cell is compared at its own best heading, and
-  the heading is stored with the result. No "aligned" within `LOCKTEST_ALIGN_TIMEOUT_MIN` (90) -> the test stops, lock removed.
-  The ZTE page / app may stay open during a lock test.
+- **Lock test, LTE and 5G** (`locktest.py`): `POST /lock-test?cells=434@1550,340@100` (LTE, panel: "Run LTE lock test") or
+  `POST /lock-test?rat=nr&cells=534@636576,747@629988` (5G, panel: "Run 5G lock test"). Runs a baseline (LTE: unlocked; 5G: the
+  anchor pinned, the 5G leg free), then each cell: LTE = that cell locked; 5G = that cell locked **with the LTE anchor pinned**
+  (`anchor=PCI@EARFCN`, else the keeper's LTE lock, else the serving cell), so only the 5G leg changes between the candidates; both
+  legs go into one lock (one reboot on the ZTE). On the ZTE: lock + reboot (`LTE_LOCK_CELL_SET` / `NR5G_LOCK_CELL_SET` /
+  `REBOOT_DEVICE` on the web page), wait for the boot inform; on the ATL: one RouterOS script, no reboot (the interface restart).
+  `LOCKTEST_SETTLE_S` (180) settle, `LOCKTEST_MEASURE_MIN` (12) of samples -> `GET /lock-tests`: share of minutes on the locked cell (`on_target_pct`), anchor SINR/RSRP/RSRQ, CA combination, which 5G
+  cells came with it and their SINR/RSRP/CA, call-ready %, latency, jitter. Rows carry `rat` (lte / nr), `nr_arfcn` (the ARFCN the 5G
+  leg was on, so even the unlocked baseline has a capacity) and `antennas` (the mode the step measured with). A step without samples
+  keeps its values empty (`minutes` 0, no loss / SINR), and `GET /lock-tests` reports the running or **last** test (`rat`, `anchor`,
+  `plan`), so a finished 5G test is not shown as `lte`. The lock is ALWAYS removed at the end (both legs for a 5G test; and at the next
+  start if the keeper was stopped mid-test); keeper reboots and sweeps pause meanwhile. ~17 min per LTE cell, ~19 min per 5G cell with
+  the antenna sweep.
+  **Two modes** (`align`): `align=1` (on-go) waits after each lock until you aligned the antenna for that cell (peak guide: LTE SINR
+  for an LTE test, 5G SINR of the locked / serving cell for a 5G test), then `POST /lock-test-continue?heading=118` (panel:
+  "Aligned - measure now"). `align=0` (fixed position) does not wait: the antenna stays where it is - for an already aligned antenna
+  (several 5G cells in the same direction) or when the position must stay the best one for the LTE anchor; `heading=108` records that
+  position with the rows. `POST /lock-test-skip` / `POST /lock-test-stop` (panel: "skip this step" / "stop the test") end the current
+  step / the whole test; what was measured so far is kept (`mode` cut, note "skipped/stopped by you"), the lock is removed at the end
+  as always. No "aligned" within `LOCKTEST_ALIGN_TIMEOUT_MIN` (90) -> the test stops, lock removed.
+  **5G test only, ZTE only, in both modes (the baseline too):** each of the 4 antenna modes is tested with a short
+  internet test (`INTTEST_MB` = 2 MB from `INTTEST_URL`, over `INTTEST_S` = 30 s per mode; the download is a load generator that
+  raises the NSA 5G leg) while the latency probe runs, and the mode with the **best internet quality** is left set for the
+  measurement: call-ready %, loss %, latency p95, jitter - and only then 5G SINR / RSRP as a tie-breaker. A mode replaces the current one only on a clear win (call-ready +5 pp, loss -1 pp,
+  p95 -10 ms, jitter -10 ms; signal +1 dB only when the quality is a tie), so a noisy window does not flip it; the row records the
+  mode used (`antennas`). Modes that saw another 5G cell don't count. If no mode sees the cell, the step is skipped with its reason
+  (`cell not reachable: no 5G on <cell>`), no 12-minute measurement. The kept (boot) mode changes only when the winner is
+  auto-applied, with its mode. Close the
+  ZTE page / app during a 5G lock test (the sweep needs the web login); during an LTE test it may stay open.
+  **Readiness before a step:** a rebooted CPE's web and WAN come back minutes later, so after the boot the keeper waits for the CPE
+  web (`LOCKTEST_READY_TIMEOUT_S` 180; `CPE_READY_TRIES` 3 answers, `CPE_READY_GAP_S` 5 s apart) before the sweep / alignment,
+  and for a stable link (`LOCKTEST_ONLINE_TIMEOUT_S` 180, `ONLINE_STABLE` 5 good probes) before measuring. A timeout is written on
+  the row and the step goes on (the same wait protects the antenna apply after a boot: `ANT_READY_TIMEOUT_S` 300).
+  **A cell that is not up is skipped, not measured:** after each antenna mode the keeper checks whether the target 5G cell is
+  actually there (over the last few reads, so a single network handover does not look like "the cell is gone"); if not, it sends wake
+  traffic for `WAKE_S` (60 s; a 1000-byte ping to `WAKE_HOST` 1.1.1.1, a small-download fallback) and checks again. A mode is
+  invalid when the cell never appears there, when the 5G cell switches `SWEEP_MAX_NR_SWITCHES` (3) times in that mode, or when the
+  ZTE refuses the antenna set after `ANT_SET_TRIES` (3; each retry logs in again, because an open browser page takes the single web
+  session) - the row records the exact goforms and the next mode is tried. If no mode is usable, the cell's step is recorded with
+  its reason (`cell not reachable: ...`, `5G cell switching: ...`, `antenna control failed: ...`) and the test moves on: no
+  12-minute measurement of a cell it cannot see or control. A web / antenna-control failure skips the baseline too (a "not measured"
+  reference is no reference: the ranking then has no baseline and nothing is auto-applied against it); a 5G-free or switching
+  baseline is measured - it is the reference. The test always pushes a summary (also when nothing was ranked, naming the cells it
+  could not see), and the antenna mode is applied once per boot (a modem sends two informs per boot; the second no longer starts a
+  second apply).
+  **Unstable LTE anchor = no 5G result:** the 5G leg follows its anchor, so a step where the serving LTE cell changes after the
+  settle (`LOCKTEST_MAX_ANCHOR_SWITCHES` 0 = any), the pinned anchor serves < `LOCKTEST_MIN_ANCHOR_PCT` (80) % of the minutes, or
+  there is a > `LOCKTEST_MAX_GAP_MIN` (3) min gap without data (management lost) is stored with `unstable` 1 and the reason - but
+  excluded from `/anchors?rat=nr` and the auto-apply, and the Telegram message lists it. The per-mode internet test is gated the same
+  way: an LTE switch during a mode's window invalidates that mode (all modes invalid -> the step is measured as is, noted).
 - **Locks over TR-069** (`LOCK_VIA=tr069`, default): the first time a lock is needed, the keeper learns how the ZTE shows a lock in
   `Device.Cellular.Interface.1.LockLTECell` (sets one on the web page WITHOUT reboot, reads it over TR-069, removes it again -
   nothing changes on the radio) and stores the format (`lte_lock_fmt` in state.json). From then on lock / unlock =
@@ -101,11 +145,25 @@ The keeper measures, analyses and decides; the userscript only shows the results
   `340,100`. So locks are one cell (`PCI@EARFCN`); fallback is the lock guard's job (release + restore).
 - **Fast mode**: while the keeper acts (lock test, lock change, learning, a queued TR-069 write) the inform interval is
   `FAST_INTERVAL` (10 s), otherwise `INFORM_INTERVAL` (60 s); samples stay one a minute (`MIN_SAMPLE_S` 55).
-- **Best anchor** (`GET /anchors`): latest lock-test result per candidate; only cells the ZTE really stayed on (>= 80 %);
-  ranked for calls: call-ready %, then minutes without 5G, 5G SINR, anchor capacity. The finding recommends the winner only if it
-  clearly beats the unlocked baseline (call-ready +1 %, 5G SINR +2 dB or anchor SINR +3 dB).
+- **Best anchor / best 5G cell** (`GET /anchors?rat=lte|nr`): latest lock-test result per candidate of that RAT; only cells the modem
+  really stayed on (>= 80 %); ranked for calls. The 5G ranking is **internet quality first** (call-ready %, loss %, latency p95, jitter,
+  then 5G SINR / RSRP, capacity last), so a cell cannot win on signal alone; the LTE ranking keeps call-ready %, no-5G minutes, signal
+  and anchor capacity. The finding recommends the winner only if it clearly beats the unlocked baseline (the same margins as the
+  antenna mode; LTE: call-ready +1 %, 5G SINR +2 dB or anchor SINR +3 dB); a baseline whose newest row was not measured (a skipped
+  step) is no baseline - then nothing is auto-applied, only recommended. Unstable 5G rows (`unstable` 1) are not ranked at all.
+  A finished 5G test auto-applies its winner when `AUTO=on`
+  (the 5G lock only - the pinned LTE anchor stays your decision) and keeps the winning step's antenna mode, so the next boot
+  re-applies both. When signal and internet disagree, the Telegram message names the cell signal alone would have picked.
 - **Antenna mode to keep** (`POST /antennas?auto=0&ant5=4&ant6=4`, `?none` = back to the env; panel: "keep it in the keeper" under the
   userscript sweep): saved in the keeper, re-applied at every ZTE boot, overrides `ANT_AUTO` / `ANT5` / `ANT6` (1 omni, 4 dir).
+  The log and the `antennas kept` event say who kept it - the panel or the lock test's auto-apply (`auto-applied 5G lock <cell> and
+  its measured mode`).
+- **Per-cell antenna mode** (`locktest.cell_mode`): the boot apply uses the **locked 5G cell's** newest good lock-test mode when
+  `AUTO=on` (`dryrun` only names it in `/status` and the log, `off` ignores it); otherwise the kept mode, else the env. So a per-cell
+  result overrides the default only while that cell is locked, and the default returns when it is not. "Good" = a completed
+  lock-test step, `unstable` 0, on-target >= 80 %; there is no age or heading gate (your choice - the newest good record wins), but
+  the record's date and heading are shown in `/status` (`config.antennas_cell` / `config.antennas_source`, the panel's 5G lock line)
+  and in the `applied` event, so you can spot a mode measured at an old location. After a move, re-run the test for the cell.
 - **No mobile service** (the ZTE reports technology `None`, LTE `255/255`): the LTE lock guard releases a lock after `LOCK_NOSERVICE_MIN` (3) min;
   without a lock the auto reboot (`AUTO=on`) reboots after `NOSVC_MIN` (5) min. Seen 2026-10-28 01:03-01:12 while locked to 340@100.
 - **No 5G while idle is normal** (NSA: the network adds the 5G leg when data flows, releases it when quiet): `no5G` minutes count
@@ -142,9 +200,11 @@ The keeper measures, analyses and decides; the userscript only shows the results
   `NIGHT_CELLS` always-re-check list e.g. `340@3350`): once a night, after 30 idle minutes, the keeper lock-tests the current lock (baseline)
   plus `NIGHT_CELLS` (home set, same weekly throttle) plus up to 3 strong B1/B3/B7 cells from the registry not tested in 7 days, then puts the
   lock back. Traffic stops it. Night rows (`mode` night) are an unloaded network: they never enter the daytime ranking. It pushes the full
-  ranking to Telegram; with `AUTO=on` it **auto-applies the winner** (the cell that beats the baseline by the margin) and the guard reboots to it
-  (verify by day); with `AUTO=dryrun` it reports only. Runs only on nights the ZTE stays on. This is the standing "optimise as the network
-  evolves" loop - review the Telegram message, nothing else needed.
+  ranking to Telegram and **recommends** a daytime test, but **never auto-switches** - the night network has B1 (your lock's band) switched off
+  and no load, so a night "winner" can lose by day. Cells a night test found dead (locked, no service) in the last 30 days are skipped.
+  **Auto-apply happens on the daytime lock test instead** (`POST /lock-test`, real load): when it finishes, with `AUTO=on` the keeper locks the
+  winning cell if it clearly beats the unlocked baseline and the result is fresh, and pushes what it did to Telegram. Review the night Telegram,
+  run a daytime test for a promising cell, and it applies itself.
 - **The app's data in the keeper** (`GET/POST /userdata?name=...`, `GET/POST /cell-ids`): saved positions, antenna sweeps, cell
   experiments and learned cell ids (LTE eNB/sector + 5G NCI) live in keeper.db; the browser keeps a cache. On load the app pulls the keeper's
   copy (pushes a list only the browser has, once), every save is pushed. The keeper also learns the serving LTE cell id from TR-069 CELLID.
@@ -160,8 +220,9 @@ The keeper measures, analyses and decides; the userscript only shows the results
   safe to delete: `samples.csv*`, `events.csv*`, `lock_tests.csv*`, `antenna_sweeps.csv*` (imported), v1's `switches.csv`, `tr069-raw.log*` (RAW=1 only).
 - **API docs**: Swagger UI at `http://192.168.6.250:7557/docs` (loads swagger-ui from cdn.jsdelivr.net), spec at `/openapi.json`,
   both generated from `ROUTES` in api.py; `test/scenarios/api.py` fails if an endpoint is handled but not listed. POSTs act on the ZTE.
-- **API** (JSON, CORS open, same port 7557; writes: `POST /antenna-sweep`, `POST /lock-test`, `POST /lte-lock`): `/status` (verdict good/fair/poor, current values, findings),
-  `/report?hours=N`, `/events?n=N`, `/antenna-sweeps`, `/lock-tests`, `/anchors`, `/cells`. Open `http://192.168.6.250:7557/status` in a browser to check.
+- **API** (JSON, CORS open, same port 7557; writes: `POST /antenna-sweep`, `POST /lock-test?rat=lte|nr`, `POST /lte-lock`, `POST /nr-lock`):
+  `/status` (verdict good/fair/poor, current values, findings), `/report?hours=N`, `/events?n=N`, `/antenna-sweeps`,
+  `/lock-tests?rat=lte|nr`, `/anchors?rat=lte|nr`, `/cells`. Open `http://192.168.6.250:7557/status` in a browser to check.
 
 - **MikroTik ATL 5G as the uplink** (`DEVICE=mikrotik`, default `zte`; one device per container run - the other one is ignored, a
   ZTE inform is answered nothing and logged once): RouterOS `/tr069-client set enabled=yes acs-url=http://192.168.6.250:7557/
@@ -170,41 +231,43 @@ The keeper measures, analyses and decides; the userscript only shows the results
   a cell-monitor scan (4G + 5G with ARFCN) feeds `cells-mikrotik.json`. Locks: `POST /lte-lock`, `POST /nr-lock` -> the keeper sends a
   RouterOS script (TR-069 Download, only `AT+QNWLOCK` allowed, `GET /mikrotik/script-N.alter`) - `X_MIKROTIK_LteCellLock` is refused (9003).
   The modem forgets locks on reboot: the guard sets them again after every boot. Lock state `state-mikrotik.json`, cell list
-  `cells-mikrotik.json`; learned cell ids (`cell-ids.json`) and the app's data are shared. Antennas, lock tests, sweeps and the night
-  screen are ZTE only. The ATL's SIM has a data plan: only the LAN TR-069 traffic is free, so set `LAT_TARGETS=off` while it is the
+  `cells-mikrotik.json`; learned cell ids (`cell-ids.json`) and the app's data are shared. Lock tests run here too (`POST /lock-test`,
+  both RATs): a step is one script and NO CPE reboot, so it never waits for a boot inform (the Internet drops only for the LTE interface
+  restart). Antennas, the antenna sweep and the night screen are ZTE only. The ATL's SIM has a data plan: only the LAN TR-069 traffic is free, so set `LAT_TARGETS=off` while it is the
   test device (no probe). Failover is manual: move the cable / route, change `DEVICE`, restart the container.
   Summer house (the ATL alone, no RB450 = no keeper): nothing to set up - the ATL runs unlocked on its own, its TR-069 client
   just can't reach the ACS (harmless); the keeper's data has a gap for that time. No operator check-in is ever relayed for the ATL.
 - **Adaptive SQM** (`sqm.py`, off until `SQM_URL` is set; needs the latency probe, so not with `LAT_TARGETS=off`): a CAKE queue on the
   main MikroTik whose limit the keeper moves every `SQM_TICK` (10) s - latency `SQM_DELAY_MS` (15) above the idle baseline while a
   direction is > 50 % loaded -> that direction -15 %; loaded > 75 % and latency near the baseline -> +5 %; within `SQM_MIN_UP` / `SQM_MAX_UP`
-  (5 / 30) and `SQM_MIN_DOWN` / `SQM_MAX_DOWN` (20 / 200) Mbit/s. So uploads (screen sharing, cloud sync) don't push your call's latency up
+  (5 / 26) and `SQM_MIN_DOWN` / `SQM_MAX_DOWN` (20 / 150) Mbit/s. So uploads (screen sharing, cloud sync) don't push your call's latency up
   when the cell is weak. `/status` -> `config.sqm` shows the last rate, delay and limit. One-time setup on the main router:
   ```
   /queue type add name=cake kind=cake cake-diffserv=diffserv4 cake-nat=yes      # upload
   /queue type add name=fqc kind=fq-codel                                        # download: CAKE fills one CPU core at ~140 Mbit/s
-  # the RB450 only switches (the ZTE does NAT): bridged traffic must reach the CPU and the IP firewall to be queued
-  /interface bridge settings set use-ip-firewall=yes
-  /interface bridge port set [find interface=ether5] hw=no              # only the ZTE port; ether1/3 keep hardware offload
-  /queue simple add name=lan target=192.168.6.0/24 dst=192.168.6.0/24 comment="LAN to LAN: never limited"
-  /queue simple add name=sqm target=192.168.6.0/24 max-limit=30M/150M queue=cake/fqc     # after "lan" (first match wins)
+  # the RB450 routes and NATs (ether5 = WAN, the MC889 is a bridge): the queue sees routed WAN traffic only
+  /interface bridge settings set use-ip-firewall=no     # LAN<->LAN bypasses the IP firewall: hardware offload stays on
+  /queue simple add name=sqm target=192.168.6.0/24 max-limit=26M/150M queue=cake/fqc
+  # (no "lan" exemption queue: with use-ip-firewall=no bridged traffic never reaches /queue)
   /user group add name=sqm policy=read,write,api,rest-api        # REST logs in through the API service: needs api too
   /user add name=keeper-sqm group=sqm address=192.168.6.250/32 password=...   # RouterOS can't limit a user to /queue
   ```
-  Undo: `/queue simple disable [find name~"^(sqm|lan)$"]`, `/interface bridge port set [find interface=ether5] hw=yes`,
-  `/interface bridge settings set use-ip-firewall=no`. Measured 2026-10-28 (4-stream test, latency above idle p50 / p90):
+  Undo: `/queue simple disable [find name~"^(sqm|lan)$"]`. Measured 2026-10-31 on the routed WAN (OVH 1 Gb single stream + ping
+  1.1.1.1, latency above the ~12-16 ms idle RTT, p95 / max):
 
-  | | throughput | latency | busiest core |
+  | | throughput | latency p95 / max | note |
   |---|---|---|---|
-  | upload, CAKE 30M | 28 Mbit/s | +9 / +40 ms | low |
-  | download unshaped (`hw=no`) | 163 Mbit/s | +48 / +172 ms | ~50 % |
-  | download CAKE | 142 Mbit/s | +36 / +57 ms | **100 %** |
-  | download fq_codel 140M | 136 Mbit/s | **+0 / +9 ms** | 25-45 % |
+  | upload unshaped (limit 0) | 28.2-28.4 Mbit/s | 33 / 73 ms | CPE radio queue in control |
+  | upload CAKE 26M | 25.2 Mbit/s | 26 / 35 ms | shaper is the bottleneck -> tail improves |
+  | download unshaped (limit 0) | ~178 Mbit/s | - | 150M is 84 % of it |
+  | download fq_codel 120M | 112 Mbit/s | 58-80 / 113 ms | two runs, queued 1.0-1.4 MB |
+  | download CAKE 120M | 109-111 Mbit/s | 62-93 / 102-152 ms | no better than fq_codel |
 
-  So: upload CAKE, download fq_codel, `SQM_MAX_DOWN=150`; `SQM_DOWN_HOURS=Mon-Fri 09:00-18:00` shapes the download in call hours
-  only (outside: unlimited, full speed). `/status` -> `config.sqm.now.cpu` = per-core load; `./cpu.sh` logs it every second.
-  Env: `SQM_URL=http://192.168.6.1/rest`, `SQM_USER=keeper-sqm`, `SQM_PASS`, `SQM_QUEUE` (sqm), `SQM_IFACE` (ether5, the ZTE),
-  `SQM_DOWN_HOURS` (e.g. `Mon-Fri 09:00-18:00`; empty = always), `SQM_INSECURE=1` only for https with a self-signed certificate.
+  So: upload CAKE at `SQM_MAX_UP=26` (above ~28 the shaper never becomes the bottleneck), download fq_codel at `SQM_MAX_DOWN=150`;
+  `SQM_DOWN_HOURS=Mon-Sun 07:00-24:00` shapes the download in call hours only (outside: unlimited, full speed).
+  `/status` -> `config.sqm.now.cpu` = per-core load; `./cpu.sh` logs it every second.
+  Env: `SQM_URL=http://192.168.6.1/rest`, `SQM_USER=keeper-sqm`, `SQM_PASS`, `SQM_QUEUE` (sqm), `SQM_IFACE` (ether5 = the WAN),
+  `SQM_MAX_UP=26`, `SQM_DOWN_HOURS` (e.g. `Mon-Sun 07:00-24:00`; empty = always), `SQM_INSECURE=1` only for https with a self-signed certificate.
 - **Telegram alerts** (`alert.py`, off until both are set): `TG_TOKEN` (from @BotFather), `TG_CHAT` (your chat id: send the bot a message,
   then open `https://api.telegram.org/bot<token>/getUpdates`). Messages: lock released / restored / missing, reboot queued / held,
   ZTE silent (no inform), FOTA activity, night-screen recommendation, calls at risk (>= 10 busy minutes of the last 15, under 80 %

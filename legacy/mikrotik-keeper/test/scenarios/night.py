@@ -4,7 +4,7 @@ import datetime, importlib.util, os, shutil, sys, threading, time
 here = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.abspath(os.path.join(here, "..", ".."))
 sys.argv = ["x", "18170"]; spec = importlib.util.spec_from_file_location("m", os.path.join(here, "..", "fixtures", "mock_zte.py")); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 DATA = "/tmp/zte-keeper-test-night"; shutil.rmtree(DATA, ignore_errors=True); os.makedirs(DATA)
-os.environ.update(LOCK_VIA="web", DATA=DATA, ZTE_HOST="127.0.0.1:18170", ZTE_PASS_HASH=m.S(m.PW), LOCKTEST_SETTLE_S="0",
+os.environ.update(LOCK_VIA="web", DATA=DATA, ZTE_HOST="127.0.0.1:18170", ZTE_PASS_HASH=m.S(m.PW), LOCKTEST_SETTLE_S="0", LOCKTEST_ONLINE_TIMEOUT_S="0",
                   LOCKTEST_MEASURE_MIN="0.03", LOCKTEST_BOOT_WAIT_S="3", NIGHT_SCREEN="02:00-05:00")
 sys.path.insert(0, ROOT); from keeper import store
 from keeper import acs, api, brain, common, guard, locktest, monitor, store; from keeper.devices import zte as zdev; from keeper.devices.zte import antennas, locks as zlocks

@@ -11,3 +11,6 @@ docs/api/
 _to_delete/
 cpu-*.log
 config-*.txt
+
+# deploy tool backups (local copies of what was on the router; never committed)
+backups/

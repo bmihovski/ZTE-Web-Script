@@ -3,7 +3,7 @@ import csv, importlib.util, os, shutil, sys, threading, time, datetime
 here = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.abspath(os.path.join(here, "..", ".."))
 sys.argv = ["x", "18130"]; spec = importlib.util.spec_from_file_location("m", os.path.join(here, "..", "fixtures", "mock_zte.py")); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 DATA = "/tmp/zte-keeper-test-lt"; shutil.rmtree(DATA, ignore_errors=True); os.makedirs(DATA)
-os.environ.update(NIGHT_SCREEN="off", LOCK_VIA="web", DATA=DATA, ZTE_HOST="127.0.0.1:18130", ZTE_PASS_HASH=m.S(m.PW), LOCKTEST_SETTLE_S="0", LOCKTEST_MEASURE_MIN="0.03", LOCKTEST_BOOT_WAIT_S="3")
+os.environ.update(NIGHT_SCREEN="off", LOCK_VIA="web", DATA=DATA, ZTE_HOST="127.0.0.1:18130", ZTE_PASS_HASH=m.S(m.PW), LOCKTEST_SETTLE_S="0", LOCKTEST_ONLINE_TIMEOUT_S="0", LOCKTEST_MEASURE_MIN="0.03", LOCKTEST_BOOT_WAIT_S="3")
 sys.path.insert(0, ROOT)
 from keeper import store
 from keeper import acs, api, brain, common, guard, locktest, monitor, store; from keeper.devices import zte as zdev; from keeper.devices.zte import antennas, locks as zlocks
@@ -30,6 +30,8 @@ rows = {r["lock"]: r for r in store.rows(DATA, "lock_tests")}
 for r in rows.values(): print(r)
 assert rows["434@1550"]["on_target_pct"] == "100.0" and rows["434@1550"]["anchor"] == "1550/434" and rows["434@1550"]["anchor_sinr_p50"] == "10.0"
 assert rows["434@1550"]["site"] == "1072/3" and rows["none"]["site"] == "1243/61" and rows["370@1550"]["site"] == ""
+assert all(r["rat"] == "lte" and r["antennas"] == "" for r in rows.values())    # an LTE test never sweeps the antennas
+assert not [s for s in m.st["sets"] if s[1] == "BSP_ANTENNA_STATE_SET"]
 assert zdev.eci("4db3d") == "1243/61" and zdev.eci("") == "" and zdev.eci(None) == ""
 # a second column change keeps the older file as .v2 instead of overwriting .v1
 assert rows["434@1550"]["nr_cells"].startswith("534:") and rows["none"]["nr_cells"].startswith("786:") and rows["none"]["on_target_pct"] == ""

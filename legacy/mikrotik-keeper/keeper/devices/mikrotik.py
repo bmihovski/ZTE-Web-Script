@@ -4,7 +4,8 @@ TR-181 `Device.Cellular` + `X_MIKROTIK_` vendor values (names from the dumps of 
 `row()` maps one read to the shared sample fields; values only the ATL has are `mikrotik_*`.
 Cell-monitor scans (`X_MIKROTIK_CellDiagnostics`, every SCAN_MIN) give the 4G + 5G neighbours and the 5G ARFCN (CarrierInfo5G has none).
 Locks: `X_MIKROTIK_LteCellLock` is refused (9003), so the keeper sends a RouterOS script by TR-069 Download (`.alter` = run as a script)
-with AT commands (tested 2026-10-28, both hold, both lost on a reboot - the guard sets them again after a boot):
+with AT commands (tested 2026-10-28, both hold, both lost on a reboot - the guard sets them again after a boot). A lock costs no CPE
+reboot (the ATL restarts its LTE interface instead), so lock tests here never wait for a BOOT inform (`LOCKS_REBOOT = False`):
   LTE `AT+QNWLOCK="common/4g",1,EARFCN,PCI` (`,0` removes) - 5G `AT+QNWLOCK="common/5g",PCI,ARFCN,SCS,band`.
 Without the keeper (e.g. at the summer house) the ATL just runs unlocked; its TR-069 client keeps trying the ACS, harmless.
 Env: SCAN_MIN (10, 0 = off), NR_ARFCN (off; `78:100=636576,78:20=629988` names 5G cells by Yettel's blocks before a scan).
@@ -12,10 +13,12 @@ Env: SCAN_MIN (10, 0 = off), NR_ARFCN (off; `78:100=636576,78:20=629988` names 5
 import os, re, threading, time
 
 from keeper import acs, common, guard
-from keeper.common import E, event, log, stamp
+from keeper.common import E, event, log, stamp, state
 
 NAME, MAKER = "MikroTik", "MikroTik"
-CAN = {"scan", "at"}
+CAN = {"scan", "at", "lock_test"}
+LOCKS_REBOOT = False               # the ATL restarts its LTE interface instead of rebooting: lock tests never wait for a BOOT inform
+CLEANUP_WAIT_S = float(E("LOCKTEST_CLEANUP_S", "20"))
 CI = "Device.Cellular.Interface.1."
 DIAG = "Device.Cellular.X_MIKROTIK_CellDiagnostics."          # = /interface lte cell-monitor
 READ = [CI, DIAG, "Device.DeviceInfo.UpTime", "Device.DeviceInfo.SoftwareVersion",
@@ -157,16 +160,18 @@ def script(cmd, restart):
 
 
 def locks_apply(lte=None, nr=None):
-    """The guard's lock change: AT commands in one script + LTE interface restart; waits (4 min) until the ATL ran it."""
+    """The guard's / a lock test's lock change: AT commands in one script + LTE interface restart; waits (4 min) until the ATL ran it.
+    A lock test step sets both legs (the pinned LTE anchor + the 5G cell) in ONE script; `nr=None` leaves the 5G leg alone."""
+    if lte is None and nr is None: return None
     mt["done"].clear(); mt["ok"] = None; script(lock_cmds(lte, nr), True)
     if not mt["done"].wait(240): raise RuntimeError("the ATL did not run the lock script within 4 min")
     if not mt["ok"]: raise RuntimeError("the ATL refused / failed the lock script")
     return "tr069 script"
 
 
-def lock_lte(spec):
-    """Lock tests are not supported on the ATL yet (`lock_test` not in CAN)."""
-    raise RuntimeError("lock tests: ZTE only")
+def ready(timeout=0):
+    """No web page to wait for: a lock-test step can measure as soon as the ATL informs."""
+    return True
 
 
 def lock_value(key):
@@ -213,7 +218,14 @@ def start_note():
 
 
 def on_start():
-    """Nothing to clean up at start."""
+    """Keeper start: an interrupted lock test left its AT locks on the ATL (they survive a keeper restart) - clear them with one script."""
+    t = state().get("lock_test")
+    if not t: return
+    def undo():
+        time.sleep(CLEANUP_WAIT_S)
+        try: locks_apply("none", "none"); state({"lock_test": None}); log("AT locks removed after the interrupted lock test")
+        except Exception as e: log("removing the AT locks failed %r - they go away with the ATL's next reboot" % e)
+    threading.Thread(target=undo, daemon=True).start()
 
 
 def on_boot():

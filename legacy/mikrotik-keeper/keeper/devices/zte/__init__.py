@@ -3,24 +3,28 @@
 TR-069 tree: `Device.Cellular.Interface.1.` (5G NR5G_*, LTE_*, LTE_CA.N, NR_CA.N, neighbour lists, lock values), FOTA, ThermSensor.
 255 = the ZTE's "no value yet" (right after a boot / no service). Platform parts: `web` (goform page), `antennas` (modes kept after
 boot + sweep), `locks` (LTE / 5G locks), `checkin` (operator relay).
-Env: LOCK_UPGRADES (1: `UpgradesManaged=1` - firmware only via this ACS, which never sends one).
+Env: LOCK_UPGRADES (1: `UpgradesManaged=1` - firmware only via this ACS, which never sends one), LOCKTEST_CLEANUP_S (20: wait after
+start before clearing the locks an interrupted lock test left).
 """
 import re, threading, time
 
 from keeper import acs, guard, locktest
 from keeper.common import E, event, log, state
-from keeper.devices.zte import antennas, checkin, locks
-from keeper.devices.zte.locks import lock_lte, lock_value, locks_apply, nr_value   # noqa: F401 (driver interface)
+from keeper.devices.zte import antennas, checkin, locks, web
+from keeper.devices.zte.locks import lock_value, locks_apply, nr_value   # noqa: F401 (driver interface)
 
 NAME, MAKER = "ZTE", "ZTE"
 CAN = {"antennas", "sweep", "lock_test", "night", "checkin"}
+ready = web.ready                     # driver hook: wait until the CPE web is back (a rebooted ZTE needs minutes)
+LOCKS_REBOOT = True                # a lock is applied only at boot: every lock change (and lock-test step) waits for a BOOT inform
+CLEANUP_WAIT_S = float(E("LOCKTEST_CLEANUP_S", "20"))
 CI = "Device.Cellular.Interface.1."
 READ = [CI, "Device.DeviceInfo.UpTime", "Device.DeviceInfo.SoftwareVersion", "Device.ThermSensor.", "Device.X_ZTE-COM_ROUTER.NetworkDelay", "Device.FOTA.",
         "Device.ManagementServer.PeriodicInformInterval", "Device.ManagementServer.PeriodicInformEnable",
         "Device.ManagementServer.UpgradesManaged"]
 EXTRA = ["zte_led_level"]          # X_ZTE-COM_LedSignalLevel: the ZTE's own signal bars (coarse; logged to compare with its 0-4 app grade)
 LOCK_UPGRADES = E("LOCK_UPGRADES", "1") == "1"
-st = {"boot_apply": True, "prev_fota": None, "status_logged": False}
+st = {"boot_apply": True, "applying": False, "boot_gen": 0, "last_boot": 0.0, "prev_fota": None, "status_logged": False}
 relay = checkin.relay
 
 
@@ -93,19 +97,26 @@ def start_note():
 
 
 def on_start():
-    """Keeper start: a lock test interrupted by a restart left its lock on the ZTE - take it off again."""
-    if not state().get("lock_test"): return
-    log("lock test %s was interrupted - removing the LTE lock" % state().get("lock_test"))
+    """Keeper start: a lock test interrupted by a restart left its locks on the ZTE - take them off again (a 5G test also pinned an
+    LTE anchor, so both legs are cleared; a plain LTE test / the format learning only touched LTE)."""
+    t = state().get("lock_test")
+    if not t: return
+    label = t.get("cell") if isinstance(t, dict) else t
+    nr = isinstance(t, dict) and t.get("rat") == "nr"
+    log("lock test %s was interrupted - removing the %s lock" % (label, "LTE and 5G" if nr else "LTE"))
     def undo():
-        time.sleep(20)
-        try: locks.web_lock_reboot(0, 0); state({"lock_test": None}); log("LTE lock removed after the interrupted test")
-        except Exception as e: log("removing the LTE lock failed %r - remove it in the ZTE web page" % e)
+        time.sleep(CLEANUP_WAIT_S)
+        try: locks.web_clear(nr=nr); state({"lock_test": None}); log("locks removed after the interrupted test")
+        except Exception as e: log("removing the locks failed %r - remove them in the ZTE web page" % e)
     threading.Thread(target=undo, daemon=True).start()
 
 
 def on_boot():
-    """BOOT inform: put the antenna mode back after the next read (the ZTE resets it to omni)."""
-    st["boot_apply"] = True
+    """BOOT inform: put the antenna mode back after the next read (the ZTE resets it to omni). The ZTE often sends two informs
+    seconds apart for one boot: only one apply is queued per boot (20 s window, generation)."""
+    now = time.time()
+    if now - st["last_boot"] > 20:
+        st["boot_gen"] += 1; st["boot_apply"] = True; st["last_boot"] = now
 
 
 def on_values(vals):
@@ -119,9 +130,14 @@ def on_values(vals):
             % (cur or "?", vals.get("Device.ManagementServer.UpgradesManaged"), vals.get("Device.FOTA.State"), vals.get("Device.FOTA.UpgradeState"),
                offered or "-", " (NEWER than installed!)" if cur and offered and bn(offered) > bn(cur) else
                " (not newer than installed: no update)" if offered else "", vals.get("Device.ManagementServer.PeriodicInformInterval")))
-    if st["boot_apply"]:
-        st["boot_apply"] = False
-        threading.Thread(target=antennas.apply_after_boot, args=(int(vals.get("Device.DeviceInfo.UpTime") or 0),), daemon=True).start()
+    if st["boot_apply"] and not st["applying"]:
+        st["boot_apply"] = False; st["applying"] = True; gen = st["boot_gen"]
+        def run():                                     # one apply per boot: a newer boot makes this worker stand down
+            try:
+                antennas.apply_after_boot(int(vals.get("Device.DeviceInfo.UpTime") or 0), keep=lambda: st["boot_gen"] == gen)
+            finally:
+                st["applying"] = False
+        threading.Thread(target=run, daemon=True).start()
     if LOCK_UPGRADES and vals.get("Device.ManagementServer.UpgradesManaged") not in ("1", "true"):
         log("setting UpgradesManaged %s -> 1 (no firmware updates except via this ACS)" % vals.get("Device.ManagementServer.UpgradesManaged"))
         return [("Device.ManagementServer.UpgradesManaged", "xsd:boolean", "1")]
@@ -141,8 +157,9 @@ def on_rpc(kind, msg, step):
 
 def config():
     """Device part of /status -> config (field names the userscript panel reads)."""
-    s = state
-    return {"antennas": antennas.ant_cfg(), "antennas_env": {"auto": antennas.AUTO, "ant5": antennas.ANT5, "ant6": antennas.ANT6},
+    s = state; eff, src, rec = antennas.effective()
+    return {"antennas": antennas.ant_cfg(), "antennas_effective": eff, "antennas_source": src, "antennas_cell": rec,
+            "antennas_env": {"auto": antennas.AUTO, "ant5": antennas.ANT5, "ant6": antennas.ANT6},
             "sweep_days": antennas.SWEEP_DAYS, "sweep_running": antennas.sweep_st["running"], "last_sweep": s().get("last_sweep"),
             "lte_lock_fmt": s().get("lte_lock_fmt"), "zte_locks_raw": locks.seen["raw"], "checkin_days": checkin.CHECKIN_DAYS,
             "lock_upgrades": LOCK_UPGRADES}
