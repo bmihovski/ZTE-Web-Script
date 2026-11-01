@@ -87,7 +87,8 @@ The keeper measures, analyses and decides; the userscript only shows the results
   Every `SWEEP_DAYS` (7) when idle and the ZTE is up > 15 min, or on demand (`POST /antenna-sweep`, panel button). ~2 min; the
   browser's ZTE session is logged out meanwhile. Results: `antenna_sweeps.csv`, `GET /antenna-sweeps`, an `antenna sweep` event.
 - **Lock test, LTE and 5G** (`locktest.py`): `POST /lock-test?cells=434@1550,340@100` (LTE, panel: "Run LTE lock test") or
-  `POST /lock-test?rat=nr&cells=534@636576,747@629988` (5G, panel: "Run 5G lock test"). Runs a baseline (LTE: unlocked; 5G: the
+  `POST /lock-test?rat=nr&cells=534@636576,747@629988` (5G, panel: "Run 5G lock test"). One cell per entry; a typo, a `;` list or an
+  unknown 5G band is refused with 400 (never silently dropped). Runs a baseline (LTE: unlocked; 5G: the
   anchor pinned, the 5G leg free), then each cell: LTE = that cell locked; 5G = that cell locked **with the LTE anchor pinned**
   (`anchor=PCI@EARFCN`, else the keeper's LTE lock, else the serving cell), so only the 5G leg changes between the candidates; both
   legs go into one lock (one reboot on the ZTE). On the ZTE: lock + reboot (`LTE_LOCK_CELL_SET` / `NR5G_LOCK_CELL_SET` /
@@ -201,7 +202,11 @@ The keeper measures, analyses and decides; the userscript only shows the results
   plus `NIGHT_CELLS` (home set, same weekly throttle) plus up to 3 strong B1/B3/B7 cells from the registry not tested in 7 days, then puts the
   lock back. Traffic stops it. Night rows (`mode` night) are an unloaded network: they never enter the daytime ranking. It pushes the full
   ranking to Telegram and **recommends** a daytime test, but **never auto-switches** - the night network has B1 (your lock's band) switched off
-  and no load, so a night "winner" can lose by day. Cells a night test found dead (locked, no service) in the last 30 days are skipped.
+  and no load, so a night "winner" can lose by day. A night run whose baseline was not measured (no service on the lock's cell) gives no
+  verdict (`WARN: the baseline was not measured`); the finding names the cells it could not measure instead of showing empty numbers.
+  Rows are kept, but `/lock-tests` returns only the last 40, so the newest night `run` is what the finding uses.
+  Cells a night test found dead (a *measured* row, 12 min, no service) in the last 30 days are skipped; a step that never measured
+  (no boot inform, the CPE web / the link did not come back) is no evidence and is retried next time.
   **Auto-apply happens on the daytime lock test instead** (`POST /lock-test`, real load): when it finishes, with `AUTO=on` the keeper locks the
   winning cell if it clearly beats the unlocked baseline and the result is fresh, and pushes what it did to Telegram. Review the night Telegram,
   run a daytime test for a promising cell, and it applies itself.

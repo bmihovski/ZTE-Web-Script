@@ -545,12 +545,14 @@ def anchor_ranking(rat="lte"):
 
 def night_best():
     """Latest night screen -> (run, base_row, other_rows, winner_rows best-first); winners beat the base on an unloaded network.
-    (None, None, [], []) when there's nothing to judge."""
+    `base` is None when the run's baseline was not measured (no service on the lock's cell): a missing baseline is no reference, so
+    there are no winners. (None, None, [], []) when there's nothing to judge."""
     if not reg_st["dir"]: return None, None, [], []
     rows = [r for r in store.rows(reg_st["dir"], "lock_tests") if r.get("mode") == "night" and r.get("run")]
     if not rows: return None, None, [], []
     run = max(r["run"] for r in rows); rows = [r for r in rows if r["run"] == run]
     base, others = rows[0], rows[1:]
+    if f(base.get("call_ok_pct")) is None: return run, None, others, []      # baseline not measured: no verdict
     def better(r):
         return ((f(r.get("on_target_pct")) or 0) >= 80 and (f(r.get("call_ok_pct")) or 0) >= (f(base.get("call_ok_pct")) or 0) and
                 ((f(r.get("anchor_sinr_p50")) or -99) - (f(base.get("anchor_sinr_p50")) or -99) >= 3 or
@@ -560,14 +562,25 @@ def night_best():
 
 
 def night_finding():
-    """latest night screen as a one-line finding (RECOMMEND when a cell beat the lock, else INFO)"""
+    """latest night screen as a one-line finding: RECOMMEND when a cell beat the baseline, INFO when none did, WARN when the
+    baseline was not measured (no verdict); cells the screen could not measure are named, not shown with empty numbers"""
     run, base, others, win = night_best()
     if run is None: return []
-    d = lambda r: "%s anchor SINR %s, 5G %s SINR %s" % (r["lock"], r.get("anchor_sinr_p50"), r.get("nr_cells"), r.get("nr_sinr_p50"))
+    if base is None:
+        return ["WARN: night screen %s: the baseline was not measured (no service on the lock's cell?) - no verdict, re-check the lock"
+                % run[:10]]
+    na = lambda v: v if v not in (None, "") else "-"
+    d = lambda r: "%s anchor SINR %s, %s" % (r["lock"], na(r.get("anchor_sinr_p50")),
+        ("no 5G (%s min)" % str(r.get("nr_cells")).split(":")[-1]) if str(r.get("nr_cells") or "").startswith("no5G")
+        else "5G %s SINR %s" % (na(r.get("nr_cells")), na(r.get("nr_sinr_p50"))))
+    blabel = "the unlocked baseline" if base["lock"] == "none" else base["lock"]
+    meas = [r for r in others if f(r.get("call_ok_pct")) is not None]
+    blank = [r["lock"] for r in others if f(r.get("call_ok_pct")) is None]
+    tail = (" (not measured: " + ", ".join(blank) + ")") if blank else ""
     if win:
         return ["RECOMMEND: night screen %s: %s beat %s (%s) on an unloaded network -> run an aligned daytime lock test for it"
-                % (run[:10], ", ".join(d(r) for r in win), base["lock"], d(base))]
-    return ["INFO: night screen %s: %s - none beat %s (%s)" % (run[:10], ", ".join(d(r) for r in others) or "nothing measured", base["lock"], d(base))]
+                % (run[:10], ", ".join(d(r) for r in win), blabel, d(base))]
+    return ["INFO: night screen %s: %s - none beat %s (%s)%s" % (run[:10], ", ".join(d(r) for r in meas) or "nothing measured", blabel, d(base), tail)]
 
 
 def anchor_best(rat="lte"):

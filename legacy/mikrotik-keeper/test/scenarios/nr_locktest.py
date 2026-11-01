@@ -248,6 +248,9 @@ try:
     assert post("/lock-test?rat=nr&cells=747@629988&heading=108")[1]["heading"] == "108" and calls[-1][4] == "108"
     assert post("/lock-test?cells=434@1550") == (202, {"started": True, "rat": "lte", "anchor": None, "heading": "", "plan": ["none", "434@1550"]})
     assert post("/lock-test?rat=x")[0] == 400 and post("/lock-test?rat=nr&cells=534@700000")[0] == 400
+    n_before = len(calls)
+    assert post("/lock-test?rat=nr&cells=534@636576,bad")[0] == 400 and len(calls) == n_before      # a typo is refused, not dropped
+    assert post("/lock-test?cells=434@1550;340@100")[0] == 400 and len(calls) == n_before           # one cell per lock (the MC889 keeps the first)
     assert post("/lock-test?rat=nr&cells=bad")[0] == 400
 finally:
     locktest.start = real_start

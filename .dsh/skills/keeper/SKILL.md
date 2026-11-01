@@ -56,6 +56,8 @@ the docstrings and this skill in sync.
 - `/lock-tests` and `/antenna-sweeps` return the last 40 rows; the panel tables scroll. `/lock-tests` `rat`/`anchor` describe the
   running test, else the last one (they are not reset when it ends).
 - A 5G row's capacity needs `nr_arfcn` (the lock spec is `none` for the baseline); don't derive it from `lock` alone.
+- The night screen gives no verdict (`WARN`) when its baseline was not measured, and names the cells it could not measure; a bad
+  `cells=` spec is a 400, never a silently shortened plan.
 
 ## Quick commands
 

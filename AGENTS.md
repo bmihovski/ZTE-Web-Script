@@ -35,7 +35,9 @@ Durable project memory. Read this first; the details live in the keeper docs.
   ranked or auto-applied.
 - **A missing/unstable cell is skipped, not measured** (no 12-minute wait): `cell not reachable`, `antenna control failed`,
   `5G cell switching`; antenna sets retry 3× with a re-login. A skipped step keeps its values empty (no 0 % loss) and a web failure
-  skips the baseline too — a not-measured baseline is no baseline (nothing is auto-applied against it).
+  skips the baseline too — a not-measured baseline is no baseline (nothing is auto-applied against it). The night screen follows the
+  same rule: an unmeasured baseline gives `WARN`, no verdict, no "winner".
+- **Lock-test cells are validated, not dropped:** `/lock-test?cells=` is one `PCI@EARFCN` per entry; a typo or a `;` list is a 400.
 - **One lock change = one reboot** on the ZTE (both legs in one SetParameterValues); the ATL uses one script, no CPE reboot.
 - **Per device, never mixed:** DB rows carry `device`; `store.rows` defaults to the active `DEVICE`; state/cell files are per device.
 - The keeper applies the antenna mode once per boot; a superseded boot worker stands down (generation checked after the wait).

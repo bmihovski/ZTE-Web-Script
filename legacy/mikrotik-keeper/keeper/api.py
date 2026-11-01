@@ -248,7 +248,10 @@ class H(BaseHTTPRequestHandler):
             elif path == "/lock-test":        # /lock-test?cells=434@1550,340@100[&rat=nr&anchor=340@1550&align=1] (a baseline "none" runs first)
                 rat = g("rat", "lte")
                 if rat not in ("lte", "nr"): raise ValueError("rat=lte|nr")
-                cells = [c for c in g("cells").split(",") if re.fullmatch(guard.SPEC_RE, c)]
+                raw = [c for c in g("cells").split(",") if c]
+                bad = [c for c in raw if not re.fullmatch(guard.SPEC_RE, c)]
+                if bad: raise ValueError("cells=PCI@EARFCN (rat=nr: PCI@ARFCN), comma separated, one cell per lock - bad: " + ", ".join(bad))
+                cells = raw
                 if rat == "nr":
                     for c in cells:
                         try: guard.nr_band(c.split("@")[1])

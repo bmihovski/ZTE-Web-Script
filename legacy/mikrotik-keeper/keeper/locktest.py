@@ -183,7 +183,10 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
                     if rat == "nr": dev.locks_apply(pin, lock)   # ONE change: the pinned anchor + the 5G cell (one reboot on the ZTE)
                     else: dev.locks_apply(lock, None)
                 except RuntimeError as e:              # refused: record it, go on with the next one
-                    res = lt_eval(lock, [], "lock not set: %s" % e, rat, pin=pin); record("lock_tests", LT_COLS, res); lt["done"].append(res)
+                    res = lt_eval(lock, [], "lock not set: %s" % e, rat, pin=pin)
+                    res.update(heading=heading, mode="night" if night else "aligned" if align and heading else ("fixed" if rat == "nr" else "as is"),
+                               run=lt["run"])           # same mode/run as the other rows: a night run stays one unit
+                    record("lock_tests", LT_COLS, res); lt["done"].append(res)
                     event({"event": "lock test %s" % lock, "to": "not set", "why": str(e)}); log("lock test %s: %s" % (lock, e))
                     continue
                 if dev.LOCKS_REBOOT:
@@ -280,7 +283,10 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
         na = lambda v: v if v not in (None, "", "None") else "n/a"
         if night:                                                           # night = unloaded, B1 off: report + recommend only, NEVER auto-apply
             run, base, others, win = brain.night_best()
-            if run:
+            if run and base is None:                                        # a missing baseline is no reference
+                alert.report("%s night screen %s: the baseline was not measured - no verdict (no service on the lock's cell?)"
+                             % (common.device_name(), run[:10]))
+            elif run:
                 dd = lambda r: "%s: anchor SINR %s, 5G %s SINR %s, call-ready %s%%%s" % (r["lock"], na(r.get("anchor_sinr_p50")),
                     na(r["nr_cells"]), na(r["nr_sinr_p50"]), na(r.get("call_ok_pct")), (" - " + r["note"]) if r.get("note") else "")
                 blabel = "the unlocked baseline" if base["lock"] == "none" else base["lock"]
@@ -376,9 +382,13 @@ def cell_mode(cell):
 
 # ---------- night screen (LTE) ----------
 def _dead_cells(now):
-    """Cells a night test locked in the last 30 days but got no service on (no anchor, 0% on-target) - don't burn reboots on them again."""
+    """Cells a night screen locked in the last 30 days but got no service on (a measured row: minutes > 0, no anchor, 0 % on-target)
+    - don't burn reboots on them again. A step that never measured (no boot inform, the CPE web / the link did not come back) is no
+    evidence about the cell and must not blacklist it."""
     cut = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - 30 * 86400))
-    return {r["lock"] for r in store.rows(DATA, "lock_tests", cut) if r.get("mode") == "night" and not r.get("anchor") and (brain.f(r.get("on_target_pct")) or 0) == 0}
+    return {r["lock"] for r in store.rows(DATA, "lock_tests", cut)
+            if r.get("mode") == "night" and not r.get("anchor") and (brain.f(r.get("on_target_pct")) or 0) == 0
+            and (brain.f(r.get("minutes")) or 0) > 0}
 
 
 def night_candidates(now):

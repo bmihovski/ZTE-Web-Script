@@ -70,6 +70,17 @@ at `/docs`.
 - **Ranking** (`GET /anchors?rat=lte|nr`): the latest result per candidate, only if it stayed on the cell (on-target ≥ 80 %) and is
   not unstable; the 5G ranking is quality-first, the LTE ranking keeps call-ready, no-5G, signal, capacity. `failed` = off-target /
   not seen; `unstable` = the unstable list.
+- **Night screen** (LTE only): in `NIGHT_SCREEN` (02:00-05:00), after `NIGHT_IDLE_MIN` (30) idle minutes with a verified clock, once a
+  night: re-tests the current lock (or the unlocked baseline) + `NIGHT_CELLS` + up to `NIGHT_MAX` strong untested cells (registry, main
+  bands, not tested in `NIGHT_RETEST_DAYS`, not "dead"), then puts the lock straight back. Traffic stops it. Night rows (`mode` night) are
+  an unloaded network: kept for the finding, never in the daytime ranking, never auto-applied. The finding is RECOMMEND when a cell beats
+  the baseline, INFO when none did, WARN when the baseline was not measured (a missing baseline is no reference, so no verdict); cells the
+  screen could not measure are named, not shown with empty numbers. Rows are kept (lock tests are not pruned automatically); `/lock-tests`
+  only returns the last 40, so the latest night run may be mixed with day rows in that list (the finding uses the newest `run`). Only a
+  *measured* night row (minutes > 0) with no service counts as a dead cell (skipped for 30 days); a step that never measured (no boot
+  inform, the CPE web / the link did not come back) is no evidence about the cell and must be retried. A step that could not even be
+  locked carries its `mode` and `run` like the others (a night run stays one unit; the finding then warns about the unmeasured
+  baseline instead of treating the next candidate as one).
 - **Auto-apply** (`AUTO=on`, real load): the winner is locked when it clearly beats the unlocked baseline (the same quality policy);
   the winning step's antenna mode is kept. No baseline (skipped / not measured) = nothing to beat = no auto-apply, only a
   recommendation. A dryrun only reports; off never acts. The summary is pushed to Telegram for every finished test, also when
@@ -97,6 +108,8 @@ at `/docs`.
   `/lock-tests?rat`, `/antenna-sweeps`, `/db`, `/checks`, `/openapi.json`, `/docs`.
 - Writes that reboot the modem: `POST /lte-lock`, `/nr-lock`, `/lock-test`, `/lock-test-stop`, `/lock-test-skip`,
   `/lock-test-continue`, `/antennas`, `/antenna-sweep`, `/cells/forget`, `/db/prune`. Check `/lock-tests` first (a running test).
+  `POST /lock-test?cells=` is one cell per entry (`PCI@EARFCN`, `rat=nr`: `PCI@ARFCN`); a typo, a `;` list or an unknown 5G band is
+  refused with 400 (never silently dropped).
 - `GET /lock-tests?rat=` returns `running`, `phase`, `plan`, `align`, `rat`, `anchor`, `waiting`, the last 40 results; `rat` and
   `anchor` describe the running test, else the last one (they stay until the next test starts, like `plan`), so a finished 5G test
   is not reported as `lte` with no anchor. `/anchors?rat=` returns `baseline`, `ranked`, `failed`, `unstable`.
