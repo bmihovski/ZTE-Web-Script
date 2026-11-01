@@ -27,6 +27,11 @@ Check or edit the address and click **Open** (or press Enter). The router opens 
 loaded; the start window stays open, so you can open the other router too. Accepted: IP or host name, optional `:port`,
 optional `https://`. The addresses are saved to `routers.json` for next time.
 
+For an `https://` ZTE address the app starts a local HTTP->HTTPS bridge (`legacy/zte-https-proxy.js`, **Node required**)
+on an ephemeral port and points the window at it: WKWebView cannot negotiate these routers' legacy TLS / self-signed
+certificate. The bridge stops when the app exits. Set `ZTE_PROXY_PORT=17890` to pin the port instead of letting the OS
+pick a free one.
+
 Options (terminal):
 
 | Option | Effect |
@@ -36,6 +41,7 @@ Options (terminal):
 | `--selftest` | offline self-test, no window, no router |
 
 Env `ZTE_ROUTER` / `MT_ROUTER` override the saved address for one run (e.g. `MT_ROUTER=10.0.0.2`).
+`ZTE_PROXY_PORT` pins the local proxy port for `https://` ZTE addresses (default `0` = ephemeral).
 
 ### Where things are stored
 
@@ -46,7 +52,8 @@ Env `ZTE_ROUTER` / `MT_ROUTER` override the saved address for one run (e.g. `MT_
 | Linux | `~/.config/zte-helper/` (or `$XDG_CONFIG_HOME/zte-helper/`) | `~/.config/zte-helper/zte-helper.log` |
 
 `routers.json` is created on first start: `{"zte": "http://192.168.6.3", "mikrotik": "http://192.168.6.6"}`.
-Use plain `http://` where possible - the embedded webviews reject the routers' self-signed https certificates.
+Use plain `http://` where possible. `https://` ZTE addresses are proxied automatically through the local bridge; that
+needs Node on `PATH` (or in `/opt/homebrew/bin`), otherwise the app logs a warning and the page stays blank.
 
 The app needs the [uv](https://docs.astral.sh/uv/) tool. Install it once:
 

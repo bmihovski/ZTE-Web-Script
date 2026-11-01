@@ -7,7 +7,7 @@
  * 
  */
 
-console.log("Loading ZTE Script v" + "2026-11-01-#28");
+console.log("Loading ZTE Script v" + "2026-11-01-#30");
 
 siginfo =
     "wan_active_band,wan_active_channel,wan_lte_ca,wan_apn,wan_ipaddr," +
@@ -133,6 +133,7 @@ function wait_for_log_in()
             wait_for_log_in_done = true;
 
             inject_html();
+            superadmin_probe_and_show();
             get_status();
             load_device_extras();
             positions_render();
@@ -386,6 +387,221 @@ function enable_automatic_login()
     perform_login(function() {
         alert("Successfully saved password as hash!");
     }, false, true);
+}
+
+function have_superadmin_password_hash()
+{
+    return cookies.get("superadmin_password_hash") !== null;
+}
+
+/*
+ * The SuperAdmin (hidden) page exists on the MC888 build, not on the MC889.
+ * Prefer the SPA service surface (getTr069LoginStatus / tr069Login); fall back
+ * to the 64-hex hidden_page_password the hidden page exposes after admin login.
+ */
+function superadmin_supported(callback)
+{
+    var service = null;
+    try { service = require.s.contexts._.defined["service"]; } catch (e) {}
+    if (service && (typeof service.getTr069LoginStatus === "function" || typeof service.tr069Login === "function"))
+    {
+        callback(true);
+        return;
+    }
+
+    $.ajax({
+        type: "GET",
+        url: "/goform/goform_get_cmd_process",
+        data:
+        {
+            cmd: "hidden_page_password",
+            multi_data: "1"
+        },
+        dataType: "json",
+        success: function(a)
+        {
+            callback(/^[0-9a-fA-F]{64}$/.test(a.hidden_page_password || ""));
+        },
+        error: function() { callback(false); }
+    });
+}
+
+/*
+ * HIDDEN_PAGE_LOGIN with a SHA-256 hash (pass-the-hash, no plaintext):
+ *   password = SHA256(superadmin_password_hash + LD)
+ *   AD       = SHA256(SHA256(wa_inner_version + cr_version) + RD)
+ */
+function perform_superadmin_login(password_hash, successCallback, save_hash, quiet)
+{
+    $.ajax({
+        type: "GET",
+        url: "/goform/goform_get_cmd_process",
+        data:
+        {
+            cmd: "wa_inner_version,cr_version,RD,LD",
+            multi_data: "1"
+        },
+        dataType: "json",
+        success: function(a)
+        {
+            var ad = SHA256(SHA256(a.wa_inner_version + a.cr_version) + a.RD);
+            $.ajax({
+                type: "POST",
+                url: "/goform/goform_set_cmd_process",
+                data:
+                {
+                    isTest: "false",
+                    goformId: "HIDDEN_PAGE_LOGIN",
+                    password: SHA256(password_hash + a.LD),
+                    AD: ad
+                },
+                success: function(a)
+                {
+                    var j = JSON.parse(a);
+                    console.log(j);
+                    if ("0" == j.result)
+                    {
+                        if (save_hash) cookies.set("superadmin_password_hash", password_hash);
+                        if (successCallback) successCallback();
+                    }
+                    else
+                    {
+                        var reason = "Unknown";
+                        if ("1" == j.result) reason = "Try again later";
+                        if ("3" == j.result)
+                        {
+                            reason = "Wrong hash";
+                            cookies.delete("superadmin_password_hash");
+                        }
+                        if (quiet) console.log("SuperAdmin login failed: " + reason);
+                        else alert("SuperAdmin login failed! Reason: " + reason + ".");
+                    }
+                },
+                error: err
+            });
+        },
+        error: err
+    });
+}
+
+function enable_superadmin_login(after)
+{
+    superadmin_supported(function(supported)
+    {
+        if (!supported)
+        {
+            alert("This device does not expose the SuperAdmin (hidden) page.");
+            return;
+        }
+
+        if (!confirm("Log in to the SuperAdmin (hidden) page with its SHA-256 hash?\n\n" +
+                     "The hash is the hidden_page_password value (SHA256 of the developer password).\n" +
+                     "It will be stored in a cookie, like the automatic admin login."))
+            return;
+
+        var input = prompt("SuperAdmin password hash (SHA256, 64 hex characters)");
+        if (input == null) return;
+        input = input.trim();
+        if (!/^[0-9a-fA-F]{64}$/.test(input))
+        {
+            alert("That is not a 64-character SHA-256 hash.");
+            return;
+        }
+
+        cookies.delete("superadmin_password_hash");
+        var do_login = function()
+        {
+            perform_superadmin_login(input, function()
+            {
+                alert("SuperAdmin login successful; hash saved.");
+                if (after) after();
+            }, true);
+        };
+
+        check_log_in(do_login, function()
+        {
+            perform_login(do_login);
+        });
+    });
+}
+
+function forget_superadmin_login()
+{
+    cookies.delete("superadmin_password_hash");
+    alert("Removed the saved SuperAdmin hash from this browser.");
+}
+
+/*
+ * Called once after the admin session is up: show the menu entry only on a
+ * device that supports the hidden page, and silently inject a saved hash.
+ */
+function superadmin_probe_and_show()
+{
+    if (is_mc888) $("#developer_link").text("SuperAdmin");
+    superadmin_supported(function(supported)
+    {
+        if (!supported) return;
+        $("#superadmin_login_span").show();
+        if (have_superadmin_password_hash())
+            perform_superadmin_login(cookies.get("superadmin_password_hash"), null, false, true);
+    });
+}
+
+/*
+ * The menu's Developer link. The two models gate it differently:
+ *  - MC888: SuperAdmin hidden page (HIDDEN_PAGE_LOGIN, pass-the-hash);
+ *  - MC889: Developer options (DEVELOPER_OPTION_LOGIN, same password as admin).
+ * Log the right session in first, then open the page that needs it.
+ */
+function open_developer_page()
+{
+    if (is_mc888)
+    {
+        var open_super = function() { window.location.hash = "#super_admin_pages"; };
+        $.ajax({
+            type: "GET",
+            url: "/goform/goform_get_cmd_process",
+            data: { cmd: "hidden_page_loginfo", multi_data: "1" },
+            dataType: "json",
+            success: function(a)
+            {
+                if ("ok" == a.hidden_page_loginfo) { open_super(); return; }
+                var hash = cookies.get("superadmin_password_hash");
+                if (hash) perform_superadmin_login(hash, open_super, false, false);
+                else enable_superadmin_login(open_super);
+            },
+            error: err
+        });
+        return;
+    }
+
+    var open_dev = function() { window.location.hash = "#developer_login"; };
+    $.ajax({
+        type: "GET",
+        url: "/goform/goform_get_cmd_process",
+        data: { cmd: "developer_option_loginfo", multi_data: "1" },
+        dataType: "json",
+        success: function(a)
+        {
+            if ("ok" == a.developer_option_loginfo) { open_dev(); return; }
+            var admin_hash = cookies.get("admin_password_hash");
+            var as_developer = function()
+            {
+                perform_login_hash(admin_hash, function()
+                {
+                    logged_in_as_developer = true;
+                    open_dev();
+                }, true);
+            };
+            if (admin_hash) as_developer();
+            else perform_login(function()
+            {
+                admin_hash = cookies.get("admin_password_hash");
+                as_developer();
+            }, false, true);
+        },
+        error: err
+    });
 }
 
 function check_log_in(logged_in_callback, not_logged_in_callback = null)
@@ -3625,11 +3841,16 @@ function inject_html()
                 <a href="#temp_status">Temperatures</a> |
                 <a href="#bsp_tc_settings">Thermal Thresholds</a> |
                 <a href="#rf_mmw">mmWave Modules</a> |
-                <a href="#developer_login">Developer</a>
+                <a href="javascript:void(0)" id="developer_link" onclick="open_developer_page()">Developer</a>
             ]
             <div class="spacing_links"></div>
 
             <a onclick="enable_automatic_login()">Enable Automatic Login</a> | <a onclick="version_info()">Version Info</a>
+            <div class="spacing_links"></div>
+
+            <span id="superadmin_login_span" style="display:none">
+                <a onclick="enable_superadmin_login()">Set SuperAdmin hash</a> | <a onclick="forget_superadmin_login()">Forget SuperAdmin hash</a>
+            </span>
             <div class="spacing_links"></div>
 
             <a onclick="lte_cell_lock()">LTE Cell Lock</a> <span id="lte_cell_lock"></span> |

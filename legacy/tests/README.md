@@ -43,6 +43,9 @@ Run all three after every edit of the script, before pasting it into Firefox or 
 - **Antenna mode sweep:** 5G + LTE SINR score with signs, missing readings rank last, `-20.0` no-value marker skipped,
   hex PCI and cell change shown (`636576/534 > 636576/786`), best mode applied, a failed command restores the previous
   auto-select with omni/omni. `zte_set`/`ant_get`/`ant_sleep` are stubbed, timings shortened.
+- **Login / SuperAdmin:** saved admin hash = automatic, macOS app asks via `api.ask` (no 10 s limit), browser via
+  `prompt()`; SuperAdmin `HIDDEN_PAGE_LOGIN` posts `SHA256(hash + LD)` + `AD`, saves the hash on success, drops it on a
+  wrong hash and stays quiet on automatic injection.
 - **MikroTik (`test_mikrotik.js`):** `ca-band`/`primary-band` parsing, `AT+QNWLOCK` answers (off, multi-cell, PCI 0), lock
   input validation and AT commands, NR SCS, `cell-monitor` dedupe/sort (newest section wins, missing RSRP last),
   colours for negative/zero/missing values, HTML escaping; antenna alignment: `AT+QENG`/`AT+QRSRP` parsing (NSA, LTE only,

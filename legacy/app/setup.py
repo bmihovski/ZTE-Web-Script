@@ -4,7 +4,7 @@ from setuptools import setup
 setup(
     app=["zte_app.py"],
     name="ZTE Helper",
-    data_files=[("", ["../zte-script-legacy.js", "../mikrotik-script.js"])],
+    data_files=[("", ["../zte-script-legacy.js", "../mikrotik-script.js", "../zte-https-proxy.js"])],
     options={"py2app": {
         "packages": ["webview"],
         "plist": {

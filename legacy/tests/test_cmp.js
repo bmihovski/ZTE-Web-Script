@@ -231,6 +231,22 @@ t('tone: RSSI options + wide RSSI range (no premature "done")', () => {
 
 // ---- login: saved hash = automatic, macOS app asks via api.ask (no 10 s limit), browser via prompt() ----
 for (const f of ['ask_password', 'perform_login', 'have_admin_password_hash']) eval('global.' + f + '=' + grab(f).replace('function ' + f, 'function'));
+for (const f of ['perform_superadmin_login']) eval('global.' + f + '=' + grab(f).replace('function ' + f, 'function'));
+const superadminRun = async (result, quiet) => {
+  const posts = [], saved = [], deleted = [], alerts = [];
+  global.cookies = { get: () => null, set: (k, v) => saved.push([k, v]), delete: k => deleted.push(k) };
+  global.SHA256 = s => 'sha(' + s + ')';
+  global.alert = m => alerts.push(m);
+  global.err = () => {};
+  global.$ = { ajax: o => {
+    if (o.type === 'GET') o.success({ wa_inner_version: 'BD_UGBGRMC888V1.0.0B09', cr_version: '', RD: 'RD1', LD: 'LD1' });
+    else { posts.push(o.data); o.success(JSON.stringify({ result })); }
+  } };
+  let outcome = 'none';
+  perform_superadmin_login('H'.repeat(64), () => { outcome = 'ok'; }, true, quiet);
+  await new Promise(r => setTimeout(r, 0));
+  return { posts, saved, deleted, alerts, outcome };
+};
 const loginRun = async (cookie, app, answer) => {
   const calls = [], asked = [];
   global.cookies = { get: k => (k == 'admin_password_hash' ? cookie : null) };
@@ -252,6 +268,19 @@ const loginRun = async (cookie, app, answer) => {
       assert.deepStrictEqual(r.asked, ['prompt:Router Password']); assert.deepStrictEqual(r.calls, [['sha(pw)', true]]); }],
     ['cancel / empty: no login', async () => { assert.deepStrictEqual((await loginRun(null, true, null)).calls, []);
       assert.deepStrictEqual((await loginRun(null, false, '')).calls, []); }],
+    ['superadmin: posts SHA256(hash+LD) + AD and saves the hash', async () => {
+      const r = await superadminRun('0', true);
+      assert.strictEqual(r.posts.length, 1);
+      assert.strictEqual(r.posts[0].goformId, 'HIDDEN_PAGE_LOGIN');
+      assert.strictEqual(r.posts[0].password, 'sha(' + 'H'.repeat(64) + 'LD1)');
+      assert.strictEqual(r.posts[0].AD, 'sha(sha(BD_UGBGRMC888V1.0.0B09)RD1)');
+      assert.deepStrictEqual(r.saved, [['superadmin_password_hash', 'H'.repeat(64)]]);
+      assert.strictEqual(r.outcome, 'ok'); }],
+    ['superadmin: wrong hash drops the stored hash and stays quiet', async () => {
+      const r = await superadminRun('3', true);
+      assert.deepStrictEqual(r.deleted, ['superadmin_password_hash']);
+      assert.deepStrictEqual(r.saved, []);
+      assert.deepStrictEqual(r.alerts, []); }],
   ];
   for (const [name, fn] of antCases.concat(cases)) { try { await fn(); console.log('ok   ', name); } catch (e) { fails++; console.log('FAIL ', name, '-', e.message); } }
   console.log(fails ? fails + ' FAILED' : 'ALL PASSED');

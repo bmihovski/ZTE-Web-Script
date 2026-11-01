@@ -13,17 +13,20 @@ Build: macOS only: pip3 install py2app && python3 setup.py py2app   ->  dist/ZTE
 Data:  macOS ~/Library/Application Support/ZTE Helper, Windows %APPDATA%\\ZTE Helper, Linux ~/.config/zte-helper
 Routers: <data>/routers.json  {"zte": "http://192.168.6.3", "mikrotik": "http://192.168.6.6"}
        (created with these defaults on first start; env ZTE_ROUTER / MT_ROUTER override it for one run;
-        plain http: WKWebView rejects the routers' self-signed https certs)
+        https ZTE addresses: WKWebView rejects the legacy TLS / self-signed cert, so a local
+        zte-https-proxy.js bridge (Node) starts on an ephemeral or ZTE_PROXY_PORT port and stops with the app)
 Debug: add --debug -> every REST call logged, Web Inspector enabled (right-click > Inspect Element)
 Log:   terminal + macOS ~/Library/Logs/ZTE Helper.log, elsewhere <data>/zte-helper.log  (page scripts log via window.pywebview.api.log)
 Prompts: the webview's own prompt() (Windows, Linux, macOS with pywebview >= 6); old macOS pywebview without it gets a
        sync bridge (osascript, WebKit aborts it after ~10 s). Passwords on macOS: hidden-answer dialog via api.ask.
 """
+import atexit
 import json
 import logging
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import threading
@@ -178,6 +181,69 @@ def find_script(name="zte-script-legacy.js"):
     sys.exit(name + " not found next to zte_app.py or in its parent folder")
 
 
+PROXIES = []  # started zte-https-proxy.js processes, one per HTTPS router window
+
+
+def find_proxy():
+    for p in (HERE / "zte-https-proxy.js", HERE.parent / "zte-https-proxy.js"):
+        if p.exists():
+            return p
+    return None
+
+
+def node_binary():
+    found = shutil.which("node")
+    if found:
+        return found
+    for p in ("/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"):
+        if Path(p).exists():
+            return p
+    return None
+
+
+def start_proxy(target):
+    """HTTP->HTTPS bridge for an old-TLS ZTE router. Ephemeral port unless ZTE_PROXY_PORT is set."""
+    node, script = node_binary(), find_proxy()
+    if not node or not script:
+        log.warning("proxy unavailable (node=%s, script=%s); opening %s directly - WKWebView will likely stay blank",
+                    node or "missing", script or "missing", target)
+        return None
+    port = str(os.environ.get("ZTE_PROXY_PORT", "0"))  # 0 = the OS picks a free port
+    p = subprocess.Popen([node, str(script), "--target", target, "--port", port],
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         text=True, bufsize=1)
+    line = {}
+
+    def read_first_line():
+        line["text"] = p.stdout.readline()
+
+    t = threading.Thread(target=read_first_line, daemon=True)
+    t.start()
+    t.join(5)
+    match = re.search(r"http://127\.0\.0\.1:(\d+)", line.get("text", ""))
+    if not match:
+        p.terminate()
+        log.warning("proxy failed to start for %s: %s", target, (line.get("text") or "no output").strip())
+        return None
+    origin = "http://127.0.0.1:" + match.group(1)
+    log.info("proxy: %s -> %s", target, origin)
+    return {"proc": p, "origin": origin}
+
+
+def stop_proxies():
+    while PROXIES:
+        p = PROXIES.pop()
+        try:
+            p["proc"].stdin.close()  # the proxy also exits on stdin EOF
+            p["proc"].terminate()
+            p["proc"].wait(timeout=2)
+        except Exception:
+            pass
+
+
+atexit.register(stop_proxies)
+
+
 def ask_logged(msg, default, origin, dialogs=None):
     t = time.monotonic()
     value = ask(msg, default, dialogs)
@@ -252,8 +318,34 @@ window.prompt = function (msg, def) {
 """ % (port, TOKEN)
 
 
-def injector(window, origin, inject, api=None):
+def injector(window, origin, inject, api=None, reload_on_blank=False):
     # zero-arg closure: pywebview passes extra args to handlers that declare parameters
+    state = {"check_started": False, "reloaded": False}
+
+    def blank_check(url):
+        """WebKit occasionally fails one of the ZTE SPA's RequireJS modules on a first load of a new origin
+        (RequireJS 'scripterror'), leaving #container empty. One reload re-fetches it from cache and renders."""
+        time.sleep(10)
+        try:
+            info = json.loads(window.evaluate_js(
+                "JSON.stringify({ready:document.readyState,"
+                "text:(document.body.innerText||'').trim().length,"
+                "kids:(document.getElementById('container')||{children:[]}).children.length})"))
+        except Exception as e:
+            log.info("blank check failed: %s", e)
+            return
+        if info.get("ready") != "complete" or info.get("text", 0) > 20 or info.get("kids", 0) > 0:
+            return
+        if state["reloaded"]:
+            log.info("page still blank after one reload (%s) - leaving it", info)
+            return
+        state["reloaded"] = True
+        log.info("blank page after load (%s) - reloading once", info)
+        try:
+            window.load_url(url.split("#", 1)[0])
+        except Exception as e:
+            log.info("blank-page reload failed: %s", e)
+
     def on_loaded():
         url = window.get_current_url() or ""
         closed = api._close_dialogs() if api else 0  # WebFig reloads itself while its login dialog is open
@@ -262,6 +354,9 @@ def injector(window, origin, inject, api=None):
         if url.startswith(origin):
             log.info("%s loaded %s -> injecting script", window.title, url)
             window.run_js(inject)  # run as-is (global scope), the scripts' onclick handlers need globals
+            if reload_on_blank and not state["check_started"]:
+                state["check_started"] = True
+                threading.Thread(target=blank_check, args=(url,), daemon=True).start()
         else:
             log.info("%s loaded %s -> not the router origin, no injection", window.title, url)
     return on_loaded
@@ -388,12 +483,19 @@ def main():
 
     def open_router(kind, o):
         title, path, script, probe_path = ROUTERS[kind]
+        display = o
+        if kind == "zte" and o.startswith("https://"):
+            proxy = start_proxy(o)  # legacy TLS + self-signed cert: WKWebView cannot open it directly
+            if proxy:
+                PROXIES.append(proxy)
+                o = proxy["origin"]
         ORIGINS.add(o)  # the prompt bridge accepts this router's page
         threading.Thread(target=probe, args=(o + probe_path,), daemon=True).start()
         api = JsApi()
-        window = webview.create_window("%s Helper - %s" % (title, o.split("://", 1)[1]), o + path, width=1600, height=1000, js_api=api,
+        window = webview.create_window("%s Helper - %s" % (title, display.split("://", 1)[1]), o + path, width=1600, height=1000, js_api=api,
                                        text_select=True)   # pywebview disables selecting / copying text by default
-        window.events.loaded += injector(window, o, shim + find_script(script) + "\n;true", api)
+        window.events.loaded += injector(window, o, shim + find_script(script) + "\n;true", api,
+                                         reload_on_blank=(kind == "zte"))
 
     picked = [k for k in ROUTERS if "--" + k in sys.argv]
     for k in picked:  # --zte / --mikrotik: straight to that router (address from routers.json / env)
@@ -402,7 +504,10 @@ def main():
         webview.create_window("Router Helper", html=LAUNCHER_HTML, width=480, height=340, js_api=Launcher(open_router), text_select=True)
     webview.settings["ALLOW_DOWNLOADS"] = True  # CSV export from the alignment tools
     # persistent cookies -> "Enable Automatic Login" survives restarts
-    webview.start(debug=DEBUG, private_mode=False, storage_path=str(STORAGE))
+    try:
+        webview.start(debug=DEBUG, private_mode=False, storage_path=str(STORAGE))
+    finally:
+        stop_proxies()
 
 
 def selftest():
