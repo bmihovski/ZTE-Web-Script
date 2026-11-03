@@ -65,6 +65,10 @@ the docstrings and this skill in sync.
 - A lock test removes its lock at the end; the per-cell mode therefore needs `nr_lock` active (AUTO=on applied it, or you did).
 - Deploying restarts the container and interrupts a running test; check `/lock-tests` (the tool does).
 - The container needs `ca-certificates` for the internet-test download (`start.sh` adds it); a failure is non-fatal (`inttest`).
+- **Before a deploy, run `tools/deploy.py review` (the `check` runs it too).** It scans for the 2026-11-03 defect classes: live
+  deque/dict iteration (`list(...)`), wall-clock waits (`time.monotonic()`), a loss average with `or 0`, and a sweep `except`
+  without a logout. When a new bug class is found, add its pattern + a regression scenario there - the review is the memory of
+  the mistakes.
 - `/lock-tests` and `/antenna-sweeps` return the last 40 rows; the panel tables scroll. `/lock-tests` `rat`/`anchor` describe the
   running test, else the last one (they are not reset when it ends).
 - A 5G row's capacity needs `nr_arfcn` (the lock spec is `none` for the baseline); don't derive it from `lock` alone.

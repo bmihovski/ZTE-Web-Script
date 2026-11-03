@@ -205,22 +205,22 @@ def wake(seconds=60, host=None, size=None, stop=None):
     host, size = host or E("WAKE_HOST", "1.1.1.1"), int(size or E("WAKE_SIZE", "1000"))
     stop = stop or threading.Event()
     if seconds <= 0: return False
-    t0 = time.time(); p = None
+    t0 = time.monotonic(); p = None
     try:
         p = subprocess.Popen(["ping", "-s", str(size), "-i", "1", "-c", str(max(1, int(seconds))), host],
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except (OSError, ValueError):
         p = None
     if p is not None:                                  # ping: 1000-byte packets for the whole window (stops when the cell is up)
-        while time.time() - t0 < seconds + 5 and p.poll() is None and not stop.is_set(): time.sleep(0.5)
-        ran = time.time() - t0
+        while time.monotonic() - t0 < seconds + 5 and p.poll() is None and not stop.is_set(): time.sleep(0.5)
+        ran = time.monotonic() - t0
         try: p.terminate()
         except Exception: pass
         if ran >= 1: return True                       # traffic went out even if ICMP is filtered (exit code 1)
     # fallback (no ping / no permission): small downloads back to back, ~16 KB each
     url = INTTEST_URL
     if not url or url == "off": return False
-    while time.time() - t0 < seconds and not stop.is_set():
+    while time.monotonic() - t0 < seconds and not stop.is_set():
         try:
             with urllib.request.urlopen(url, timeout=5) as r: r.read(16384)
         except Exception:
@@ -234,8 +234,8 @@ def wait_online(timeout=180, stable=None):
     `timeout` s. True when it is (also immediately with LAT_TARGETS=off: no probe). Checks that the newest probe is recent."""
     if not TARGETS: return True
     stable = stable or ONLINE_STABLE
-    t0 = time.time()
-    while time.time() - t0 < timeout:
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < timeout:
         recent = list(lat_buf)[-stable:]
         if len(recent) >= stable and all(x[1] is not None for x in recent) and time.time() - recent[-1][0] <= 30: return True
         time.sleep(1)
@@ -436,7 +436,7 @@ def best_anchor(cell, min_min=None):
     """The LTE anchor this 5G cell was served with and that measured best (pair quality), or None. Only pairs with at least
     `ANCHOR_MIN_MINUTES` minutes of evidence count - a cell that was never seen under an anchor has no opinion about it."""
     need = ANCHOR_MIN if min_min is None else min_min
-    pairs = [(a, p) for a, p in ((REG["nr"].get(cell) or {}).get("anchors") or {}).items() if (p.get("min") or 0) >= need]
+    pairs = [(a, p) for a, p in list(((REG["nr"].get(cell) or {}).get("anchors") or {}).items()) if (p.get("min") or 0) >= need]   # snapshot: the sampler adds pairs
     best = _reliable_best(pairs, cell)
     return best[0] if best else None
 
@@ -446,7 +446,7 @@ def nr_anchors(cell):
     rows = [{"anchor": a, "min": p.get("min") or 0, "call_ok_pct": round(100.0 * (p.get("ok") or 0) / max(1, p.get("min") or 0), 1),
              "loss": p.get("loss"), "p95": p.get("p95"), "jitter": p.get("jitter"), "sinr": p.get("sinr"), "rsrp": p.get("rsrp"),
              "lte_sinr": p.get("lte_sinr"), "_ok": p.get("ok") or 0}
-            for a, p in ((REG["nr"].get(cell) or {}).get("anchors") or {}).items() if p.get("min")]
+            for a, p in list(((REG["nr"].get(cell) or {}).get("anchors") or {}).items()) if p.get("min")]   # snapshot: the sampler adds pairs
     key = lambda r: pair_quality({"min": r["min"], "ok": r["_ok"], "loss": r["loss"], "p95": r["p95"], "jitter": r["jitter"],
                                   "sinr": r["sinr"], "rsrp": r["rsrp"]}, r["anchor"])
     best = best_anchor(cell)
@@ -854,7 +854,7 @@ def report(hours=24):
         "lat_p95": med([f(r.get("lat_p95")) for r in rs]), "jitter_ms": med([f(r.get("jitter_ms")) for r in rs]),
         "loss_pct": _mean_loss(rs)} for c, rs in cells.items()),
         key=lambda x: -x["minutes"])
-    out["switches"] = sum(1 for a, b in zip(rows, rows[1:]) if a["nr_cell"] != b["nr_cell"])
+    out["switches"] = sum(1 for a, b in zip(rows, rows[1:]) if a.get("nr_cell") != b.get("nr_cell"))
     out["no5g_minutes"] = sum(1 for r in rows if no5g_busy(r))                # with traffic only; idle minutes without 5G are normal
     out["no5g_idle_minutes"] = len(cells.get("no5G", [])) - out["no5g_minutes"]
     bands = collections.defaultdict(lambda: {"sinr": [], "rsrp": [], "anchor": 0})

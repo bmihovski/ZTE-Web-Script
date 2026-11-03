@@ -122,12 +122,13 @@ def on_boot():
 def on_values(vals):
     """After each read: lock values, the firmware status line (once), antenna apply after a boot, firmware guard write."""
     locks.on_values(vals)
-    if not st.get("params_logged"):          # once: what the CPE exposes under the interface subtree (names only - the gNB/NCI hunt)
-        st["params_logged"] = True
-        names = sorted(k[len(CI):] for k in vals if k.startswith(CI))
-        ids = {k[len(CI):]: vals[k] for k in vals if k.startswith(CI) and re.search(r"cellid|gnb|nci|cgi|cell_id|nbid", k, re.I)}
-        log("ZTE interface params (%d): %s" % (len(names), ", ".join(names)))
-        if ids: log("ZTE cell ids: %s" % ids)
+    if not st.get("cellids_logged"):         # once: the cell ids the CPE reports (one short line - the full interface list was a gNB hunt)
+        st["cellids_logged"] = True
+        g2 = lambda k: vals.get(CI + k, "")
+        nci = g2("NR5G_CELLID") or g2("NCGI") or g2("gNBID")
+        log("ZTE cell ids: LTE %s%s; 5G %s" % (eci(g2("CELLID")) or "?",
+                                               (" (ECGI %s)" % g2("ECGI")) if g2("ECGI") else "",
+                                               ("NCI %s" % nci) if nci else "NCI/gNB not reported in NSA"))
     if not st["status_logged"]:
         st["status_logged"] = True
         cur, offered = vals.get("Device.DeviceInfo.SoftwareVersion") or "", vals.get("Device.FOTA.NewVersion") or ""

@@ -155,4 +155,14 @@ try:
     assert [(s[2], s[3]) for s in m.st["sets"] if s[1] == "BSP_ANTENNA_STATE_SET"][-2:] == [("5", "1"), ("6", "4")]
 finally:
     brain.internet_test = real_net
+# an error mid-sweep must still log the browser session out (the ZTE allows one web session; without the logout you are locked out)
+real_measure = antennas._measure
+antennas._measure = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+try:
+    assert antennas.antenna_sweep("exc") is None, "the failed sweep must return None"
+    assert m.st["sets"][-1][1] == "LOGOUT", m.st["sets"][-3:]
+    r = antennas.sweep_for_test("636576/534")
+    assert r["aborted"] and m.st["sets"][-1][1] == "LOGOUT", (r, m.st["sets"][-3:])
+finally:
+    antennas._measure = real_measure
 print("OK test_sweep")

@@ -152,8 +152,37 @@ def local_spec(base=BASE):
         shutil.rmtree(data, ignore_errors=True)
 
 
+REVIEW_PATTERNS = [
+    (r"reversed\(\s*brain\.HIST\s*\)", "brain.HIST iterated live: wrap in list() (the sampler appends -> RuntimeError)"),
+    (r"for\s+[^\n]*\bin\s+REG\[[\"'](?:lte|nr)[\"']\]\.items\(\)", "REG dict iterated live: wrap in list() (dict changed size during iteration)"),
+    (r"while\s+[^\n]*time\.time\(\)\s*-\s*t0", "wall-clock wait: use time.monotonic() (a clock jump aborts the wait)"),
+    (r"mean\(\s*\[[^\]]*loss_pct[^\]]*or\s+0", "loss averaged with 0 for missing probes: drop None (never fabricate 0 % loss)"),
+]
+
+
+def review(base=BASE):
+    """Static scan for the defect classes of docs/REVIEW-2026-11-03.md: live deque/dict iteration, wall-clock waits, fabricated
+    0 % loss, and a sweep error path without a logout (the ZTE's single web session). Read-only; returns the findings (empty = clean)."""
+    hits = []
+    for p in sorted(glob.glob(os.path.join(base, "keeper", "**", "*.py"), recursive=True)):
+        rel = os.path.relpath(p, base)
+        with open(p, encoding="utf-8") as fh: lines = fh.read().splitlines()
+        for i, line in enumerate(lines, 1):
+            for rx, why in REVIEW_PATTERNS:
+                if re.search(rx, line): hits.append("%s:%d %s" % (rel, i, why))
+        if rel.endswith("devices/zte/antennas.py"):
+            for fn in ("antenna_sweep", "sweep_for_test"):
+                start = next((i for i, l in enumerate(lines) if l.startswith("def " + fn)), None)
+                if start is None: continue
+                block = lines[start:start + 140]
+                for j, l in enumerate(block):
+                    if l.startswith("    except") and not any("logout" in x for x in block[j:j + 8]):
+                        hits.append("%s:%d %s: except without logout (the ZTE's single web session stays open)" % (rel, start + j + 1, fn))
+    return hits
+
+
 def check(base=BASE, skip_tests=False):
-    """Local gate: compile, the scenario suite (unless skipped), the userscript syntax."""
+    """Local gate: compile, the scenario suite (unless skipped), the userscript syntax, the review scan."""
     print("== check")
     p = subprocess.run([sys.executable, "-m", "compileall", "-q", "keeper"], cwd=base)
     if p.returncode: raise SystemExit("compileall failed")
@@ -164,7 +193,12 @@ def check(base=BASE, skip_tests=False):
     if os.path.isfile(js) and shutil.which("node"):
         p = subprocess.run(["node", "--check", js], capture_output=True, text=True)
         if p.returncode: raise SystemExit("userscript syntax: " + p.stderr[-1000:])
-    print("   compile / tests / userscript OK")
+    hits = review(base)
+    if hits:
+        print("== review")
+        for h in hits[:20]: print("   " + h)
+        raise SystemExit("review: %d finding(s) - fix them (see docs/REVIEW-2026-11-03.md)" % len(hits))
+    print("   compile / tests / userscript / review OK")
 
 
 def _ssh(host, command):
@@ -406,8 +440,8 @@ def validate(url=URL, rat="nr", run=None, wait=False, timeout=3600, expect_lock=
     """Read-only: validate one lock-test run (the newest, or `--run`). `--wait` first waits for a running test to finish
     (poll every 15 s, up to `timeout` s). Exit: 0 = a usable verdict, 2 = no usable result, 3 = --expect-lock mismatch."""
     if wait:
-        t0 = time.time(); last = None
-        while time.time() - t0 < timeout:
+        t0 = time.monotonic(); last = None
+        while time.monotonic() - t0 < timeout:
             lt = _get(url, "/lock-tests")
             if not lt.get("running"):
                 break
@@ -452,6 +486,7 @@ def main(argv=None):
     sub.add_parser("status")
     p = sub.add_parser("logs"); p.add_argument("-n", type=int, default=20)
     sub.add_parser("backup")
+    sub.add_parser("review", help="static scan for the defect classes of docs/REVIEW-2026-11-03.md (read-only)")
     p = sub.add_parser("deploy"); p.add_argument("--skip-tests", action="store_true"); p.add_argument("--force", action="store_true")
     p.add_argument("--no-rollback", action="store_true")
     p = sub.add_parser("verify"); p.add_argument("--version"); p.add_argument("--no-contract", action="store_true")
@@ -467,6 +502,11 @@ def main(argv=None):
         print("\n".join(_ssh(a.host, '/log print where message~"%s"' % CONTAINER).splitlines()[-a.n:]))
     elif a.cmd == "backup":
         bdir, man = backup(BASE, a.host, a.dst, a.url); print(bdir, man.get("version"), len(man["files"]))
+    elif a.cmd == "review":
+        hits = review(BASE)
+        for h in hits: print(h)
+        print("review: OK" if not hits else "review: %d finding(s)" % len(hits))
+        sys.exit(1 if hits else 0)
     elif a.cmd == "deploy": deploy(BASE, a.host, a.dst, a.url, a.skip_tests, a.force, not a.no_rollback)
     elif a.cmd == "verify":
         problems, warnings, _ = verify(BASE, a.url, a.version or local_version(BASE), contract=not a.no_contract)

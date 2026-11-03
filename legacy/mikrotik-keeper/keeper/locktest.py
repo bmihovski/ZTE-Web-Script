@@ -228,8 +228,8 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
                     event({"event": "lock test %s" % lock, "to": "not set", "why": str(e)}); log("lock test %s: %s" % (lock, e))
                     continue
                 if dev.LOCKS_REBOOT:
-                    t0 = time.time()
-                    while acs.st["boots"] == boots and time.time() - t0 < LT_BOOT_WAIT_S and not lt["cut"]: time.sleep(2)
+                    t0 = time.monotonic()
+                    while acs.st["boots"] == boots and time.monotonic() - t0 < LT_BOOT_WAIT_S and not lt["cut"]: time.sleep(2)
                     note = "" if acs.st["boots"] > boots else "no boot inform within %d s" % LT_BOOT_WAIT_S
                 else:
                     note = ""                          # the driver blocked until the lock was applied: no CPE reboot to wait for

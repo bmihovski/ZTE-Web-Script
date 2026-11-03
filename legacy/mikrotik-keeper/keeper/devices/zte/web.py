@@ -66,8 +66,8 @@ def ready(timeout=120, tries=None, gap=None):
     """Wait until the CPE web answers `tries` times in a row (a rebooted ZTE needs minutes; CPE_READY_TRIES 3, CPE_READY_GAP_S 5):
     True when it is ready. Reads one public goform value - no login, so the browser's session is not taken - up to `timeout` s."""
     tries = READY_TRIES if tries is None else tries; gap = READY_GAP if gap is None else gap
-    t0 = time.time(); ok = 0
-    while time.time() - t0 < timeout:
+    t0 = time.monotonic(); ok = 0
+    while time.monotonic() - t0 < timeout:
         try:
             Web().get("wa_inner_version"); ok += 1
             if ok >= tries: return True

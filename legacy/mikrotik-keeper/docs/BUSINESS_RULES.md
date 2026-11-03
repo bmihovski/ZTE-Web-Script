@@ -19,6 +19,10 @@ at `/docs`.
   evidence, neither clearly better) wins the anchor choice - the operator's NSA combo is more likely intentional; a candidate with no
   pair history at a different site is flagged `cross-site NSA, no pair history` in the summary. Informational only: the learned pairs
   and the quality policy decide.
+- **A defect class found once is checked forever.** `tools/deploy.py review` (also part of `tools/deploy.py check`) statically
+  scans the keeper for the patterns that caused the 2026-11-03 bugs: a live `brain.HIST` deque iteration, a live `REG[...]` dict
+  iteration, a wall-clock wait (`time.time()` in a `while ... - t0`), a loss average with `or 0` for missing probes, and a sweep
+  `except` without a logout. Add a pattern there (with a test) whenever a new class of bug is found.
 - **No network-mode changes.** Yettel is NSA only; never `Only_5G`, never `net_select`. Locks are a human decision; the keeper
   recommends them, then guards the lock you chose.
 - **A 5G cell is only reachable under some LTE anchors.** NSA serves the 5G leg only when the LTE anchor it is combined with

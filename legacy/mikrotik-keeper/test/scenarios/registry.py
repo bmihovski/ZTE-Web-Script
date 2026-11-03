@@ -125,4 +125,8 @@ b.REG["nr"]["636576/555"] = {"first": 1, "served_min": 120,
     "anchors": {"3350/340": {"min": 60, "ok": 60, "p95": 50, "jitter": 10, "sinr": 7, "rsrp": -80, "lte_sinr": 2},
                 "100/340": {"min": 60, "ok": 60, "p95": 50, "jitter": 10, "sinr": 7, "rsrp": -80, "lte_sinr": 4}}}
 assert b.best_anchor("636576/555") == "100/340", b.nr_anchors("636576/555")   # 100/340 is at the 555's site (1243)
+# a sample without nr_cell must not crash the report (the switches line reads .get)
+store.add(DATA, "samples", {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "lte_cell": "100/340"})
+r = b.report(1)
+assert "switches" in r and r["switches"] >= 0, r.get("switches")
 print("OK test_registry")

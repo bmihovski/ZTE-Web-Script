@@ -222,8 +222,8 @@ def _measure(w, trigger, internet=False, expected=None):
             if WAKE_S > 0:
                 ev = threading.Event()
                 threading.Thread(target=brain.wake, args=(WAKE_S,), kwargs={"stop": ev}, daemon=True).start()
-                t0 = time.time()
-                while time.time() - t0 < WAKE_S:
+                t0 = time.monotonic()
+                while time.monotonic() - t0 < WAKE_S:
                     try: rd.append(_read(w))
                     except Exception: pass
                     if _target_ok(rd, expected): break
@@ -268,7 +268,7 @@ def antenna_sweep(trigger):
     with _sweep_lock:
         if sweep_st["running"]: return None
         sweep_st["running"] = True
-    rows = []
+    rows = []; w = None
     try:
         with web_lock:
             if not ready(timeout=SWEEP_READY_TIMEOUT_S):
@@ -310,6 +310,9 @@ def antenna_sweep(trigger):
         return verdict
     except Exception as e:
         log("antenna sweep failed: %r" % e)
+        if w:                                    # free the ZTE's single web session even on an error (the browser is locked out otherwise)
+            try: w.logout()
+            except Exception: pass
         return None
     finally:
         sweep_st["running"] = False
@@ -336,7 +339,7 @@ def sweep_for_test(expected, trigger="lock test"):
     with _sweep_lock:
         if sweep_st["running"]: return dict(miss, aborted="an antenna sweep is already running", why="web", skip="an antenna sweep is already running")
         sweep_st["running"] = True
-    rows = []
+    rows = []; w = None
     try:
         with web_lock:
             if not ready(timeout=SWEEP_READY_TIMEOUT_S):
@@ -394,6 +397,9 @@ def sweep_for_test(expected, trigger="lock test"):
                 "no_cell": False, "skip": "", "why": ""}
     except Exception as e:
         log("lock test sweep failed: %r" % e)
+        if w:                                    # free the ZTE's single web session even on an error
+            try: w.logout()
+            except Exception: pass
         return dict(miss, aborted="sweep failed: %r" % e, why="web", skip="sweep failed: %r" % e)
     finally:
         sweep_st["running"] = False
