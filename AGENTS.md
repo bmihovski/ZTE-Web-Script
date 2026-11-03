@@ -49,6 +49,9 @@ Durable project memory. Read this first; the details live in the keeper docs.
   cells; the anchors are resolved once at the start (a mid-run re-resolve would make steps cross-anchor). A pair may move the LTE
   lock only to a daytime-measured anchor not clearly worse than the current lock (call-ready -5 pp, anchor SINR -3 dB) - else the
   5G cell alone is applied and the refusal is reported. The refill only enriches known cells (never resurrects a forgotten one). Never call a cell "unreachable" from a test pinned to an anchor it was never served under.
+- **5G site notes:** the 5G cells' sites live in `sites.json` (`rat:"NR"` + `pci`), not in the code; `/cells` shows the site and the
+  pair's same-site/distance/bearing relation; a co-sited pair wins a tie among equally good pairs; a candidate with no pair history
+  at another site is flagged `cross-site NSA, no pair history`. Informational - the learned pairs decide.
 - **A released lock waiting for its cell is traceable:** the guard logs/events `lock restore pending` at most hourly while the
   cell is not back (no Telegram - the event name is outside the alert rules). LOCK_PAUSE releases at 00:50 and restores when B1
   returns; the wait is expected, not a bug.

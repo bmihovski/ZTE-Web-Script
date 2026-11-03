@@ -413,16 +413,22 @@ def pair_quality(p, anchor):
         (e.get("sinr") or -99, e.get("rsrp") or -999)
 
 
-def _reliable_best(pairs):
+def _reliable_best(pairs, cell=None):
     """(anchor, pair) with the most evidence that no comparable pair clearly beats: the pair with the most minutes leads, a
     challenger must clearly win (the quality margins) AND have at least half the leader's minutes - a 58-min pair must not unseat a
-    2766-min one on a 1 dB signal tie-break (seen 2026-11-02)."""
+    2766-min one on a 1 dB signal tie-break (seen 2026-11-02). With `cell`, a co-sited pair that is equally good (comparable
+    evidence, neither clearly better) wins the tie: the operator's NSA combo is more likely to be intentional."""
     if not pairs: return None
     pairs = sorted(pairs, key=lambda ap: ap[1].get("min") or 0, reverse=True)
     lead = pairs[0]
     for a, p in pairs[1:]:
         if 2 * (p.get("min") or 0) < (lead[1].get("min") or 0): continue
         if clearly_better(pair_quality(p, a)[:6], pair_quality(lead[1], lead[0])[:6]): lead = (a, p)
+    if cell:
+        q = lambda ap: pair_quality(ap[1], ap[0])[:6]
+        tied = [ap for ap in pairs if ap != lead and 2 * (ap[1].get("min") or 0) >= (lead[1].get("min") or 0)
+                and not clearly_better(q(ap), q(lead)) and not clearly_better(q(lead), q(ap)) and same_site(cell, ap[0])]
+        if tied: lead = tied[0]
     return lead
 
 
@@ -431,7 +437,7 @@ def best_anchor(cell, min_min=None):
     `ANCHOR_MIN_MINUTES` minutes of evidence count - a cell that was never seen under an anchor has no opinion about it."""
     need = ANCHOR_MIN if min_min is None else min_min
     pairs = [(a, p) for a, p in ((REG["nr"].get(cell) or {}).get("anchors") or {}).items() if (p.get("min") or 0) >= need]
-    best = _reliable_best(pairs)
+    best = _reliable_best(pairs, cell)
     return best[0] if best else None
 
 
@@ -574,8 +580,10 @@ def load_registry(data_dir):
         with open(os.path.join(data_dir, "sites.json")) as fh: s = json.load(fh)
         reg_st["sites"] = {str(x.get("enb")): x for x in s.get("sites", []) if x.get("enb") is not None}
         reg_st["zte"] = s.get("zte") or {}
+        reg_st["nr_sites"] = {str(c.get("pci")): enb for enb, x in reg_st["sites"].items()
+                              for c in (x.get("cells") or []) if str(c.get("rat", "")).upper() == "NR" and c.get("pci") is not None}
     except (OSError, ValueError):
-        reg_st["sites"] = {}
+        reg_st["sites"] = {}; reg_st["nr_sites"] = {}
     if reg_st["dir"] and any("anchors" not in e for k, e in REG["nr"].items() if "255" not in k.split("/")):
         try: backfill_anchors()          # one pass over the stored samples: the 5G cell <-> LTE anchor mapping
         except Exception: pass
@@ -587,6 +595,60 @@ def geo(lat1, lon1, lat2, lon2):
     a = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
     b = math.degrees(math.atan2(math.sin(dl) * math.cos(p2), math.cos(p1) * math.sin(p2) - math.sin(p1) * math.cos(p2) * math.cos(dl))) % 360
     return round(2 * 6371000 * math.asin(math.sqrt(a))), round(b, 1)
+
+
+def spec_of(anchor):
+    """A registry anchor key ('1550/66') as a lock spec ('66@1550')."""
+    return "%s@%s" % tuple(anchor.split("/")[::-1]) if anchor and "/" in anchor else (anchor or "")
+
+
+def nr_site(cell):
+    """The site (eNB) a 5G cell belongs to, from your sites.json notes (a `cells` entry with rat NR and its pci), or None."""
+    pci = (cell or "").split("/")[-1]
+    return reg_st.get("nr_sites", {}).get(pci) if pci else None
+
+
+def site_pos(enb):
+    """(lat, lon) of a site from your notes, or None."""
+    s = reg_st.get("sites", {}).get(str(enb)) if enb is not None else None
+    return (s.get("lat"), s.get("lon")) if s and s.get("lat") is not None and s.get("lon") is not None else None
+
+
+def site_geo(enb):
+    """(distance m, bearing deg) from the ZTE (home) to the site, or None when the notes have no position."""
+    p = site_pos(enb); z = reg_st.get("zte") or {}
+    if not p or z.get("lat") is None: return None
+    return geo(z["lat"], z["lon"], p[0], p[1])
+
+
+def lte_site(cell):
+    """The site (eNB) of an LTE cell: the registry's site (TR-069) or the learned ECI (eNB = id >> 8), or None."""
+    e = REG["lte"].get(cell or "") or {}
+    if e.get("site"): return e["site"]
+    v = (REG.get("ids") or {}).get("lte:" + (cell or "").replace("/", ":"))
+    return "%d/%d" % (v >> 8, v & 0xFF) if v else None
+
+
+def same_site(nr_cell, lte_cell):
+    """Are the 5G cell and the LTE anchor at the same site (your notes)? None when either site is unknown."""
+    ns = nr_site(nr_cell); ls = lte_site(lte_cell)
+    if not ns or not ls: return None
+    return str(ns) == str(ls).split("/")[0]
+
+
+def pair_site(anchor, cell):
+    """A (5G cell, LTE anchor) pair's site relation: same site, the two sites' distance (km) and the home-bearing difference."""
+    ns = nr_site(cell); ls = lte_site(anchor)
+    if not ns or not ls: return {}
+    ls = str(ls).split("/")[0]
+    out = {"same_site": str(ns) == ls, "nr_site": str(ns), "anchor_site": ls}
+    p1, p2 = site_pos(ns), site_pos(ls)
+    if p1 and p2:
+        out["site_km"] = round(geo(p1[0], p1[1], p2[0], p2[1])[0] / 1000.0, 1)
+        a, b = site_geo(ns), site_geo(ls)
+        if a and b:
+            d = abs(a[1] - b[1]); out["bearing_diff"] = round(min(d, 360 - d))
+    return out
 
 
 def cells_view(now=None):
@@ -605,9 +667,11 @@ def cells_view(now=None):
                  "seen_min": e["seen_min"], "ca_min": e["ca_min"], "anchor_min": e["anchor_min"], "site": e.get("site") or eci(k),
                  "first": day(e.get("first")), "last": day(e.get("last")), "lock_test": e.get("lock_test")}, **site_info(e.get("site") or eci(k)))
            for k, e in REG["lte"].items()]
-    nr = [{"cell": k, "nci": ids.get("nr:" + k.replace("/", ":"), ""), "served_min": e["served_min"], "sinr": e.get("sinr"), "rsrp": e.get("rsrp"), "ca_min": e.get("ca_min", 0),
-           "ca_sinr": e.get("ca_sinr"), "ca_rsrp": e.get("ca_rsrp"), "first": day(e.get("first")), "last": day(e.get("last")),
-           "best_anchor": best_anchor(k), "anchors": nr_anchors(k)}
+    nr = [dict({"cell": k, "nci": ids.get("nr:" + k.replace("/", ":"), ""), "served_min": e["served_min"], "sinr": e.get("sinr"), "rsrp": e.get("rsrp"), "ca_min": e.get("ca_min", 0),
+                "ca_sinr": e.get("ca_sinr"), "ca_rsrp": e.get("ca_rsrp"), "first": day(e.get("first")), "last": day(e.get("last")),
+                "site": nr_site(k), "best_anchor": best_anchor(k),
+                "anchors": [dict(a, **pair_site(a["anchor"], k)) for a in nr_anchors(k)]},
+               **({"site_dist_m": site_geo(nr_site(k))[0], "site_bearing": site_geo(nr_site(k))[1]} if site_geo(nr_site(k)) else {}))
           for k, e in REG["nr"].items() if "255" not in k.split("/")]
     return {"lte": sorted(lte, key=lambda x: (x["band"], -(x["rsrp"] or -999))), "nr": sorted(nr, key=lambda x: -(x["served_min"] + x["ca_min"]))}
 

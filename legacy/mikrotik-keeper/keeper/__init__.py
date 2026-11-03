@@ -4,4 +4,4 @@ Python 3 standard library only. Run: `python3 -m keeper` (the container does it 
 
 .. include:: ../docs/ARCHITECTURE.md
 """
-VERSION = "2026-11-03e"      # bump on every keeper change: date + letter (a, b, c ...)
+VERSION = "2026-11-03f"      # bump on every keeper change: date + letter (a, b, c ...)

@@ -13,6 +13,12 @@ at `/docs`.
   the active `DEVICE`, so a ZTE row never decides a MikroTik result and vice versa. The state file (`state.json` /
   `state-mikrotik.json`) and the cell registry (`cells.json` / `cells-mikrotik.json`) are per device. Learned cell ids
   (`cell-ids.json`) are network facts and shared; the app's `ui:` lists are shared too. `?device=*` on `/export`/`/db` is explicit.
+- **5G cells carry their site (your notes).** `sites.json` may list a site's 5G cells (`{"rat":"NR","pci":...}`); the registry then
+  shows each 5G cell's site, distance and bearing from the ZTE, and for every (5G cell, LTE anchor) pair: same site, the two sites'
+  distance and the home-bearing difference (no coordinates = the fields are hidden). A co-sited pair that is equally good (comparable
+  evidence, neither clearly better) wins the anchor choice - the operator's NSA combo is more likely intentional; a candidate with no
+  pair history at a different site is flagged `cross-site NSA, no pair history` in the summary. Informational only: the learned pairs
+  and the quality policy decide.
 - **No network-mode changes.** Yettel is NSA only; never `Only_5G`, never `net_select`. Locks are a human decision; the keeper
   recommends them, then guards the lock you chose.
 - **A 5G cell is only reachable under some LTE anchors.** NSA serves the 5G leg only when the LTE anchor it is combined with

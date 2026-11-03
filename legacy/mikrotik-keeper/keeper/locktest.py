@@ -359,14 +359,38 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
                     except (ValueError, TypeError): fresh = False
                     sig = max(rk["ranked"], key=lambda r: (brain.f(r.get("nr_sinr_p50")) or -99, brain.f(r.get("nr_rsrp_p50")) or -999)) if rk["ranked"] else None
                     lines.append("* best " + dd(best))
+                    site = brain.nr_site(best["lock"]); bpin = best.get("pin") or ""
+                    if site:
+                        g = brain.site_geo(site)
+                        txt = "  site: %s -> %s%s" % (best["lock"], site, (" (%.1f km, %d deg)" % (g[0] / 1000.0, g[1])) if g else "")
+                        if "@" in bpin:
+                            anchor = "%s/%s" % (bpin.split("@")[1], bpin.split("@")[0])
+                            ps = brain.pair_site(anchor, best["lock"])
+                            if ps:
+                                g2 = brain.site_geo(ps.get("anchor_site"))
+                                txt += "; anchor %s -> %s%s - %s" % (bpin, ps.get("anchor_site"),
+                                        (" (%.1f km, %d deg)" % (g2[0] / 1000.0, g2[1])) if g2 else "",
+                                        "co-sited" if ps.get("same_site") else "cross-site")
+                                if ps.get("site_km") is not None: txt += ", %.1f km apart" % ps["site_km"]
+                                if ps.get("bearing_diff") is not None: txt += ", %d deg apart" % ps["bearing_diff"]
+                        lines.append(txt)
+                        co = [a for a in brain.nr_anchors(best["lock"]) if a.get("same_site") and brain.spec_of(a["anchor"]) != bpin]
+                        if co: lines.append("  co-sited pair available: %s (%s min)" % (brain.spec_of(co[0]["anchor"]), co[0]["min"]))
                     if base: lines.append("  baseline (5G unlocked): " + dd(base).split(": ", 1)[1])
                     if sig and sig["lock"] != best["lock"]:
                         lines.append("  signal alone would pick %s (5G SINR %s) but internet quality picked %s" % (sig["lock"], na(sig.get("nr_sinr_p50")), best["lock"]))
                     def _pin(lock):
                         return next((r.get("pin") or "" for r in reversed(store.rows(DATA, "lock_tests"))
                                      if r.get("lock") == lock and r.get("rat") == "nr"), "")
+                    def _cross(lock):
+                        cell = "%s/%s" % (lock.split("@")[1], lock.split("@")[0]) if "@" in lock else ""
+                        pin = _pin(lock)
+                        if not cell or "@" not in pin: return ""
+                        a = "%s/%s" % (pin.split("@")[1], pin.split("@")[0])
+                        ps = brain.pair_site(a, cell)
+                        return " - cross-site NSA, no pair history" if ps.get("same_site") is False and a not in ((brain.REG["nr"].get(cell) or {}).get("anchors") or {}) else ""
                     if failed: lines.append("  not ranked (not seen / off target): " +
-                                            ", ".join(f + anchor_hint(f, _pin(f)) for f in failed))
+                                            ", ".join(f + anchor_hint(f, _pin(f)) + _cross(f) for f in failed))
                     applied = None; anchored = None
                     if gain and fresh and brain.AUTO == "on" and best["lock"] != cur:
                         try:

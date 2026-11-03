@@ -205,7 +205,9 @@ The keeper measures, analyses and decides; the userscript only shows the results
   CA / as anchor, the real site (eNB/cell from the ZTE), lock-test result; 5G cells served (minutes, SINR, RSRP) **and the LTE
   anchors each 5G cell was served with** (`anchors`, best first, with minutes / call-ready / p95 / jitter; `best_anchor` = the pair
   with the best measured quality — an NSA 5G cell can be reachable only under some anchors, e.g. 747 needs 1550/434). Rebuild the
-  mapping from the samples with `POST /cells/refill?days=7`. Built from the
+  mapping from the samples with `POST /cells/refill?days=7`. The 5G cells' sites come from your `sites.json` notes (`cells` entries
+  with `rat:"NR"` + `pci`): `/cells` shows each cell's site / distance / bearing and each (cell, anchor) pair's same-site / distance /
+  bearing difference. Built from the
   samples on first start, kept for good. Findings: `NEW:` a strong cell that appeared after watching started, `GONE:` a long-seen
   cell missing for > 24 h -> re-run the lock test. `POST /cells/forget?cells=500/341,3150/341` drops cells that don't belong to this device's registry. Your own `data/sites.json` (optional, reference only) adds site name, distance
   and bearing from the ZTE to the cells whose site the ZTE reported.

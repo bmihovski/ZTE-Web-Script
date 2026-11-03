@@ -12,7 +12,10 @@ def row(i, ca="B7/3350/340:-92/3@20 B3/1550/434:-96/10@20", nb="3350/340:-92 155
 import csv
 with open(DATA + "/samples.csv", "w", newline="") as fh:
     w = csv.DictWriter(fh, fieldnames=list(row(0))); w.writeheader(); [w.writerow(row(i)) for i in range(100)]
-json.dump({"zte": {"lat": 42.626118, "lon": 23.384814}, "sites": [{"enb": 1243, "name": "near", "lat": 42.6284, "lon": 23.3798}]}, open(DATA + "/sites.json", "w"))
+json.dump({"zte": {"lat": 42.626118, "lon": 23.384814},
+           "sites": [{"enb": 1243, "name": "near", "lat": 42.6284, "lon": 23.3798,
+                      "cells": [{"rat": "LTE", "pci": 340, "earfcn": [100], "azimuth": 132}, {"rat": "NR", "pci": 534}]}]},
+          open(DATA + "/sites.json", "w"))
 b.start.__globals__["threading"] = type("T", (), {"Thread": lambda *a, **k: type("x", (), {"start": lambda s: None})()})   # no probe thread here
 b.start(DATA)
 e = b.REG["lte"]["1550/434"]; a = b.REG["lte"]["3350/340"]
@@ -104,4 +107,22 @@ lt([["t", "340@100", 12, 100, "100/340", "1243/61", 6, "534:6", 7, 0, 100.0, 50]
 assert b.anchor_move_ok("340@100", "434@1550") == (True, ""), b.anchor_move_ok("340@100", "434@1550")
 assert b.anchor_move_ok("434@1550", "340@100")[0] is False and "anchor SINR" in b.anchor_move_ok("434@1550", "340@100")[1]
 assert b.anchor_move_ok("999@1550", "340@100") == (False, "it was never measured as an LTE anchor")
+# 5G cell <-> site notes: the NR cell's site from sites.json (rat NR + pci), the pair's site relation, the co-sited tie-break
+assert b.nr_site("636576/534") == "1243" and b.nr_site("636576/999") is None
+b.REG["lte"]["3350/340"]["site"] = "1072/3"   # another site (the fake had everything on 1243)
+assert b.same_site("636576/534", "100/340") is True and b.same_site("636576/534", "3350/340") is False
+ps = b.pair_site("100/340", "636576/534")
+assert ps["same_site"] is True and ps["site_km"] == 0.0 and ps["bearing_diff"] == 0 and ps["anchor_site"] == "1243", ps
+assert b.spec_of("1550/66") == "66@1550"
+v = b.cells_view(); x = next(c for c in v["nr"] if c["cell"] == "636576/534")
+assert x["site"] == "1243" and 450 < x["site_dist_m"] < 520, x
+a100 = next(a for a in x["anchors"] if a["anchor"] == "100/340")
+assert a100["same_site"] is True and "site_km" in a100 and a100["anchor_site"] == "1243", a100
+assert any(a["same_site"] is False for a in x["anchors"]), x["anchors"]   # 3350/340 sits at 1072
+# co-sited tie-break: two equally good pairs, the co-sited one wins (the operator's NSA combo is more likely intentional)
+b.reg_st["nr_sites"]["555"] = "1243"
+b.REG["nr"]["636576/555"] = {"first": 1, "served_min": 120,
+    "anchors": {"3350/340": {"min": 60, "ok": 60, "p95": 50, "jitter": 10, "sinr": 7, "rsrp": -80, "lte_sinr": 2},
+                "100/340": {"min": 60, "ok": 60, "p95": 50, "jitter": 10, "sinr": 7, "rsrp": -80, "lte_sinr": 4}}}
+assert b.best_anchor("636576/555") == "100/340", b.nr_anchors("636576/555")   # 100/340 is at the 555's site (1243)
 print("OK test_registry")
