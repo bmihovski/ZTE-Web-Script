@@ -38,6 +38,17 @@ Durable project memory. Read this first; the details live in the keeper docs.
   skips the baseline too — a not-measured baseline is no baseline (nothing is auto-applied against it). The night screen follows the
   same rule: an unmeasured baseline gives `WARN`, no verdict, no "winner".
 - **Lock-test cells are validated, not dropped:** `/lock-test?cells=` is one `PCI@EARFCN` per entry; a typo or a `;` list is a 400.
+- **No BOOT inform = no measurement:** the ZTE applies a lock only at boot, so a step whose boot inform never arrives was never
+  locked — record it (`not measured: no boot inform within N s`) and skip the settle / link wait / 12-min measurement.
+- **A 5G cell is reachable only under some LTE anchors:** NSA combines the 5G leg only with anchors that carry it (747 under
+  1550/434, not 340@100). Learn the (5G cell, anchor) pairs from the samples; `best_anchor` = the pair with the best measured
+  results (call-ready, loss, p95, jitter, then 5G SINR/RSRP; the anchor's signal only as a tie-break), needing 10 min of evidence;
+  among pairs no other pair clearly beats, the most minutes wins (a short lucky pair never overrides a long-standing one);
+  `/cells` shows them and `POST /cells/refill` rebuilds them. The NR test pins each cell's `best_anchor` (baseline: the best across
+  the tested cells) and auto-applies a clear winner as the **pair** (5G cell + anchor); `anchor=` overrides the mapping for all
+  cells; the anchors are resolved once at the start (a mid-run re-resolve would make steps cross-anchor). A pair may move the LTE
+  lock only to a daytime-measured anchor not clearly worse than the current lock (call-ready -5 pp, anchor SINR -3 dB) - else the
+  5G cell alone is applied and the refusal is reported. The refill only enriches known cells (never resurrects a forgotten one). Never call a cell "unreachable" from a test pinned to an anchor it was never served under.
 - **One lock change = one reboot** on the ZTE (both legs in one SetParameterValues); the ATL uses one script, no CPE reboot.
 - **Per device, never mixed:** DB rows carry `device`; `store.rows` defaults to the active `DEVICE`; state/cell files are per device.
 - The keeper applies the antenna mode once per boot; a superseded boot worker stands down (generation checked after the wait).
@@ -46,5 +57,7 @@ Durable project memory. Read this first; the details live in the keeper docs.
 
 1. Scenario/test first (fail it), then the code; keep the device isolation; update the docs and the skill with the change.
 2. Bump `VERSION`; run `tools/deploy.py check`; `tools/deploy.py deploy`; confirm the verify line; keep the backup name.
+   Then validate the run, not just the deploy: `tools/deploy.py validate --rat lte|nr [--wait]` (read-only: verdict
+   keep / apply / no-lock / no-result) — the loop is deploy → start/schedule a run → validate → fix/improve → repeat.
 3. Userscript changes: bump the console marker (`Loading ZTE Script v...`) and update the installed browser copy.
 4. If a new rule/decision is made, add it here and to `docs/BUSINESS_RULES.md`.

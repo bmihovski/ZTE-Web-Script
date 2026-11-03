@@ -2176,7 +2176,7 @@ function keeper_cut(what)
 function keeper_lock_test(kind)
 {
     var nr = kind == "nr";
-    var cells = prompt(nr ? "5G cells to test as PCI@ARFCN, comma separated (the LTE anchor is pinned for the test - lock the anchor you want first; an unlocked 5G baseline runs first; each: lock + reboot + ~15 min, then the antenna sweep - every mode is internet-tested and INTERNET QUALITY wins over signal; the locks are removed at the end). Close the ZTE page - the sweep needs the web login:"
+    var cells = prompt(nr ? "5G cells to test as PCI@ARFCN, comma separated (each 5G cell pins its best known LTE anchor from the keeper's mapping, the baseline pins the best anchor across the cells - an NSA 5G cell is served only under some anchors; an unlocked 5G baseline runs first; each: lock + reboot + ~15 min, then the antenna sweep - every mode is internet-tested and INTERNET QUALITY wins over signal; the locks are removed at the end). Close the ZTE page - the sweep needs the web login:"
                            : "LTE anchors to test as PCI@EARFCN, comma separated (an unlocked baseline runs first; each: lock + reboot + ~15 min; the lock is removed at the end). This page can stay open - you need it for the peak guide in align mode:",
                        nr ? "534@636576,747@629988" : "434@1550,340@1550,66@1550,375@1550,340@100,434@100,66@100,375@100");
     if (!cells) return;

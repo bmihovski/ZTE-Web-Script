@@ -42,6 +42,8 @@ ROUTES = [   # method, path, summary, [(param, example, description)], capabilit
     ("post", "/antenna-sweep", "Run the keeper's antenna sweep (close every ZTE web page first)", [], "sweep"),
     ("post", "/cells/forget", "Drop cells from this device's registry (e.g. the other device's cells that got in)",
      [("cells", "500/341,3150/341", "EARFCN/PCI (5G: ARFCN/PCI), comma separated")], None),
+    ("post", "/cells/refill", "Rebuild the 5G cell <-> LTE anchor mapping from the stored samples (registry only, no modem action)",
+     [("days", "7", "samples window")], None),
     ("get", "/cell-ids", "Learned cell ids: 'lte:EARFCN:PCI' -> ECI (eNB*256+sector), 'nr:ARFCN:PCI' -> NCI (TR-069 + the app)", [], None),
     ("post", "/cell-ids", "Merge cell ids from the app (JSON body: {\"lte:100:340\": 318289}); known ids are not overwritten", [], None),
     ("get", "/userdata", "The app's saved list (newest copy)", [("name", "zte_positions", "|".join(UI_NAMES))], None),
@@ -256,7 +258,10 @@ class H(BaseHTTPRequestHandler):
                     for c in cells:
                         try: guard.nr_band(c.split("@")[1])
                         except ValueError: raise ValueError("cells=PCI@ARFCN with a known 5G band (n78 620000-653333, n28 151600-160600): " + c)
-                anchor = locktest.anchor_for(rat, g("anchor")) if cells else None      # ValueError -> 400: a 5G test needs an anchor
+                spec = (g("anchor") or "").strip()
+                # an explicit anchor pins every cell; without one each 5G cell uses its best known anchor (an NSA cell is served
+                # only under some anchors) and the baseline the best anchor across the tested cells
+                anchor = locktest.anchor_for(rat, spec) if (cells and spec) else None
                 heading = (g("heading") or "")[:12]
                 ok = bool(cells) and locktest.start(cells, g("align") == "1", rat, anchor, heading)
                 code, res = 202 if ok else (400 if not cells else 429), {"started": ok, "rat": rat, "anchor": anchor if ok else None,
@@ -268,6 +273,9 @@ class H(BaseHTTPRequestHandler):
                 cells = [c for c in g("cells").split(",") if re.fullmatch(r"\d{1,6}/\d{1,4}", c)]
                 if not cells: raise ValueError("cells=EARFCN/PCI,...")
                 res = {"removed": brain.forget(cells)}; log("cells forgotten: %s" % res["removed"])
+            elif path == "/cells/refill":     # /cells/refill?days=7 - rebuild the 5G cell <-> LTE anchor mapping from the samples
+                res = {"cells": brain.backfill_anchors(max(1, min(90, int(g("days") or 7))))}
+                log("anchor mapping refilled from the samples: %d 5G cells" % len(res["cells"]))
             elif path == "/checks":            # /checks?name=all (or clock,link,sqm,lock,night) - runs now, pushes to Telegram
                 res = selftest.run([n.strip() for n in g("name", "all").split(",") if n.strip()])
             elif path == "/db/prune":          # /db/prune?days=30&kind=samples&device=*&vacuum=1&csv=1

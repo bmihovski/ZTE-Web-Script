@@ -22,7 +22,7 @@ def zte():
     seen = 0
     while not stop.is_set():
         n = sum(1 for s in m.st["sets"] if s[1] == "REBOOT_DEVICE")
-        if n > seen: seen = n; time.sleep(0.3); acs.st["boots"] = acs.st.get("boots", 0) + 1
+        if n != seen: seen = n; time.sleep(0.05); acs.st["boots"] = acs.st.get("boots", 0) + 1   # n may drop when a test clears sets
         if locktest.lt["running"] in CELLS:
             lte, ca, sinr = CELLS[locktest.lt["running"]]
             brain.add({"time": common.stamp(), "lte_cell": lte, "lte_ca": ca, "nr_cell": "636576/534", "nr_sinr": sinr, "call_ok": "1",

@@ -8,7 +8,11 @@
     python3 tools/deploy.py deploy --skip-tests
     python3 tools/deploy.py verify                   # read-only: version / OpenAPI contract / config / fresh sample vs this tree
     python3 tools/deploy.py rollback backups/<time>  # upload that backup, restart, verify its version
+    python3 tools/deploy.py validate --rat nr        # validate one lock-test run (read-only): baseline vs candidates, verdict
+    python3 tools/deploy.py validate --rat nr --wait # ... after the running test finishes (poll every 15 s, --timeout 3600)
 
+The validation loop: check -> deploy -> start/schedule a lock test -> `validate --wait` -> branch on the verdict (keep / apply /
+no-lock / no-result; exit 0 / 2 / 3 with --expect-lock) -> fix + improve -> repeat. `validate` only reads the live API.
 Deploy uploads only the code (`keeper/*.py`, the start scripts, the drivers) and never `keeper/data/`. It backs up what is on the
 router first, and when the verification fails it puts the backup back. Host / destination / API: `--host admin@192.168.6.1`,
 `--dst disk1/zte-keeper/keeper`, `--url http://keeper.lan:7557` (or KEEPER_HOST / KEEPER_DST / KEEPER_URL).
@@ -299,6 +303,145 @@ def status(url=URL):
     print("db " + ", ".join("%s/%s %d" % (r["device"], r["kind"], r["records"]) for r in db.get("records", [])))
 
 
+def _num(v):
+    """float(value) or None (the API returns numbers as strings)."""
+    try: return float(v)
+    except (TypeError, ValueError): return None
+
+
+def quality_values(r):
+    """The keeper's 5G decision tuple (brain.quality_values): call-ready %, loss %, p95, jitter, then SINR, RSRP. The first
+    metric that differs beyond its margin decides (call-ready 5 pp, loss 1 pp, p95 10 ms, jitter 10 ms); signal only breaks a tie."""
+    n = lambda v, worst: worst if v is None else v
+    return (n(_num(r.get("call_ok_pct")), -1), -n(_num(r.get("loss_pct")), 999), -n(_num(r.get("lat_p95")), 9999),
+            -n(_num(r.get("jitter_ms")), 9999), n(_num(r.get("nr_sinr_p50")), -99), n(_num(r.get("nr_rsrp_p50")), -999))
+
+
+def clearly_better(a, b):
+    """Does quality tuple `a` clearly beat `b` (brain.clearly_better)?"""
+    (ac, al, ap, aj, asr, arp), (bc, bl, bp, bj, bsr, brp) = a, b
+    if abs(ac - bc) >= 5: return ac > bc
+    if abs(al - bl) >= 1.0: return al > bl
+    if abs(ap - bp) >= 10: return ap > bp
+    if abs(aj - bj) >= 10: return aj > bj
+    return asr - bsr >= 1 or (asr == bsr and arp - brp >= 2)
+
+
+def lte_gain(best, base):
+    """The LTE clear-win rule (brain.anchor_best): call-ready +1 pp, 5G SINR +2 dB or anchor SINR +3 dB."""
+    return ((_num(best.get("call_ok_pct")) or 0) - (_num(base.get("call_ok_pct")) or 0) >= 1 or
+            (_num(best.get("nr_sinr_p50")) or -99) - (_num(base.get("nr_sinr_p50")) or -99) >= 2 or
+            (_num(best.get("anchor_sinr_p50")) or -99) - (_num(base.get("anchor_sinr_p50")) or -99) >= 3)
+
+
+def run_verdict(rows, rat="nr", run=None, lock=None):
+    """One lock-test run -> a verdict dict (pure: the rows exactly as /lock-tests returns them). The keeper's own ranking rules
+    are applied to THIS run's rows (its baseline against its candidates), so a run can be validated on its own, independent of
+    older results: a step is `ranked` only when it stayed on its cell (on-target >= 80 %) and is not `unstable`; `not measured`
+    (0 min) and `off target` are listed separately. `lock` = the live lock cell for the rat; verdict keep | apply | no-lock | no-result."""
+    runs = [r for r in rows if r.get("rat", "lte") == rat and r.get("run")]
+    run = run or (max(r["run"] for r in runs) if runs else "")
+    steps = [r for r in runs if r["run"] == run and ";" not in (r.get("lock") or "")]
+    latest = {}
+    for r in steps: latest[r["lock"]] = r                    # one row per step; a repeated lock keeps the last
+    base = latest.get("none")
+    if base and _num(base.get("call_ok_pct")) is None: base = None      # a not-measured baseline is no baseline
+    out = {"rat": rat, "run": run, "baseline": None, "steps": [], "best": None, "gain": False, "verdict": "no-result", "why": "",
+           "night": any(r.get("mode") == "night" for r in steps)}
+    ranked = []
+    for spec, r in latest.items():
+        if spec == "none": continue
+        if str(r.get("unstable")) == "1": status = "unstable"
+        elif not _num(r.get("minutes")): status = "not measured"
+        elif (_num(r.get("on_target_pct")) or 0) < 80: status = "off target"
+        else: status = "ranked"; ranked.append(r)
+        out["steps"].append({"lock": spec, "status": status, "minutes": r.get("minutes"), "on_target_pct": r.get("on_target_pct"),
+                             "call_ok_pct": r.get("call_ok_pct"), "loss_pct": r.get("loss_pct"), "lat_p95": r.get("lat_p95"),
+                             "jitter_ms": r.get("jitter_ms"), "sinr": r.get("nr_sinr_p50"), "rsrp": r.get("nr_rsrp_p50"),
+                             "pin": r.get("pin") or "", "antennas": r.get("antennas"), "note": r.get("note")})
+    if base: out["baseline"] = {k: base.get(k) for k in ("minutes", "on_target_pct", "call_ok_pct", "loss_pct", "lat_p95",
+                                                         "jitter_ms", "nr_sinr_p50", "nr_rsrp_p50", "antennas", "note")}
+    if not run: out["why"] = "no lock-test run found for rat=%s" % rat
+    elif base is None: out["why"] = "the run's baseline was not measured"
+    elif not ranked: out["why"] = "no candidate stayed on its cell (ranked)"
+    else:
+        best = max(ranked, key=quality_values if rat == "nr" else
+                   (lambda r: (_num(r.get("call_ok_pct")) or 0, -(_num(r.get("no5g_min")) or 0),
+                               (_num(r.get("anchor_sinr_p50")) or -20) + (_num(r.get("nr_sinr_p50")) or -20))))
+        gain = clearly_better(quality_values(best), quality_values(base)) if rat == "nr" else lte_gain(best, base)
+        out.update(best=best.get("lock"), gain=gain,
+                   verdict=("no-lock" if not gain else
+                            ("recommend" if out["night"] else ("keep" if best.get("lock") == lock else "apply"))))
+    return out
+
+
+def verdict_text(v, lock=None, auto=""):
+    """Human lines for a verdict (the JSON output is for the loop)."""
+    lines = ["run %s (%s, %d step%s) | live lock %s (AUTO=%s)" % (v["run"] or "?", v["rat"], len(v["steps"]),
+             "" if len(v["steps"]) == 1 else "s", lock or "-", auto or "?")]
+    b = v["baseline"]
+    if b:
+        lines.append("  baseline none: %s min, call %s %%, loss %s, p95 %s, jitter %s, SINR %s, RSRP %s | %s" % (
+            b["minutes"], b["call_ok_pct"], b["loss_pct"], b["lat_p95"], b["jitter_ms"], b["nr_sinr_p50"], b["nr_rsrp_p50"],
+            b["antennas"] or "-"))
+    for s in v["steps"]:
+        lines.append("  %s: %s, %s min, on %s %%, call %s %%, loss %s, p95 %s, jitter %s, SINR %s | %s%s%s" % (
+            s["lock"], s["status"], s["minutes"], s["on_target_pct"], s["call_ok_pct"], s["loss_pct"], s["lat_p95"],
+            s["jitter_ms"], s["sinr"], s["antennas"] or "-", (" | " + s["note"][:120]) if s["note"] else "",
+            (" | known under %s, %s min" % (s["known_anchor"], s["known_min"])) if s.get("known_anchor") else ""))
+    if v["verdict"] == "no-result":
+        lines.append("  -> NO USABLE RESULT: " + v["why"])
+    elif v["best"]:
+        if v["verdict"] == "recommend": lines.append("  -> night screen (unloaded): %s beats the baseline - run an aligned daytime "
+                                                     "test for it (a night winner is never auto-applied)" % v["best"])
+        elif v["verdict"] == "keep": lines.append("  -> %s clearly beats the baseline; it is your lock: keep" % v["best"])
+        elif v["verdict"] == "apply": lines.append("  -> %s clearly beats the baseline; not your lock%s" % (
+            v["best"], " - the keeper should have auto-applied it (AUTO=on)" if auto == "on" else " - review to apply"))
+        else: lines.append("  -> nothing clearly beats the baseline - no lock needed%s" % (
+            " (remove the lock: POST /%s-lock?cell=none)" % ("nr" if v["rat"] == "nr" else "lte") if lock else ""))
+    return lines
+
+
+def validate(url=URL, rat="nr", run=None, wait=False, timeout=3600, expect_lock=None, as_json=False):
+    """Read-only: validate one lock-test run (the newest, or `--run`). `--wait` first waits for a running test to finish
+    (poll every 15 s, up to `timeout` s). Exit: 0 = a usable verdict, 2 = no usable result, 3 = --expect-lock mismatch."""
+    if wait:
+        t0 = time.time(); last = None
+        while time.time() - t0 < timeout:
+            lt = _get(url, "/lock-tests")
+            if not lt.get("running"):
+                break
+            now = lt.get("phase") or lt.get("running")
+            if now != last: print("waiting for the running test: %s (%s)" % (lt.get("running"), now)); last = now
+            time.sleep(15)
+        else:
+            raise SystemExit("validate --wait timed out after %d s (the test is still running)" % timeout)
+    rows = _get(url, "/lock-tests?rat=" + rat).get("results") or []
+    st = _get(url, "/status"); c = st.get("config") or {}
+    lock = ((c.get("nr_lock") or {}) if rat == "nr" else (c.get("lte_lock") or {})).get("cell") or ""
+    auto = c.get("auto_actions") or ""
+    v = run_verdict(rows, rat, run, lock)
+    v["lock"], v["auto"] = lock, auto
+    if rat == "nr":                      # an NSA 5G cell appears only under some LTE anchors: say which one served it
+        try: cells = {c.get("cell"): c for c in (_get(url, "/cells").get("nr") or [])}
+        except Exception: cells = {}
+        pins = {r.get("lock"): (r.get("pin") or "") for r in rows if r.get("run") == v["run"]}
+        for s in v["steps"]:
+            cell = "%s/%s" % tuple(s["lock"].split("@")[::-1]) if "@" in s["lock"] else ""
+            c = cells.get(cell) or {}
+            best = c.get("best_anchor") or ""
+            pin = pins.get(s["lock"]) or ""
+            pinned = "%s/%s" % tuple(pin.split("@")[::-1]) if "@" in pin else ""
+            if best and best != pinned:
+                a = next((x for x in (c.get("anchors") or []) if x.get("anchor") == best), {})
+                s["known_anchor"], s["known_min"] = best, a.get("min")
+    if as_json: print(json.dumps(v, indent=1))
+    else: print("\n".join(verdict_text(v, lock, auto)))
+    if expect_lock is not None and (lock or "") != expect_lock:
+        print("EXPECTED lock %s, live lock %s" % (expect_lock, lock or "-")); return 3
+    return 0 if v["verdict"] != "no-result" else 2
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="keeper deploy / verify / rollback")
     ap.add_argument("--host", default=os.environ.get("KEEPER_HOST", HOST))
@@ -312,6 +455,10 @@ def main(argv=None):
     p = sub.add_parser("deploy"); p.add_argument("--skip-tests", action="store_true"); p.add_argument("--force", action="store_true")
     p.add_argument("--no-rollback", action="store_true")
     p = sub.add_parser("verify"); p.add_argument("--version"); p.add_argument("--no-contract", action="store_true")
+    p = sub.add_parser("validate", help="validate one lock-test run (read-only): baseline vs candidates on the keeper's policy")
+    p.add_argument("--rat", default="nr", choices=("lte", "nr")); p.add_argument("--run", help="the run id (default: the newest)")
+    p.add_argument("--wait", action="store_true", help="wait for a running test to finish first"); p.add_argument("--timeout", type=int, default=3600)
+    p.add_argument("--expect-lock", help="exit 3 unless the live lock for --rat is this cell"); p.add_argument("--json", action="store_true")
     p = sub.add_parser("rollback"); p.add_argument("dir")
     a = ap.parse_args(argv)
     if a.cmd == "check": check(BASE, a.skip_tests)
@@ -329,6 +476,7 @@ def main(argv=None):
             sys.exit(1)
         print("OK %s live, contract matches" % (a.version or local_version(BASE)))
     elif a.cmd == "rollback": rollback_dir(a.dir, a.host, a.dst, a.url)
+    elif a.cmd == "validate": sys.exit(validate(a.url, a.rat, a.run, a.wait, a.timeout, a.expect_lock, a.json))
 
 
 if __name__ == "__main__":

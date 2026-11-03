@@ -15,7 +15,7 @@ def zte():                     # fake ZTE: a reboot request -> boot inform; then
     seen = 0
     while not stop.is_set():
         n = sum(1 for s in m.st["sets"] if s[1] == "REBOOT_DEVICE")
-        if n > seen: seen = n; time.sleep(0.3); acs.st["boots"] = acs.st.get("boots", 0) + 1
+        if n != seen: seen = n; time.sleep(0.05); acs.st["boots"] = acs.st.get("boots", 0) + 1   # n may drop when a test clears sets
         cur = locktest.lt["running"]
         if cur in CELLS:
             lte, ca, nr, sinr, site = CELLS[cur]
@@ -58,7 +58,8 @@ assert [s[3] for s in m.st["sets"] if s[1] == "LTE_LOCK_CELL_SET"] == ["0@0", "4
 # nobody continues -> the test stops, lock removed
 m.st["sets"].clear(); locktest.LT_ALIGN_TIMEOUT_MIN = 0.01
 locktest.lock_test(["none", "434@1550", "340@1550"], align=True); stop.set()
-assert [s[3] for s in m.st["sets"] if s[1] == "LTE_LOCK_CELL_SET"] == ["0@0", "434@1550", "0@0"] and locktest.lt["running"] is None and not locktest.lt["waiting"]
+assert [s[3] for s in m.st["sets"] if s[1] == "LTE_LOCK_CELL_SET"] == ["0@0", "434@1550", "0@0"] and locktest.lt["running"] is None and not locktest.lt["waiting"], \
+    [s[3] for s in m.st["sets"] if s[1] == "LTE_LOCK_CELL_SET"]
 assert any("measuring until" in (x or "") for x in phases) and any("rebooting" in (x or "") for x in phases) and locktest.lt["phase"] == "", set(phases)
 # skip a step while it waits for alignment, stop the test while measuring: rows recorded, lock removed, keeper free again
 m.st["sets"].clear(); locktest.LT_ALIGN_TIMEOUT_MIN = 5; locktest.LT_MEASURE_MIN = 0.2; stop.clear(); threading.Thread(target=zte, daemon=True).start()
@@ -105,4 +106,14 @@ locktest.lock_test(["none", "370@1550"]); stop.set()
 rows = {x["lock"]: x for x in store.rows(DATA, "lock_tests")}
 assert rows["370@1550"]["minutes"] == "0" and not rows["370@1550"]["anchor"], rows["370@1550"]
 assert reports and "no candidate result" in reports[-1] and "370@1550" in reports[-1], reports[-1]
+
+# a lock that never booted is not measured: the ZTE applies a lock only at boot, so the step was never locked - do not settle,
+# wait for the link and measure 12 min of nothing (2026-11-02 night: a 56-min CPE outage burned two 25-min night steps)
+m.st["sets"].clear(); common.state({"lte_lock": None}); brain.AUTO = "dryrun"
+locktest.LT_BOOT_WAIT_S = 0; stop.clear(); threading.Thread(target=zte, daemon=True).start()
+locktest.lock_test(["none", "434@1550"]); stop.set(); locktest.LT_BOOT_WAIT_S = 3
+rows = store.rows(DATA, "lock_tests")[-2:]
+assert [r["lock"] for r in rows] == ["none", "434@1550"], rows
+assert all(r["minutes"] == "0" and r["note"].startswith("not measured: no boot inform") for r in rows), rows
+assert all(r["rat"] == "lte" and r["mode"] == "as is" and r.get("run") for r in rows), rows
 print("OK test_locktest")

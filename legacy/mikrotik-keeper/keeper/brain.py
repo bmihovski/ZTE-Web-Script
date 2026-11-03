@@ -384,6 +384,123 @@ def _ew(old, new):
     return new if old is None else (old if new is None else round(old + EW * (new - old), 2))
 
 
+# ---------- 5G cell <-> LTE anchor mapping (an NSA 5G cell appears only under some anchors: 747 needs 1550/434, not 100/340) ----
+ANCHOR_MIN = int(E("ANCHOR_MIN_MINUTES", "10"))      # served minutes needed before a (5G cell, LTE anchor) pair is trusted
+
+
+def _pair_add(anchors, lte, row):
+    """One sample -> the (5G cell, LTE anchor) pair's evidence: minutes, call-ready minutes, EWMA loss / p95 / jitter / 5G SINR+RSRP /
+    anchor SINR. The samples are the source of truth; the registry only keeps this summary."""
+    a = anchors.setdefault(lte, {"min": 0, "ok": 0})
+    a["min"] += 1
+    if str(row.get("call_ok")) == "1": a["ok"] += 1
+    a["loss"] = _ew(a.get("loss"), f(row.get("loss_pct")))
+    a["p95"] = _ew(a.get("p95"), f(row.get("lat_p95")))
+    a["jitter"] = _ew(a.get("jitter"), f(row.get("jitter_ms")))
+    a["sinr"] = _ew(a.get("sinr"), f(row.get("nr_sinr")))
+    a["rsrp"] = _ew(a.get("rsrp"), f(row.get("nr_rsrp")))
+    a["lte_sinr"] = _ew(a.get("lte_sinr"), f(row.get("lte_sinr")))
+    return a
+
+
+def pair_quality(p, anchor):
+    """A (5G cell, LTE anchor) pair, highest wins: the pair's internet quality first (call-ready %, loss, p95, jitter), then the 5G
+    signal (SINR, RSRP), and only as a tie-break the anchor's own LTE SINR / RSRP. The anchor alone never wins."""
+    m = p.get("min") or 0
+    call = 100.0 * (p.get("ok") or 0) / m if m else None
+    e = REG["lte"].get(anchor) or {}
+    return quality_values(call, p.get("loss"), p.get("p95"), p.get("jitter"), p.get("sinr"), p.get("rsrp")) + \
+        (e.get("sinr") or -99, e.get("rsrp") or -999)
+
+
+def _reliable_best(pairs):
+    """(anchor, pair) with the most evidence that no comparable pair clearly beats: the pair with the most minutes leads, a
+    challenger must clearly win (the quality margins) AND have at least half the leader's minutes - a 58-min pair must not unseat a
+    2766-min one on a 1 dB signal tie-break (seen 2026-11-02)."""
+    if not pairs: return None
+    pairs = sorted(pairs, key=lambda ap: ap[1].get("min") or 0, reverse=True)
+    lead = pairs[0]
+    for a, p in pairs[1:]:
+        if 2 * (p.get("min") or 0) < (lead[1].get("min") or 0): continue
+        if clearly_better(pair_quality(p, a)[:6], pair_quality(lead[1], lead[0])[:6]): lead = (a, p)
+    return lead
+
+
+def best_anchor(cell, min_min=None):
+    """The LTE anchor this 5G cell was served with and that measured best (pair quality), or None. Only pairs with at least
+    `ANCHOR_MIN_MINUTES` minutes of evidence count - a cell that was never seen under an anchor has no opinion about it."""
+    need = ANCHOR_MIN if min_min is None else min_min
+    pairs = [(a, p) for a, p in ((REG["nr"].get(cell) or {}).get("anchors") or {}).items() if (p.get("min") or 0) >= need]
+    best = _reliable_best(pairs)
+    return best[0] if best else None
+
+
+def nr_anchors(cell):
+    """The known LTE anchors for one 5G cell, the best (`best_anchor`) first, then by pair quality, with their evidence."""
+    rows = [{"anchor": a, "min": p.get("min") or 0, "call_ok_pct": round(100.0 * (p.get("ok") or 0) / max(1, p.get("min") or 0), 1),
+             "loss": p.get("loss"), "p95": p.get("p95"), "jitter": p.get("jitter"), "sinr": p.get("sinr"), "rsrp": p.get("rsrp"),
+             "lte_sinr": p.get("lte_sinr"), "_ok": p.get("ok") or 0}
+            for a, p in ((REG["nr"].get(cell) or {}).get("anchors") or {}).items() if p.get("min")]
+    key = lambda r: pair_quality({"min": r["min"], "ok": r["_ok"], "loss": r["loss"], "p95": r["p95"], "jitter": r["jitter"],
+                                  "sinr": r["sinr"], "rsrp": r["rsrp"]}, r["anchor"])
+    best = best_anchor(cell)
+    return sorted(rows, key=lambda r: (r["anchor"] == best, key(r)), reverse=True)
+
+
+def anchor_spec_for(cell, min_min=None):
+    """The best known LTE anchor for one 5G cell as a lock spec (`PCI@EARFCN`), or None - the anchor an NR lock test pins for it."""
+    a = best_anchor(cell, min_min)
+    return "%s@%s" % tuple(a.split("/")[::-1]) if a else None
+
+
+def anchor_move_ok(want, cur=None):
+    """May the keeper move the LTE lock to `want` (a winning 5G pair's anchor)? Only when `want` was measured as a daytime LTE
+    anchor (ranked, not a night/cut row) and is not clearly worse than the current lock: call-ready -5 pp, anchor SINR -3 dB.
+    Unknown = no (a 5G pair must not move the LTE lock to an anchor we never measured as an LTE lock)."""
+    rows = {r["lock"]: r for r in anchor_ranking()["ranked"]}
+    w = rows.get(want)
+    if not w: return False, "it was never measured as an LTE anchor"
+    c = rows.get(cur or "")
+    if c:
+        dw = (f(w.get("call_ok_pct")) or 0) - (f(c.get("call_ok_pct")) or 0)
+        if dw < -5: return False, "call-ready %s%% vs %s%%" % (w.get("call_ok_pct"), c.get("call_ok_pct"))
+        ds = (f(w.get("anchor_sinr_p50")) or -99) - (f(c.get("anchor_sinr_p50")) or -99)
+        if ds < -3: return False, "anchor SINR %s vs %s" % (w.get("anchor_sinr_p50"), c.get("anchor_sinr_p50"))
+    return True, ""
+
+
+def anchor_for_cells(cells):
+    """The anchor an NR test's baseline should pin for `cells` (lock specs): the best (5G cell, anchor) pair among their known
+    anchors, so the baseline and the candidates are measured on the most promising anchor. None when no cell has a known anchor."""
+    pairs = []
+    for spec in cells:
+        if "@" not in spec: continue
+        cell = "%s/%s" % tuple(spec.split("@")[::-1])
+        a = best_anchor(cell)
+        if a: pairs.append((a, REG["nr"][cell]["anchors"][a]))
+    best = _reliable_best(pairs)                 # the same reliability rule across the cells' anchors, never the thin pair alone
+    return "%s@%s" % tuple(best[0].split("/")[::-1]) if best else None
+
+
+def backfill_anchors(days=7, now=None):
+    """Rebuild the 5G cell <-> LTE anchor mapping from the stored samples (the samples are the source; the registry keeps the
+    summary). Run once after the mapping existed, or on demand (POST /cells/refill). Returns the 5G cells it touched."""
+    if not reg_st["dir"]: return []
+    now = now or time.time(); cut = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - days * 86400))
+    pairs = {}
+    for r in store.rows(reg_st["dir"], "samples", cut):
+        nr, lte = r.get("nr_cell") or "", r.get("lte_cell") or ""
+        if not nr or nr == "no5G" or "255" in nr.split("/") or not re.fullmatch(r"\d+/\d+", lte): continue
+        _pair_add(pairs.setdefault(nr, {}), lte, r)
+    done = []
+    for cell, anchors in pairs.items():
+        e = REG["nr"].get(cell)
+        if not e: continue              # only enrich cells the registry already knows: never resurrect a forgotten cell
+        e["anchors"] = anchors; done.append(cell)
+    if done: reg_st["n"] = 0; save_registry()
+    return sorted(done)
+
+
 def track(row, now=None):
     """update the registry with one sample (neighbour list = RSRP of every LTE cell the ZTE measures; CA = SINR of used ones)"""
     now = now or time.time()
@@ -403,11 +520,15 @@ def track(row, now=None):
                 e["anchor_min"] += 1
                 if row.get("lte_site"): e["site"] = row["lte_site"]
     nr = row.get("nr_cell")
-    if nr and nr != "no5G" and "255" not in nr.split("/"):          # 255/255 = ZTE placeholder right after boot
+    if nr and nr != "no5G" and "255" not in nr.split("/") and nr.split("/")[0] != "0":   # 255/255 / 0/pci = ZTE placeholders right after boot
         e = REG["nr"].setdefault(nr, {"first": now, "served_min": 0})
         e["last"] = now; e["served_min"] += 1
         e["sinr"] = _ew(e.get("sinr"), f(row.get("nr_sinr"))); e["rsrp"] = _ew(e.get("rsrp"), f(row.get("nr_rsrp")))
+        lte = row.get("lte_cell") or ""
+        if re.fullmatch(r"\d+/\d+", lte):                          # which LTE anchor served this 5G cell (NSA depends on the anchor)
+            _pair_add(e.setdefault("anchors", {}), lte, row)
     for m in re.finditer(r"(\d+)/(\d+):(-?[\d.]*)/(-?[\d.]*)", row.get("nr_ca") or ""):     # 5G secondary carriers
+        if m.group(1) == "0": continue                       # placeholder right after boot
         e = REG["nr"].setdefault("%s/%s" % m.group(1, 2), {"first": now, "served_min": 0})
         e["last"] = now; e["ca_min"] = e.get("ca_min", 0) + 1
         e["ca_rsrp"] = _ew(e.get("ca_rsrp"), f(m.group(3))); e["ca_sinr"] = _ew(e.get("ca_sinr"), f(m.group(4)))
@@ -455,6 +576,9 @@ def load_registry(data_dir):
         reg_st["zte"] = s.get("zte") or {}
     except (OSError, ValueError):
         reg_st["sites"] = {}
+    if reg_st["dir"] and any("anchors" not in e for k, e in REG["nr"].items() if "255" not in k.split("/")):
+        try: backfill_anchors()          # one pass over the stored samples: the 5G cell <-> LTE anchor mapping
+        except Exception: pass
 
 
 def geo(lat1, lon1, lat2, lon2):
@@ -474,15 +598,16 @@ def cells_view(now=None):
         if not s or s.get("lat") is None or z.get("lat") is None: return {}
         d, b = geo(z["lat"], z["lon"], s["lat"], s["lon"])
         return {"site_name": s.get("name", ""), "site_dist_m": d, "site_bearing": b}
-    day = lambda t: datetime.datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M")
+    day = lambda t: datetime.datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M") if t else ""
     ids = REG.get("ids") or {}
     eci = lambda k: (lambda v: "%d/%d" % (v >> 8, v & 0xFF) if v else "")(ids.get("lte:" + k.replace("/", ":")))
     lte = [dict({"cell": k, "band": e["band"], "rsrp": e.get("rsrp"), "sinr_when_used": e.get("sinr"), "bw_mhz": e.get("bw"),
                  "seen_min": e["seen_min"], "ca_min": e["ca_min"], "anchor_min": e["anchor_min"], "site": e.get("site") or eci(k),
-                 "first": day(e["first"]), "last": day(e["last"]), "lock_test": e.get("lock_test")}, **site_info(e.get("site") or eci(k)))
+                 "first": day(e.get("first")), "last": day(e.get("last")), "lock_test": e.get("lock_test")}, **site_info(e.get("site") or eci(k)))
            for k, e in REG["lte"].items()]
     nr = [{"cell": k, "nci": ids.get("nr:" + k.replace("/", ":"), ""), "served_min": e["served_min"], "sinr": e.get("sinr"), "rsrp": e.get("rsrp"), "ca_min": e.get("ca_min", 0),
-           "ca_sinr": e.get("ca_sinr"), "ca_rsrp": e.get("ca_rsrp"), "first": day(e["first"]), "last": day(e["last"])}
+           "ca_sinr": e.get("ca_sinr"), "ca_rsrp": e.get("ca_rsrp"), "first": day(e.get("first")), "last": day(e.get("last")),
+           "best_anchor": best_anchor(k), "anchors": nr_anchors(k)}
           for k, e in REG["nr"].items() if "255" not in k.split("/")]
     return {"lte": sorted(lte, key=lambda x: (x["band"], -(x["rsrp"] or -999))), "nr": sorted(nr, key=lambda x: -(x["served_min"] + x["ca_min"]))}
 

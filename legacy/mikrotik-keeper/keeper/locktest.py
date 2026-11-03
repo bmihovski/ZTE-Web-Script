@@ -157,35 +157,72 @@ def sweep_antennas(lock, rat, dev):
     return r["mode"], "", "", ""
 
 
+def step_mode(night, align, heading, rat):
+    """A row's `mode`: night | aligned (a heading was given) | fixed (5G) | as is (LTE)."""
+    return "night" if night else "aligned" if align and heading else ("fixed" if rat == "nr" else "as is")
+
+
+def step_pins(plan, pin=None, base_pin=None, fallback=None):
+    """Resolve every step's LTE anchor ONCE, before the run. The registry pairs are updated by the run's own samples, so resolving
+    per step could pin a different anchor mid-run (seen 2026-11-02: the baseline's samples flipped 534's best anchor between the
+    baseline and the 534 step, making the comparison cross-anchor)."""
+    return {lock: step_anchor(lock, pin, base_pin, fallback) for lock in plan}
+
+
+def step_anchor(lock, pin, base_pin, fallback=None):
+    """The LTE anchor one NR step pins: the explicit `anchor=` for all cells; else the 5G cell's best known anchor (an NSA cell is
+    served only under some anchors - 747 needs 1550/434); else the keeper's LTE lock / the serving cell (`fallback`); the baseline
+    uses `base_pin` (the best known anchor across the tested cells) or the fallback."""
+    if pin: return pin
+    if lock == "none": return base_pin or fallback
+    cell = "%s/%s" % tuple(lock.split("@")[::-1]) if "@" in lock else lock     # 804@636576 -> 636576/804 (the registry key)
+    return brain.anchor_spec_for(cell) or fallback or base_pin
+
+
 def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""):
     """Run a test (in a thread). plan: `["none", "434@1550", ...]`, one cell at a time, each with its own lock / reboot.
-    rat="nr": every step pins `anchor` (PCI@EARFCN) and locks the 5G cell; "none" = the 5G leg unlocked, anchor pinned.
+    rat="nr": every step pins an LTE anchor (PCI@EARFCN) and locks the 5G cell; "none" = the 5G leg unlocked, anchor pinned.
+    The anchor is the explicit `anchor=` for all cells; with none, each 5G cell's best known anchor (`brain.anchor_spec_for`) is
+    pinned and the baseline uses the best anchor across the tested cells (`brain.anchor_for_cells`).
     align=True (on-go): wait after each lock until the antenna is aligned; align=False (fixed position): no wait, `heading` is the
     position already set. An NR test sweeps + internet-tests the antenna modes in both modes (the baseline too).
     night=True (LTE only): plan[0] is the current lock (baseline), rows are mode "night" and the lock is put back at the end."""
     if lt["running"]: return
     dev = devices.current()
-    pin = anchor if rat == "nr" else None
+    pin = anchor if rat == "nr" else None                      # explicit anchor: one anchor for every cell
+    base_pin = pin or (brain.anchor_for_cells([c for c in plan if c != "none"]) if rat == "nr" else None)
+    fallback = None                                            # neither explicit nor known: the keeper's LTE lock / serving cell
+    if rat == "nr" and not pin:
+        try: fallback = anchor_for("nr")
+        except ValueError: fallback = None
+    pins = step_pins(plan, pin, base_pin, fallback) if rat == "nr" else {}
     lt.update(running="starting", plan=list(plan), done=[], align=align, waiting=False, heading="", fixed=heading, night=night, rat=rat,
-              anchor=pin, modes={}, run=stamp()); lt["go"].clear()
+              anchor=pin or base_pin or fallback, modes={}, run=stamp()); lt["go"].clear()
     brain.ctx["hold"] = "lock test"                  # no keeper reboots meanwhile
-    log("%s lock test started%s%s: %s (~%d min)" % ("5G" if rat == "nr" else "LTE", " (LTE anchor %s pinned)" % pin if pin else "",
+    log("%s lock test started%s%s: %s (~%d min)" % ("5G" if rat == "nr" else "LTE",
+        " (LTE anchor %s)" % (pin or "per 5G cell, baseline %s" % base_pin if rat == "nr" else pin) if rat == "nr" else "",
         " at heading %s" % heading if rat == "nr" and heading and not align else "", ", ".join(plan),
         len(plan) * (LT_MEASURE_MIN + LT_SETTLE_S / 60 + 2)))
     try:
         for lock in plan:
             lt["running"] = lock; lt["cut"] = None; lt["cut_ev"].clear(); start = locked = None; heading = ""; ant = ""; a5 = a6 = ""
-            state({"lock_test": {"cell": lock, "rat": rat, "anchor": pin}})     # if the keeper dies mid-test, the next start removes the locks
+            step_pin = pins.get(lock) if rat == "nr" else None
+            state({"lock_test": {"cell": lock, "rat": rat, "anchor": step_pin}})   # if the keeper dies mid-test, the next start removes the locks
             boots = acs.st["boots"]
+            if rat == "nr" and not step_pin:                 # no explicit anchor, no known anchor for this cell, no fallback
+                res = lt_eval(lock, [], "lock not set: no LTE anchor known for %s" % lock, rat)
+                res.update(heading=heading, mode=step_mode(night, align, heading, rat), run=lt["run"])
+                record("lock_tests", LT_COLS, res); lt["done"].append(res)
+                event({"event": "lock test %s" % lock, "to": "not set", "why": res["note"]}); log("lock test %s: %s" % (lock, res["note"]))
+                continue
             phase("%s: setting the lock%s" % (lock, ", rebooting (~2 min)" if dev.LOCKS_REBOOT else " (script, ~1 min)"))
             try:
                 try:
-                    if rat == "nr": dev.locks_apply(pin, lock)   # ONE change: the pinned anchor + the 5G cell (one reboot on the ZTE)
+                    if rat == "nr": dev.locks_apply(step_pin, lock)   # ONE change: the pinned anchor + the 5G cell (one reboot on the ZTE)
                     else: dev.locks_apply(lock, None)
                 except RuntimeError as e:              # refused: record it, go on with the next one
-                    res = lt_eval(lock, [], "lock not set: %s" % e, rat, pin=pin)
-                    res.update(heading=heading, mode="night" if night else "aligned" if align and heading else ("fixed" if rat == "nr" else "as is"),
-                               run=lt["run"])           # same mode/run as the other rows: a night run stays one unit
+                    res = lt_eval(lock, [], "lock not set: %s" % e, rat, pin=step_pin)
+                    res.update(heading=heading, mode=step_mode(night, align, heading, rat), run=lt["run"])
                     record("lock_tests", LT_COLS, res); lt["done"].append(res)
                     event({"event": "lock test %s" % lock, "to": "not set", "why": str(e)}); log("lock test %s: %s" % (lock, e))
                     continue
@@ -195,6 +232,17 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
                     note = "" if acs.st["boots"] > boots else "no boot inform within %d s" % LT_BOOT_WAIT_S
                 else:
                     note = ""                          # the driver blocked until the lock was applied: no CPE reboot to wait for
+                if lt["cut"]: raise Cut()              # skip / stop during the boot wait: the cut branch records what there is
+                if dev.LOCKS_REBOOT and note:
+                    # The ZTE applies a lock only at boot: without the boot inform the step was never locked. Do not settle, wait
+                    # for the link and measure 12 min of nothing - record it and go on (2026-11-02: a 56-min CPE outage after these
+                    # reboots burned two 25-min night steps).
+                    res = lt_eval(lock, [], "not measured: " + note, rat, pin=step_pin)
+                    res.update(heading=heading, mode=step_mode(night, align, heading, rat), run=lt["run"])
+                    record("lock_tests", LT_COLS, res); lt["done"].append(res)
+                    event({"event": "lock test %s" % lock, "to": "not measured", "why": res["note"]})
+                    log("lock test %s: %s" % (lock, res["note"]))
+                    continue
                 locked = time.time()
                 phase("%s: %s, reconnecting until %s, then %s" % (lock, note or ("rebooted with the lock" if dev.LOCKS_REBOOT else "lock applied"),
                       hm(LT_SETTLE_S), "you align" if align and lock != "none" else "measuring")); lt_wait(LT_SETTLE_S)
@@ -229,8 +277,8 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
                     # antenna-control failure skips the BASELINE too (a "not measured" reference is no reference); a 5G-free or
                     # switching baseline is measured - it is the reference.
                     label = {"web": "antenna control failed", "switching": "5G cell switching"}.get(why, "cell not reachable")
-                    res = lt_eval(lock, [], ("not measured: " if lock == "none" else "") + label + ": " + skip, rat, pin=pin)
-                    res.update(heading=heading, mode="aligned" if align and heading else "fixed", run=lt["run"])
+                    res = lt_eval(lock, [], ("not measured: " if lock == "none" else "") + label + ": " + skip, rat, pin=step_pin)
+                    res.update(heading=heading, mode=step_mode(night, align, heading, rat), run=lt["run"])
                     record("lock_tests", LT_COLS, res); lt["done"].append(res)
                     event({"event": "lock test %s" % lock, "to": "not measured", "why": res["note"]}); log("lock test %s: %s" % (lock, res["note"]))
                     continue
@@ -244,16 +292,15 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
                 since = start or locked                # skipped before measuring: keep what was seen while you aligned
                 rows = [r for r in list(brain.HIST) if brain.ts(r) >= since] if since else []
                 res = lt_eval(lock, rows, "%s by you%s" % (what, " after %.0f min measuring" % ((time.time() - start) / 60) if start
-                                                           else " before measuring (values: while aligning)" if rows else ""), rat, ant, pin, a5, a6)
+                                                           else " before measuring (values: while aligning)" if rows else ""), rat, ant, step_pin, a5, a6)
                 res.update(heading=heading if start else "", mode="cut", run=lt["run"])
                 record("lock_tests", LT_COLS, res); lt["done"].append(res)
                 event({"event": "lock test %s" % lock, "to": what, "why": res["note"]}); log("lock test %s: %s" % (lock, res["note"]))
                 if what == "stopped": break
                 continue
             rows = [r for r in list(brain.HIST) if brain.ts(r) >= start]
-            res = lt_eval(lock, rows, note or ("" if rows else "no samples (no service on this cell?)"), rat, ant, pin, a5, a6)
-            res.update(heading=heading, mode="night" if night else "aligned" if align and heading else ("fixed" if rat == "nr" else "as is"),
-                       run=lt["run"])
+            res = lt_eval(lock, rows, note or ("" if rows else "no samples (no service on this cell?)"), rat, ant, step_pin, a5, a6)
+            res.update(heading=heading, mode=step_mode(night, align, heading, rat), run=lt["run"])
             record("lock_tests", LT_COLS, res); lt["done"].append(res)
             if res["anchor"] and lock != "none" and not night and rat == "lte":          # night values (unloaded) don't go into the registry
                 try:                                     # bookkeeping only - never stops the test
@@ -300,11 +347,13 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
             best, base, gain = brain.anchor_best("nr")                       # internet quality decides, signal only breaks a tie
             failed = rk.get("failed") or []
             if best or rk.get("unstable") or failed:
-                lines = ["%s 5G lock test (LTE anchor %s pinned; internet quality decides, signal breaks ties)" % (common.device_name(), pin or "?")]
+                lines = ["%s 5G lock test (LTE anchor per 5G cell%s; internet quality decides, signal breaks ties)" % (
+                    common.device_name(), "" if (pin or base_pin) is None else
+                    (" " + pin if pin else " - %s for the baseline" % base_pin))]
                 if best:
-                    dd = lambda r: "%s: call-ready %s%%, loss %s%%, p95 %s ms, jitter %s ms, 5G SINR %s, 5G RSRP %s" % (
-                        r["lock"], na(r.get("call_ok_pct")), na(r.get("loss_pct")), na(r.get("lat_p95")), na(r.get("jitter_ms")),
-                        na(r.get("nr_sinr_p50")), na(r.get("nr_rsrp_p50")))
+                    dd = lambda r: "%s (anchor %s): call-ready %s%%, loss %s%%, p95 %s ms, jitter %s ms, 5G SINR %s, 5G RSRP %s" % (
+                        r["lock"], r.get("pin") or "?", na(r.get("call_ok_pct")), na(r.get("loss_pct")), na(r.get("lat_p95")),
+                        na(r.get("jitter_ms")), na(r.get("nr_sinr_p50")), na(r.get("nr_rsrp_p50")))
                     cur = (state().get("nr_lock") or {}).get("cell")
                     try: fresh = abs(time.time() - time.mktime(time.strptime(best.get("time", ""), "%Y-%m-%d %H:%M:%S"))) < 3 * 3600
                     except (ValueError, TypeError): fresh = False
@@ -313,19 +362,30 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
                     if base: lines.append("  baseline (5G unlocked): " + dd(base).split(": ", 1)[1])
                     if sig and sig["lock"] != best["lock"]:
                         lines.append("  signal alone would pick %s (5G SINR %s) but internet quality picked %s" % (sig["lock"], na(sig.get("nr_sinr_p50")), best["lock"]))
-                    if failed: lines.append("  not ranked (not seen / off target): " + ", ".join(failed))
-                    applied = None
+                    def _pin(lock):
+                        return next((r.get("pin") or "" for r in reversed(store.rows(DATA, "lock_tests"))
+                                     if r.get("lock") == lock and r.get("rat") == "nr"), "")
+                    if failed: lines.append("  not ranked (not seen / off target): " +
+                                            ", ".join(f + anchor_hint(f, _pin(f)) for f in failed))
+                    applied = None; anchored = None
                     if gain and fresh and brain.AUTO == "on" and best["lock"] != cur:
                         try:
                             guard.lock_request(best["lock"], "nr"); applied = best["lock"]
+                            want = (best.get("pin") or "").strip()   # the winning PAIR: the 5G cell and the LTE anchor that serves it
+                            cur_lte = (state().get("lte_lock") or {}).get("cell") or ""
+                            if want and want != cur_lte:             # a pair must not move the LTE lock to a worse anchor
+                                ok, why = brain.anchor_move_ok(want, cur_lte)
+                                if ok: guard.lock_request(want); anchored = want
+                                else: lines.append("  not moving the LTE lock to %s: %s - the 5G lock alone is applied" % (want, why))
                             mode = (lt.get("modes") or {}).get(best["lock"])         # the mode the winning step measured with, re-applied at every boot
                             if mode and getattr(dev, "antennas", None):
                                 dev.antennas.keep({"auto": "0", "ant5": mode[0], "ant6": mode[1]},
                                                   src="auto-applied 5G lock %s and its measured mode" % best["lock"])
                         except Exception as e: lines.append("auto-apply failed: %r" % e)
-                    if applied: lines.append("-> AUTO-APPLIED 5G lock %s%s" % (applied, " with " + best["antennas"] if best.get("antennas") else ""))
+                    if applied: lines.append("-> AUTO-APPLIED 5G lock %s%s%s" % (
+                        applied, " with LTE anchor " + anchored if anchored else "", " with " + best["antennas"] if best.get("antennas") else ""))
                     elif gain and best["lock"] == cur: lines.append("-> best is already your 5G lock %s" % cur)
-                    elif gain: lines.append("-> %s wins%s -> review to apply (lock it AND keep anchor %s for the same result)" % (best["lock"], "" if fresh else " (older result)", pin or "?"))
+                    elif gain: lines.append("-> %s wins%s -> review to apply (lock it AND keep anchor %s for the same result)" % (best["lock"], "" if fresh else " (older result)", best.get("pin") or pin or base_pin or "?"))
                     else: lines.append("-> no 5G cell clearly beats the unlocked baseline on internet quality - no 5G lock needed")
                 else:
                     lines.append("no 5G cell ranked - not seen / off target: " + ", ".join(failed) if failed else
@@ -364,6 +424,19 @@ def start(cells, align=False, rat="lte", anchor=None, heading=""):
     threading.Thread(target=lock_test, args=(["none"] + cells, align),
                      kwargs={"rat": rat, "anchor": anchor, "heading": heading}, daemon=True).start()
     return True
+
+
+def anchor_hint(lock, pin=None):
+    """A failed 5G step -> ' (known under 1550/434, 12 min)' when the cell was served under another LTE anchor than the pin: an NSA
+    5G cell can be there only under some anchors (747 needs 1550/434, not 100/340)."""
+    if "@" not in lock: return ""
+    cell = "%s/%s" % tuple(lock.split("@")[::-1])
+    best = brain.best_anchor(cell)
+    if not best: return ""
+    pinned = "%s/%s" % tuple(pin.split("@")[::-1]) if pin and "@" in pin else ""
+    if best == pinned: return ""
+    a = next((x for x in brain.nr_anchors(cell) if x["anchor"] == best), {})
+    return " (known under %s, %s min)" % (best, a.get("min", "?"))
 
 
 def cell_mode(cell):

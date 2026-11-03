@@ -18,6 +18,7 @@ ANCHOR = "340@1550"
 # lock -> (lte_cell, nr_cell, 5G SINR, site, latency p95, jitter, loss %, call-ready)   injected samples = the measurement window
 CELLS = {"none": ("1550/340", "629988/747", "6.0", "1072/3", "55", "6", "0", "1"),
          "534@636576": ("1550/340", "636576/534", "9.0", "1072/3", "80", "20", "2", "1"),      # best signal, worse internet
+         "804@636576": ("100/340", "636576/804", "9.0", "1243/81", "40", "4", "0", "1"),      # a cell its own anchor serves (100/340)
          "747@629988": ("1550/340", "629988/747", "6.0", "1072/3", "40", "4", "0", "1")}      # worse signal, best internet
 # web page: 5G SINR per antenna mode - dir/dir has the best signal ...
 SINR = {("1", "1"): "4.0", ("4", "1"): "6.0", ("1", "4"): "8.0", ("4", "4"): "9.5"}
@@ -32,7 +33,7 @@ def mode():
     for t, gid, name, state in m.st["sets"]:
         if gid == "BSP_ANTENNA_STATE_SET": a[name] = state
     return a["5"], a["6"]
-CELL_OF = {"none": ("2eb", "629988"), "534@636576": ("216", "636576"), "747@629988": ("2eb", "629988")}   # hex PCI, ARFCN
+CELL_OF = {"none": ("2eb", "629988"), "534@636576": ("216", "636576"), "804@636576": ("324", "636576"), "747@629988": ("2eb", "629988")}   # hex PCI, ARFCN
 def fields():                                   # the fake ZTE page: the serving 5G cell follows the lock, the SINR the antenna mode
     f = base_fields(); f["Z5g_SINR"] = SINR[mode()]
     pci, ch = CELL_OF.get(locktest.lt["running"] or "none", ("216", "636576"))
@@ -244,7 +245,8 @@ locktest.start = lambda cells, align=False, rat="lte", anchor=None, heading="": 
 try:
     assert post("/lock-test?rat=nr&cells=534@636576&anchor=340@1550&align=1") == (202, {"started": True, "rat": "nr", "anchor": "340@1550", "heading": "", "plan": ["none", "534@636576"]})
     assert calls[-1] == (["534@636576"], True, "nr", "340@1550", ""), calls
-    assert post("/lock-test?rat=nr&cells=534@636576")[1]["anchor"] == "340@1550"      # else the serving cell
+    assert post("/lock-test?rat=nr&cells=534@636576")[1]["anchor"] is None             # no explicit anchor: per 5G cell
+    assert calls[-1] == (["534@636576"], False, "nr", None, ""), calls
     assert post("/lock-test?rat=nr&cells=747@629988&heading=108")[1]["heading"] == "108" and calls[-1][4] == "108"
     assert post("/lock-test?cells=434@1550") == (202, {"started": True, "rat": "lte", "anchor": None, "heading": "", "plan": ["none", "434@1550"]})
     assert post("/lock-test?rat=x")[0] == 400 and post("/lock-test?rat=nr&cells=534@700000")[0] == 400
@@ -278,6 +280,42 @@ assert "unstable anchor" in u["note"] and r["none"]["unstable"] == "1", r["none"
 rk = brain.anchor_ranking("nr")
 assert "534@636576" in rk["unstable"] and "534@636576" not in [x["lock"] for x in rk["ranked"]], rk
 assert rk["baseline"] is None and not common.state().get("nr_lock") and brain.anchor_best("nr")[2] is False
+
+# 6c) the failed-cell hint: a 5G cell that was served under another LTE anchor says so (747 needs 1550/434, not 340@100)
+brain.REG["nr"]["636576/747"] = {"first": 1, "served_min": 12,
+                                 "anchors": {"1550/434": {"min": 12, "ok": 12, "p95": 51, "jitter": 11, "sinr": 8, "rsrp": -80}}}
+assert locktest.anchor_hint("747@636576", "340@100") == " (known under 1550/434, 12 min)", locktest.anchor_hint("747@636576", "340@100")
+assert locktest.anchor_hint("747@636576", "434@1550") == "" and locktest.anchor_hint("534@636576", ANCHOR) == ""
+assert locktest.anchor_hint("127@636576", ANCHOR) == ""
+assert locktest.anchor_hint("747@636576", "") == " (known under 1550/434, 12 min)"
+
+# 6d) per-cell anchor + the pair auto-apply: the mapping says 804@636576 is served by the anchor 100/340 (the keeper's lock is
+# 434@1550). Without an explicit anchor the test pins the cell's best known anchor; the baseline pins the best anchor across the
+# tested cells; a clear winning pair auto-applies the 5G cell AND its anchor (the pair is what reproduces the result).
+CELLS["none"] = ("100/340", "629988/747", "6.0", "1243/81", "55", "6", "0", "1")      # the baseline must serve the pinned anchor
+brain.REG["nr"]["636576/804"] = {"first": 1, "served_min": 12,
+                                 "anchors": {"100/340": {"min": 12, "ok": 12, "p95": 40, "jitter": 4, "sinr": 9, "rsrp": -80}}}
+assert brain.anchor_spec_for("636576/804") == "340@100" and brain.anchor_for_cells(["804@636576"]) == "340@100"
+# the anchors are resolved ONCE before the run (the run's own samples update the pairs; a mid-run flip would make the steps and the
+# baseline cross-anchor - seen 2026-11-02)
+assert locktest.step_pins(["none", "804@636576"], None, "340@100", "434@1550") == {"none": "340@100", "804@636576": "340@100"}
+assert locktest.step_pins(["none", "747@636576"], None, "434@1550", "340@100") == {"none": "434@1550", "747@636576": "434@1550"}
+# the pair auto-apply may move the LTE lock: give the gate two ranked LTE anchors (340@100 good, 434@1550 good but weaker)
+for _t, _a, _s in (("11:00:00", "340@100", "6.0"), ("11:10:00", "434@1550", "5.0")):
+    store.add(DATA, "lock_tests", {"time": "2026-11-02 " + _t, "rat": "lte", "lock": _a, "minutes": "12", "on_target_pct": "100",
+                                   "anchor": "100/340" if _a == "340@100" else "1550/434", "call_ok_pct": "100.0",
+                                   "anchor_sinr_p50": _s, "lat_p95": "50", "jitter_ms": "8", "nr_cells": "534:6", "no5g_min": "0",
+                                   "mode": "as is"})
+assert brain.anchor_move_ok("340@100", "434@1550") == (True, "")       # 6.0 vs 5.0 dB: a fair move, allowed
+m.st["sets"].clear(); brain.AUTO = "on"; common.state({"lte_lock": {"cell": "434@1550", "state": "active"}, "nr_lock": None})
+reports.clear(); stop.clear(); threading.Thread(target=zte, daemon=True).start()
+locktest.lock_test(["none", "804@636576"], rat="nr"); stop.set()
+r = rows()
+assert r["none"]["pin"] == "340@100" and r["804@636576"]["pin"] == "340@100", (r["none"]["pin"], r["804@636576"]["pin"])
+assert r["804@636576"]["anchor"] == "100/340" and r["804@636576"]["anchor_pct"] == "100.0" and r["804@636576"]["unstable"] == "0", r["804@636576"]
+assert common.state()["nr_lock"]["cell"] == "804@636576" and common.state()["lte_lock"]["cell"] == "340@100", common.state()
+assert "with LTE anchor 340@100" in reports[-1] and "804@636576 (anchor 340@100)" in reports[-1], reports[-1]
+CELLS["none"] = ("1550/340", "629988/747", "6.0", "1072/3", "55", "6", "0", "1")
 
 # 7) keeper died mid-test: the next start clears BOTH legs (the pinned anchor and the 5G lock), whatever the test held
 m.st["sets"].clear(); common.state({"lock_test": {"cell": "534@636576", "rat": "nr", "anchor": ANCHOR}})

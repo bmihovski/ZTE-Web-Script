@@ -37,7 +37,12 @@ Deploy with `python3 tools/deploy.py deploy` (or `./deploy.sh`): it runs the che
 while a lock test is running, backs up what is on the router to `backups/<time>/` (manifest, hashes, DB snapshot), uploads only the
 code (never `data/`; the old single-file `keeper.py` / `mikrotik.py` are removed), restarts the container and verifies the live
 version, the OpenAPI contract, the config keys, a fresh sample and the DB - and puts the backup back when the verification fails.
-`check`, `status`, `logs`, `backup`, `verify` and `rollback <dir>` are the other subcommands. One-time SSH setup on the router:
+`check`, `status`, `logs`, `backup`, `verify` and `rollback <dir>` are the other subcommands. **Validate a run** with
+`python3 tools/deploy.py validate --rat nr|lte [--run ID] [--wait] [--expect-lock CELL] [--json]`: it reads one lock-test run
+(the newest, or `--run`), applies the keeper's own policy to that run's rows (baseline vs candidates, unstable/not-measured/off-target
+separated) and prints the verdict - `keep`, `apply`, `no-lock` or `no-result` (exit 2); `--wait` first waits for a running test
+(poll every 15 s, `--timeout` 3600). That is the read-only half of the loop: deploy -> start or schedule a run -> validate -> fix
+-> repeat; `--expect-lock` makes it exit 3 when the live lock is not the expected cell. One-time SSH setup on the router:
 `/ip service set ssh disabled=no address=192.168.6.0/24`, upload your `~/.ssh/id_ed25519.pub` in WinBox Files, then
 `/user ssh-keys import public-key-file=id_ed25519.pub user=admin`. Test: `ssh admin@192.168.6.1 /system identity print`.
 If the upload can't create `devices/` (old SFTP), create the folders once on the router and run it again.
@@ -90,7 +95,9 @@ The keeper measures, analyses and decides; the userscript only shows the results
   `POST /lock-test?rat=nr&cells=534@636576,747@629988` (5G, panel: "Run 5G lock test"). One cell per entry; a typo, a `;` list or an
   unknown 5G band is refused with 400 (never silently dropped). Runs a baseline (LTE: unlocked; 5G: the
   anchor pinned, the 5G leg free), then each cell: LTE = that cell locked; 5G = that cell locked **with the LTE anchor pinned**
-  (`anchor=PCI@EARFCN`, else the keeper's LTE lock, else the serving cell), so only the 5G leg changes between the candidates; both
+  (`anchor=PCI@EARFCN`; without one each 5G cell uses its **best known anchor** - the pair that served it with the best measured
+  results - and the baseline the best anchor across the tested cells; else the keeper's LTE lock, else the serving cell), so only
+  the 5G leg changes between the candidates; both
   legs go into one lock (one reboot on the ZTE). On the ZTE: lock + reboot (`LTE_LOCK_CELL_SET` / `NR5G_LOCK_CELL_SET` /
   `REBOOT_DEVICE` on the web page), wait for the boot inform; on the ATL: one RouterOS script, no reboot (the interface restart).
   `LOCKTEST_SETTLE_S` (180) settle, `LOCKTEST_MEASURE_MIN` (12) of samples -> `GET /lock-tests`: share of minutes on the locked cell (`on_target_pct`), anchor SINR/RSRP/RSRQ, CA combination, which 5G
@@ -119,7 +126,10 @@ The keeper measures, analyses and decides; the userscript only shows the results
   **Readiness before a step:** a rebooted CPE's web and WAN come back minutes later, so after the boot the keeper waits for the CPE
   web (`LOCKTEST_READY_TIMEOUT_S` 180; `CPE_READY_TRIES` 3 answers, `CPE_READY_GAP_S` 5 s apart) before the sweep / alignment,
   and for a stable link (`LOCKTEST_ONLINE_TIMEOUT_S` 180, `ONLINE_STABLE` 5 good probes) before measuring. A timeout is written on
-  the row and the step goes on (the same wait protects the antenna apply after a boot: `ANT_READY_TIMEOUT_S` 300).
+  the row and the step goes on (the same wait protects the antenna apply after a boot: `ANT_READY_TIMEOUT_S` 300) - except a missing
+  BOOT inform: the ZTE applies a lock only at boot, so the step was never locked; it is recorded
+  (`not measured: no boot inform within N s`) and skipped, with no settle and no 12-minute measurement (2026-11-02: a 56-min CPE
+  outage after a night reboot burned two 25-min steps that way).
   **A cell that is not up is skipped, not measured:** after each antenna mode the keeper checks whether the target 5G cell is
   actually there (over the last few reads, so a single network handover does not look like "the cell is gone"); if not, it sends wake
   traffic for `WAKE_S` (60 s; a 1000-byte ping to `WAKE_HOST` 1.1.1.1, a small-download fallback) and checks again. A mode is
@@ -152,9 +162,8 @@ The keeper measures, analyses and decides; the userscript only shows the results
   and anchor capacity. The finding recommends the winner only if it clearly beats the unlocked baseline (the same margins as the
   antenna mode; LTE: call-ready +1 %, 5G SINR +2 dB or anchor SINR +3 dB); a baseline whose newest row was not measured (a skipped
   step) is no baseline - then nothing is auto-applied, only recommended. Unstable 5G rows (`unstable` 1) are not ranked at all.
-  A finished 5G test auto-applies its winner when `AUTO=on`
-  (the 5G lock only - the pinned LTE anchor stays your decision) and keeps the winning step's antenna mode, so the next boot
-  re-applies both. When signal and internet disagree, the Telegram message names the cell signal alone would have picked.
+  A finished 5G test auto-applies its winner when `AUTO=on` - the **pair**: the 5G cell and the LTE anchor it was measured with (an
+  NSA cell is served only under some anchors) - and keeps the winning step's antenna mode, so the next boot re-applies all three. When signal and internet disagree, the Telegram message names the cell signal alone would have picked.
 - **Antenna mode to keep** (`POST /antennas?auto=0&ant5=4&ant6=4`, `?none` = back to the env; panel: "keep it in the keeper" under the
   userscript sweep): saved in the keeper, re-applied at every ZTE boot, overrides `ANT_AUTO` / `ANT5` / `ANT6` (1 omni, 4 dir).
   The log and the `antennas kept` event say who kept it - the panel or the lock test's auto-apply (`auto-applied 5G lock <cell> and
@@ -193,7 +202,10 @@ The keeper measures, analyses and decides; the userscript only shows the results
 - **5G secondary carriers** (NR CA, TR-069 `NR_CA.n.*`): samples column `nr_ca` (`629988/747:-90.7/5@100` = ARFCN/PCI:RSRP/SINR@MHz);
   the registry counts them per cell as `ca_min` / `ca_sinr` / `ca_rsrp`.
 - **Cell registry** (`cells.json`, `GET /cells`): every LTE cell the ZTE measures (RSRP), and when used: SINR, bandwidth, minutes in
-  CA / as anchor, the real site (eNB/cell from the ZTE), lock-test result; 5G cells served (minutes, SINR, RSRP). Built from the
+  CA / as anchor, the real site (eNB/cell from the ZTE), lock-test result; 5G cells served (minutes, SINR, RSRP) **and the LTE
+  anchors each 5G cell was served with** (`anchors`, best first, with minutes / call-ready / p95 / jitter; `best_anchor` = the pair
+  with the best measured quality — an NSA 5G cell can be reachable only under some anchors, e.g. 747 needs 1550/434). Rebuild the
+  mapping from the samples with `POST /cells/refill?days=7`. Built from the
   samples on first start, kept for good. Findings: `NEW:` a strong cell that appeared after watching started, `GONE:` a long-seen
   cell missing for > 24 h -> re-run the lock test. `POST /cells/forget?cells=500/341,3150/341` drops cells that don't belong to this device's registry. Your own `data/sites.json` (optional, reference only) adds site name, distance
   and bearing from the ZTE to the cells whose site the ZTE reported.

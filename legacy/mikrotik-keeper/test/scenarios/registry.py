@@ -51,9 +51,57 @@ assert "375@1550" in fs[1]
 lt([["t", "none", 12, "", "3350/340", "", 8, "534:12", 7, 0, 100.0, 50], ["t", "434@1550", 12, 100, "1550/434", "", 9, "534:12", 8, 0, 100.0, 48]])
 assert b.anchor_finding(b.anchor_ranking())[0].startswith("OK: lock tests - no candidate clearly beats")
 b.REG["nr"].pop("255/255", None); b.track(row(1, nr="255/255"), T); assert "255/255" not in b.REG["nr"]   # boot placeholder ignored
+b.track(row(1, nr="0/534"), T); assert "0/534" not in b.REG["nr"]                                          # ARFCN 0 after a boot
+b.track(dict(row(1, nr="636576/747"), nr_ca="0/534:0/0@20"), T); assert not [k for k in b.REG["nr"] if k.startswith("0/")]
 r = row(1, nr="636576/747"); r["nr_ca"] = "629988/747:-90.7/@100"; b.track(r, T); b.track(dict(r, nr_ca="629988/747:-91.7/5@100"), T)   # 5G secondary carrier
 e = b.REG["nr"]["629988/747"]; assert e["ca_min"] == 2 and e["served_min"] == 0 and e["ca_sinr"] == 5 and e["ca_rsrp"] < -90.7, e
 assert next(x for x in b.cells_view()["nr"] if x["cell"] == "629988/747")["ca_min"] == 2
 b.track(dict(row(1, nb="100/340:-82"), lte_cell="100/340", lte_site="1243/81"), T)                                  # serving cell id from TR-069 CELLID
 assert b.REG["ids"]["lte:100:340"] == 1243 * 256 + 81 and next(x for x in b.cells_view()["lte"] if x["cell"] == "100/340")["site"] == "1243/81"
+
+# 5G cell <-> LTE anchor mapping: which anchor served which 5G cell, and the best pair (pair internet quality first, the anchor only
+# as a tie-break). Evidence 747 needs 1550/434, not 100/340 (2026-10-27: 434@1550 served 747 + 127; the 340@100 tests saw no 747).
+def nrow(lte, nr="636576/747", sinr="8", lte_sinr="-1", p95="51", jit="12", loss="0", ok="1"):
+    return {"time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "lte_cell": lte, "nr_cell": nr, "nr_sinr": sinr,
+            "nr_rsrp": "-80", "lte_sinr": lte_sinr, "lat_p95": p95, "jitter_ms": jit, "loss_pct": loss, "call_ok": ok,
+            "down_bps": "0", "up_bps": "0"}
+for _ in range(12): b.track(nrow("1550/434"), T)                                           # 100 % call-ready, 5G 8, anchor -1
+for _ in range(12): b.track(nrow("100/340", sinr="5", lte_sinr="6", p95="92", jit="23", ok="0"), T)   # better anchor, worse pair
+assert b.REG["nr"]["636576/747"]["anchors"]["1550/434"]["min"] == 12 and b.REG["nr"]["636576/747"]["anchors"]["100/340"]["ok"] == 0
+assert b.best_anchor("636576/747") == "1550/434" and [a["anchor"] for a in b.nr_anchors("636576/747")] == ["1550/434", "100/340"], b.nr_anchors("636576/747")
+# a 5-min fluke does not beat a long-established pair (2026-11-02: 534's 21-min 100 % pair vs 4504 min at 97.9 %); a challenger must
+# clearly win (call-ready 5 pp / loss 1 pp / p95 10 ms / jitter 10 ms, then 5G SINR/RSRP)
+for _ in range(60): b.track(nrow("1550/493", nr="636576/534", sinr="7", lte_sinr="-3", p95="50", jit="10", ok="0" if _ < 3 else "1"), T)
+for _ in range(5): b.track(nrow("1550/340", nr="636576/534", sinr="6.6", lte_sinr="-1", p95="55", jit="13", ok="1"), T)
+assert b.best_anchor("636576/534") == "1550/493", b.nr_anchors("636576/534")          # 95 % over 60 min holds
+for _ in range(5): b.track(nrow("100/340", nr="636576/534", sinr="6.6", lte_sinr="5", p95="55", jit="13", ok="0"), T)
+assert b.best_anchor("636576/534") == "1550/493", b.nr_anchors("636576/534")          # a worse short pair does not take over
+# a *thin* pair cannot unseat a long-standing one even with a marginal signal tie-break (2026-11-02: a 58-min pair won the SINR
+# tie-break and took 534 away from the 2766-min pair; the lock test then pinned that anchor and the pair auto-apply moved the LTE lock)
+b.REG["nr"]["636576/534"]["anchors"]["3350/340"] = {"min": 2766, "ok": 2672, "p95": 46.7, "jitter": 10.0, "sinr": 6.08, "rsrp": -80.5, "lte_sinr": 2.4}
+b.REG["nr"]["636576/534"]["anchors"]["1550/434"] = {"min": 58, "ok": 58, "p95": 56.0, "jitter": 12.0, "sinr": 7.5, "rsrp": -80.0, "lte_sinr": -2.0}
+assert b.best_anchor("636576/534") == "3350/340", b.nr_anchors("636576/534")[:3]   # 58 min cannot unseat 2766 min
+assert b.anchor_for_cells(["747@636576", "534@636576"]) == "340@3350", b.anchor_for_cells(["747@636576", "534@636576"])
+assert b.anchor_for_cells(["747@636576"]) == "434@1550" and b.anchor_for_cells(["127@636576"]) is None
+x = next(c for c in b.cells_view()["nr"] if c["cell"] == "636576/747")
+assert x["best_anchor"] == "1550/434" and x["anchors"][0]["anchor"] == "1550/434" and x["anchors"][0]["min"] == 12, x
+b.track(nrow("1550/340", nr="636576/999"), T)                                             # 1 min < ANCHOR_MIN: no opinion yet
+assert b.best_anchor("636576/999") is None and b.best_anchor("636576/747", min_min=1) == "1550/434"
+# backfill from the stored samples rebuilds the mapping (the samples are the source)
+store.add(DATA, "samples", nrow("1550/434")); store.add(DATA, "samples", nrow("100/340", ok="0"))
+assert b.backfill_anchors(days=30) == ["636576/747"], b.backfill_anchors(days=30)
+e = b.REG["nr"]["636576/747"]["anchors"]
+assert e["1550/434"]["min"] == 1 and e["100/340"]["min"] == 1 and e["100/340"]["ok"] == 0, e
+# the backfill must not resurrect a forgotten cell (2026-11-03: /cells 500 on a backfill-created entry without `last`)
+store.add(DATA, "samples", nrow("1550/434", nr="636576/998"))
+touched = b.backfill_anchors(days=30)
+assert "636576/998" not in b.REG["nr"] and "636576/998" not in touched, touched       # a cell the registry does not know
+b.REG["nr"]["636576/997"] = {"served_min": 1}                                            # a partially formed entry
+assert next(c for c in b.cells_view()["nr"] if c["cell"] == "636576/997")["last"] == ""   # no crash on a missing last
+# the anchor-move gate: a winning 5G pair may move the LTE lock only to an anchor measured as an LTE anchor and not clearly worse
+lt([["t", "340@100", 12, 100, "100/340", "1243/61", 6, "534:6", 7, 0, 100.0, 50],
+    ["t", "434@1550", 12, 100, "1550/434", "1072/3", -3, "534:6", 7, 0, 100.0, 51]])
+assert b.anchor_move_ok("340@100", "434@1550") == (True, ""), b.anchor_move_ok("340@100", "434@1550")
+assert b.anchor_move_ok("434@1550", "340@100")[0] is False and "anchor SINR" in b.anchor_move_ok("434@1550", "340@100")[1]
+assert b.anchor_move_ok("999@1550", "340@100") == (False, "it was never measured as an LTE anchor")
 print("OK test_registry")

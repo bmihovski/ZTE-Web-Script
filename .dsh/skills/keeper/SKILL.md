@@ -31,6 +31,9 @@ the docstrings and this skill in sync.
   measured (web failure skips it too) is not a baseline: the ranking drops it and nothing is auto-applied against it.
 - **Per-cell antenna mode requires a lock:** the locked 5G cell's newest good lock-test mode applies at boot with `AUTO=on`; else the
   kept mode (panel/sweep); else the env. One apply per boot.
+- **A 5G lock is a pair:** each NR step pins its 5G cell's `best_anchor` (an NSA cell is served only under some anchors), the
+  baseline pins the best anchor across the tested cells, and a clear winning row auto-applies the 5G cell **and** its anchor
+  (`anchor=` overrides the mapping for every cell).
 
 ## Workflow
 
@@ -41,8 +44,13 @@ the docstrings and this skill in sync.
 4. `python3 tools/deploy.py deploy` — preflight refuses while a lock test runs; backs up the router code to `backups/<time>/`,
    uploads only the code (never `data/`), restarts, verifies version / OpenAPI contract / config keys / fresh sample / DB, and rolls
    back automatically on failure. `verify`, `status`, `logs`, `backup`, `rollback <dir>` are the other commands.
-5. Update the userscript copy in the browser when the panel changes (console marker `Loading ZTE Script v...`).
-6. Update `docs/BUSINESS_RULES.md`, the README and this skill when a rule changes.
+5. **Validate the run**, not just the deploy: `python3 tools/deploy.py validate --rat lte|nr [--run ID] [--wait] [--expect-lock CELL]
+   [--json]` reads one lock-test run and applies the keeper's policy to that run's baseline vs its candidates (unstable / not
+   measured / off target listed apart). Verdict `keep` / `apply` / `no-lock` / `no-result` (exit 2); exit 3 on `--expect-lock` mismatch.
+   The loop: deploy → start (or schedule) a run → validate → fix/improve → repeat. The run itself is the keeper's: once started it
+   needs no Mac, and a scheduled run (harness scheduler) starts without one.
+6. Update the userscript copy in the browser when the panel changes (console marker `Loading ZTE Script v...`).
+7. Update `docs/BUSINESS_RULES.md`, the README and this skill when a rule changes.
 
 ## Traps
 
@@ -50,6 +58,10 @@ the docstrings and this skill in sync.
 - The ZTE web has ONE session: an open page logs the keeper out; the antenna set retries 3× with a re-login, and the boot apply
   waits for the web (`CPE_READY_*`).
 - A reboot sends several informs; one apply per boot (generation checked after the wait, stale workers stand down).
+- No BOOT inform after a lock = the step was never locked (the ZTE applies a lock only at boot): it is recorded `not measured: no
+  boot inform within N s` and skipped, not measured for 12 min on a dead link.
+- An NSA 5G cell is reachable only under some LTE anchors (747 needs 1550/434, not 340@100): check `/cells` (`anchors`,
+  `best_anchor`) before calling a cell unreachable; `POST /cells/refill?days=7` rebuilds the mapping from the samples.
 - A lock test removes its lock at the end; the per-cell mode therefore needs `nr_lock` active (AUTO=on applied it, or you did).
 - Deploying restarts the container and interrupts a running test; check `/lock-tests` (the tool does).
 - The container needs `ca-certificates` for the internet-test download (`start.sh` adds it); a failure is non-fatal (`inttest`).
@@ -65,5 +77,5 @@ the docstrings and this skill in sync.
 curl -s http://keeper.lan:7557/status | python3 -m json.tool
 curl -s 'http://keeper.lan:7557/lock-tests?rat=nr' | python3 -m json.tool
 python3 tools/deploy.py status|verify|logs -n 20
-python3 tools/deploy.py check|backup|deploy|rollback backups/<time>
+python3 tools/deploy.py check|backup|deploy|validate|rollback backups/<time>
 ```

@@ -15,6 +15,17 @@ at `/docs`.
   (`cell-ids.json`) are network facts and shared; the app's `ui:` lists are shared too. `?device=*` on `/export`/`/db` is explicit.
 - **No network-mode changes.** Yettel is NSA only; never `Only_5G`, never `net_select`. Locks are a human decision; the keeper
   recommends them, then guards the lock you chose.
+- **A 5G cell is only reachable under some LTE anchors.** NSA serves the 5G leg only when the LTE anchor it is combined with
+  carries it (measured: `636576/747` appears under `1550/434`, not under `100/340`; the 2026-10-27 434@1550 test served 747 and 127,
+  the 340@100 tests saw no 747). So the keeper learns the **(5G cell, LTE anchor) pairs** from the samples: per 5G cell, every
+  anchor that served it, with minutes, call-ready %, loss, p95, jitter and 5G SINR/RSRP. `best_anchor` = the pair with the best
+  measured quality (call-ready, loss, p95, jitter, then 5G SINR/RSRP; the anchor's own LTE signal only as a tie-break), needing
+  `ANCHOR_MIN_MINUTES` (10) minutes of evidence; the refill never creates or resurrects a cell (the registry owns the cells - a
+  forgotten cell stays out, a partially formed entry must not break `/cells`; a 5G cell with ARFCN 0 or 255 is a post-boot
+  placeholder and is not tracked); among the pairs no other pair *clearly* beats (the quality margins) the one with
+  the most minutes wins, so a short lucky pair never overrides a long-standing one. Shown per 5G cell in `/cells` (`anchors`, `best_anchor`), rebuilt from the samples
+  on the first start after this exists or on demand (`POST /cells/refill?days=7`); a failed 5G step in the Telegram summary names
+  the anchor the cell is known under. "Not seen" under one anchor is not "unreachable".
 - **Secrets stay in the container env** (`ZTE_PASS_HASH`, `SQM_PASS`, `TG_TOKEN`); never log them. Only masked fixtures are in git.
 
 ## Formats
@@ -47,7 +58,9 @@ at `/docs`.
   always removed at the end (night: the guard's lock is put back).
 - **Readiness:** after the reboot, wait for a BOOT inform, `LOCKTEST_SETTLE_S` (180), then for the CPE web (`LOCKTEST_READY_TIMEOUT_S`
   180; `CPE_READY_TRIES` 3 answers `CPE_READY_GAP_S` 5 s apart) and for a stable link (`LOCKTEST_ONLINE_TIMEOUT_S` 180,
-  `ONLINE_STABLE` 5 good probes) before measuring. Timeouts are noted, not fatal.
+  `ONLINE_STABLE` 5 good probes) before measuring. Timeouts are noted, not fatal - except a missing BOOT inform: the ZTE applies a
+  lock only at boot, so the step was never locked. It is recorded as `not measured: no boot inform within N s` and skipped (no
+  settle, no 12-minute measurement of a link that is not there).
 - **Per-mode internet test (5G, ZTE):** for each of the 4 antenna modes, check the target 5G cell over the last 3 reads; if it is
   not up, send wake traffic for `WAKE_S` (60 s; `WAKE_HOST` 1.1.1.1, `WAKE_SIZE` 1000, a small-download fallback) and look again;
   then run the internet test (`INTTEST_MB` 2 MB from `INTTEST_URL` over `INTTEST_S` 30 s) while the latency probe runs.
@@ -82,8 +95,15 @@ at `/docs`.
   locked carries its `mode` and `run` like the others (a night run stays one unit; the finding then warns about the unmeasured
   baseline instead of treating the next candidate as one).
 - **Auto-apply** (`AUTO=on`, real load): the winner is locked when it clearly beats the unlocked baseline (the same quality policy);
-  the winning step's antenna mode is kept. No baseline (skipped / not measured) = nothing to beat = no auto-apply, only a
-  recommendation. A dryrun only reports; off never acts. The summary is pushed to Telegram for every finished test, also when
+  a 5G winner is applied as the **pair** - the 5G cell and the LTE anchor it was measured with (an NSA cell is served only under some
+  anchors, so the cell alone would not reproduce the result) - and the winning step's antenna mode is kept. The pair may move the LTE
+  lock only to an anchor measured as a daytime LTE anchor and not clearly worse than the current lock (call-ready -5 pp, anchor
+  SINR -3 dB); otherwise the 5G cell alone is applied and the refusal is reported (a 5G pair must not move the LTE lock to a weak
+  anchor). The baseline pins the
+  best anchor across the tested cells; without an explicit `anchor=` each 5G cell pins its `best_anchor`. The anchors are resolved
+  once at the start of the test (the run's own samples update the pairs, so a per-step re-resolve could flip a pin mid-run and make
+  the comparison cross-anchor - seen 2026-11-02). No baseline (skipped / not
+  measured) = nothing to beat = no auto-apply, only a recommendation. A dryrun only reports; off never acts. The summary is pushed to Telegram for every finished test, also when
   nothing is ranked (it names the cells it could not see).
 
 ## Antenna modes
@@ -125,9 +145,14 @@ at `/docs`.
 4. **Deploy:** `python3 tools/deploy.py deploy` (or `./deploy.sh`): preflight (refuses while a lock test runs), backup to
    `backups/<time>/` with a manifest, upload only the code, restart the container, verify version / OpenAPI contract / config keys /
    a fresh sample / the DB, and roll back automatically on failure. `verify`, `status`, `logs`, `backup`, `rollback` are separate.
-5. **Userscript.** The panel is browser-side (`legacy/zte-script-legacy.js`, loaded by the userscript): the keeper deploy does not
+5. **Validate a run:** `python3 tools/deploy.py validate --rat nr|lte [--run ID] [--wait] [--expect-lock CELL] [--json]` reads one
+   lock-test run and applies the same policy to that run's baseline vs its candidates (unstable / not measured / off target listed
+   separately): verdict `keep` / `apply` / `no-lock` / `no-result` (exit 2), exit 3 on an `--expect-lock` mismatch. The loop is
+   deploy -> start or schedule a run -> validate -> fix / improve -> repeat; the run itself is the keeper's, so it needs no Mac once
+   started (a scheduled run via the harness scheduler starts it without one).
+6. **Userscript.** The panel is browser-side (`legacy/zte-script-legacy.js`, loaded by the userscript): the keeper deploy does not
    update it. Bump the console marker and update the installed copy.
-6. **Docs.** Update `docs/BUSINESS_RULES.md` (this file), the README and the docstrings, and the project skill
+7. **Docs.** Update `docs/BUSINESS_RULES.md` (this file), the README and the docstrings, and the project skill
    `.dsh/skills/keeper/SKILL.md`, when a rule changes.
 
 ## Traps we hit
