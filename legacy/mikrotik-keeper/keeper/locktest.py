@@ -92,7 +92,7 @@ def anchor_for(rat, spec=""):
         return spec
     w = state().get("lte_lock") or {}
     if w.get("cell") and w.get("state") in ("active", "pending"): return w["cell"]
-    for r in reversed(brain.HIST):
+    for r in reversed(list(brain.HIST)):
         c = r.get("lte_cell") or ""
         if re.fullmatch(r"\d{1,6}/\d{1,3}", c): return "%s@%s" % (c.split("/")[1], c.split("/")[0])
     raise ValueError("no LTE anchor known - pass anchor=PCI@EARFCN (a 5G test compares the cells on one anchor)")
@@ -118,7 +118,8 @@ def lt_eval(lock, rows, note="", rat="lte", antennas="", pin=None, ant5="", ant6
     rsrp = [brain.f(r.get("nr_rsrp")) for r in rows if r["nr_cell"] != "no5G"]
     sites = collections.Counter(r.get("lte_site") for r in rows if r.get("lte_site") and (rat == "nr" or not targets or r.get("lte_cell") in targets))
     lte = [r.get("lte_cell") or "" for r in rows]
-    switches = sum(1 for a, b in zip(lte, lte[1:]) if a != b) if pin else ""
+    on_lte = [c for c in lte if c]                        # a blank reading is a dropped sample, not an anchor switch
+    switches = sum(1 for a, b in zip(on_lte, on_lte[1:]) if a != b) if pin else ""
     pin_pct = round(100 * sum(1 for a in lte if a and a in guard.lock_target(pin)) / len(rows), 1) if pin and rows else ""
     try: times = [brain.ts(r) for r in rows]
     except ValueError: times = []
@@ -327,115 +328,126 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
             log("lock test: REMOVING THE LOCKS FAILED %r - remove them in the modem's web page" % e); back = None
         state({"lock_test": None}); brain.ctx["hold"] = None
         lt.update(running=None, waiting=False, phase="", night=False)   # plan / align / rat / anchor stay: they describe the last run
-        na = lambda v: v if v not in (None, "", "None") else "n/a"
-        if night:                                                           # night = unloaded, B1 off: report + recommend only, NEVER auto-apply
-            run, base, others, win = brain.night_best()
-            if run and base is None:                                        # a missing baseline is no reference
-                alert.report("%s night screen %s: the baseline was not measured - no verdict (no service on the lock's cell?)"
-                             % (common.device_name(), run[:10]))
-            elif run:
-                dd = lambda r: "%s: anchor SINR %s, 5G %s SINR %s, call-ready %s%%%s" % (r["lock"], na(r.get("anchor_sinr_p50")),
-                    na(r["nr_cells"]), na(r["nr_sinr_p50"]), na(r.get("call_ok_pct")), (" - " + r["note"]) if r.get("note") else "")
-                blabel = "the unlocked baseline" if base["lock"] == "none" else base["lock"]
-                lines = ["%s night screen %s (unloaded; B1 off at night, not your daytime lock)" % (common.device_name(), run[:10])] + \
-                        [("* " if win and r is win[0] else "  ") + dd(r) for r in others] + ["  unlocked baseline: " + dd(base).split(": ", 1)[1]]
-                if win: lines.append("-> %s beat %s unloaded -> RECOMMEND an aligned daytime lock test (not auto-applied)" % (win[0]["lock"], blabel))
-                else: lines.append("-> nothing beat %s, kept" % blabel)
-                alert.report("\n".join(lines))
-        elif rat == "nr":                                                   # 5G cells, same anchor: real load -> auto-apply the winner when AUTO=on
-            rk = brain.anchor_ranking("nr")
-            best, base, gain = brain.anchor_best("nr")                       # internet quality decides, signal only breaks a tie
-            failed = rk.get("failed") or []
-            if best or rk.get("unstable") or failed:
-                lines = ["%s 5G lock test (LTE anchor per 5G cell%s; internet quality decides, signal breaks ties)" % (
-                    common.device_name(), "" if (pin or base_pin) is None else
-                    (" " + pin if pin else " - %s for the baseline" % base_pin))]
+        try:
+            na = lambda v: v if v not in (None, "", "None") else "n/a"
+            if night:                                                           # night = unloaded, B1 off: report + recommend only, NEVER auto-apply
+                run, base, others, win = brain.night_best()
+                if run and base is None:                                        # a missing baseline is no reference
+                    alert.report("%s night screen %s: the baseline was not measured - no verdict (no service on the lock's cell?)"
+                                 % (common.device_name(), run[:10]))
+                elif run:
+                    dd = lambda r: "%s: anchor SINR %s, 5G %s SINR %s, call-ready %s%%%s" % (r["lock"], na(r.get("anchor_sinr_p50")),
+                        na(r["nr_cells"]), na(r["nr_sinr_p50"]), na(r.get("call_ok_pct")), (" - " + r["note"]) if r.get("note") else "")
+                    blabel = "the unlocked baseline" if base["lock"] == "none" else base["lock"]
+                    lines = ["%s night screen %s (unloaded; B1 off at night, not your daytime lock)" % (common.device_name(), run[:10])] + \
+                            [("* " if win and r is win[0] else "  ") + dd(r) for r in others] + ["  unlocked baseline: " + dd(base).split(": ", 1)[1]]
+                    if win: lines.append("-> %s beat %s unloaded -> RECOMMEND an aligned daytime lock test (not auto-applied)" % (win[0]["lock"], blabel))
+                    else: lines.append("-> nothing beat %s, kept" % blabel)
+                    alert.report("\n".join(lines))
+                else:
+                    alert.report("%s night screen finished - nothing measured" % common.device_name())
+            elif rat == "nr":                                                   # 5G cells, same anchor: real load -> auto-apply the winner when AUTO=on
+                rk = brain.anchor_ranking("nr")
+                best, base, gain = brain.anchor_best("nr")                       # internet quality decides, signal only breaks a tie
+                failed = rk.get("failed") or []
+                if best or rk.get("unstable") or failed:
+                    lines = ["%s 5G lock test (LTE anchor per 5G cell%s; internet quality decides, signal breaks ties)" % (
+                        common.device_name(), "" if (pin or base_pin) is None else
+                        (" " + pin if pin else " - %s for the baseline" % base_pin))]
+                    if best:
+                        dd = lambda r: "%s (anchor %s): call-ready %s%%, loss %s%%, p95 %s ms, jitter %s ms, 5G SINR %s, 5G RSRP %s" % (
+                            r["lock"], r.get("pin") or "?", na(r.get("call_ok_pct")), na(r.get("loss_pct")), na(r.get("lat_p95")),
+                            na(r.get("jitter_ms")), na(r.get("nr_sinr_p50")), na(r.get("nr_rsrp_p50")))
+                        cur = (state().get("nr_lock") or {}).get("cell")
+                        try: fresh = abs(time.time() - time.mktime(time.strptime(best.get("time", ""), "%Y-%m-%d %H:%M:%S"))) < 3 * 3600
+                        except (ValueError, TypeError): fresh = False
+                        sig = max(rk["ranked"], key=lambda r: (brain.f(r.get("nr_sinr_p50")) or -99, brain.f(r.get("nr_rsrp_p50")) or -999)) if rk["ranked"] else None
+                        lines.append("* best " + dd(best))
+                        site = brain.nr_site(best["lock"]); bpin = best.get("pin") or ""
+                        if site:
+                            g = brain.site_geo(site)
+                            txt = "  site: %s -> %s%s" % (best["lock"], site, (" (%.1f km, %d deg)" % (g[0] / 1000.0, g[1])) if g else "")
+                            if "@" in bpin:
+                                anchor = "%s/%s" % (bpin.split("@")[1], bpin.split("@")[0])
+                                ps = brain.pair_site(anchor, best["lock"])
+                                if ps:
+                                    g2 = brain.site_geo(ps.get("anchor_site"))
+                                    txt += "; anchor %s -> %s%s - %s" % (bpin, ps.get("anchor_site"),
+                                            (" (%.1f km, %d deg)" % (g2[0] / 1000.0, g2[1])) if g2 else "",
+                                            "co-sited" if ps.get("same_site") else "cross-site")
+                                    if ps.get("site_km") is not None: txt += ", %.1f km apart" % ps["site_km"]
+                                    if ps.get("bearing_diff") is not None: txt += ", %d deg apart" % ps["bearing_diff"]
+                            lines.append(txt)
+                            co = [a for a in brain.nr_anchors(best["lock"]) if a.get("same_site") and brain.spec_of(a["anchor"]) != bpin]
+                            if co: lines.append("  co-sited pair available: %s (%s min)" % (brain.spec_of(co[0]["anchor"]), co[0]["min"]))
+                        if base: lines.append("  baseline (5G unlocked): " + dd(base).split(": ", 1)[1])
+                        if sig and sig["lock"] != best["lock"]:
+                            lines.append("  signal alone would pick %s (5G SINR %s) but internet quality picked %s" % (sig["lock"], na(sig.get("nr_sinr_p50")), best["lock"]))
+                        def _pin(lock):
+                            return next((r.get("pin") or "" for r in reversed(store.rows(DATA, "lock_tests"))
+                                         if r.get("lock") == lock and r.get("rat") == "nr"), "")
+                        def _cross(lock):
+                            cell = "%s/%s" % (lock.split("@")[1], lock.split("@")[0]) if "@" in lock else ""
+                            pin = _pin(lock)
+                            if not cell or "@" not in pin: return ""
+                            a = "%s/%s" % (pin.split("@")[1], pin.split("@")[0])
+                            ps = brain.pair_site(a, cell)
+                            return " - cross-site NSA, no pair history" if ps.get("same_site") is False and a not in ((brain.REG["nr"].get(cell) or {}).get("anchors") or {}) else ""
+                        if failed: lines.append("  not ranked (not seen / off target): " +
+                                                ", ".join(f + anchor_hint(f, _pin(f)) + _cross(f) for f in failed))
+                        applied = None; anchored = None
+                        if gain and fresh and brain.AUTO == "on" and best["lock"] != cur:
+                            try:
+                                guard.lock_request(best["lock"], "nr"); applied = best["lock"]
+                                want = (best.get("pin") or "").strip()   # the winning PAIR: the 5G cell and the LTE anchor that serves it
+                                cur_lte = (state().get("lte_lock") or {}).get("cell") or ""
+                                if want and want != cur_lte:             # a pair must not move the LTE lock to a worse anchor
+                                    ok, why = brain.anchor_move_ok(want, cur_lte)
+                                    if ok: guard.lock_request(want); anchored = want
+                                    else: lines.append("  not moving the LTE lock to %s: %s - the 5G lock alone is applied" % (want, why))
+                                mode = (lt.get("modes") or {}).get(best["lock"])         # this run's winning step mode
+                                if not mode:
+                                    cm = cell_mode(best["lock"])                          # fresh winner from a prior run: keep its stored mode
+                                    if cm: mode = (cm["ant5"], cm["ant6"])
+                                if mode and getattr(dev, "antennas", None):
+                                    dev.antennas.keep({"auto": "0", "ant5": mode[0], "ant6": mode[1]},
+                                                      src="auto-applied 5G lock %s and its measured mode" % best["lock"])
+                            except Exception as e: lines.append("auto-apply failed: %r" % e)
+                        if applied: lines.append("-> AUTO-APPLIED 5G lock %s%s%s" % (
+                            applied, " with LTE anchor " + anchored if anchored else "", " with " + best["antennas"] if best.get("antennas") else ""))
+                        elif gain and best["lock"] == cur: lines.append("-> best is already your 5G lock %s" % cur)
+                        elif gain: lines.append("-> %s wins%s -> review to apply (lock it AND keep anchor %s for the same result)" % (best["lock"], "" if fresh else " (older result)", best.get("pin") or pin or base_pin or "?"))
+                        else: lines.append("-> no 5G cell clearly beats the unlocked baseline on internet quality - no 5G lock needed")
+                    else:
+                        lines.append("no 5G cell ranked - not seen / off target: " + ", ".join(failed) if failed else
+                                     "no 5G cell ranked - the baseline and the candidates had an unstable LTE anchor")
+                    if rk.get("unstable"): lines.append("  NOT RANKED (unstable LTE anchor): " + ", ".join(rk["unstable"]))
+                    alert.report("\n".join(lines))
+                else:
+                    alert.report("%s 5G lock test finished - nothing measured / ranked" % common.device_name())
+            else:                                                               # daytime LTE test = real load: auto-apply the winner when AUTO=on
+                best, base, gain = brain.anchor_best()
+                if not best:
+                    failed = brain.anchor_ranking("lte").get("failed") or []
+                    if failed: alert.report("%s daytime lock test: no candidate result (not on the tested cell: %s)" % (common.device_name(), ", ".join(failed)))
+                    else: alert.report("%s daytime lock test finished - nothing measured" % common.device_name())
                 if best:
-                    dd = lambda r: "%s (anchor %s): call-ready %s%%, loss %s%%, p95 %s ms, jitter %s ms, 5G SINR %s, 5G RSRP %s" % (
-                        r["lock"], r.get("pin") or "?", na(r.get("call_ok_pct")), na(r.get("loss_pct")), na(r.get("lat_p95")),
-                        na(r.get("jitter_ms")), na(r.get("nr_sinr_p50")), na(r.get("nr_rsrp_p50")))
-                    cur = (state().get("nr_lock") or {}).get("cell")
+                    dd = lambda r: "%s: call-ready %s%%, 5G SINR %s, anchor SINR %s" % (r["lock"], na(r.get("call_ok_pct")), na(r.get("nr_sinr_p50")), na(r.get("anchor_sinr_p50")))
+                    cur = (state().get("lte_lock") or {}).get("cell")
                     try: fresh = abs(time.time() - time.mktime(time.strptime(best.get("time", ""), "%Y-%m-%d %H:%M:%S"))) < 3 * 3600
                     except (ValueError, TypeError): fresh = False
-                    sig = max(rk["ranked"], key=lambda r: (brain.f(r.get("nr_sinr_p50")) or -99, brain.f(r.get("nr_rsrp_p50")) or -999)) if rk["ranked"] else None
-                    lines.append("* best " + dd(best))
-                    site = brain.nr_site(best["lock"]); bpin = best.get("pin") or ""
-                    if site:
-                        g = brain.site_geo(site)
-                        txt = "  site: %s -> %s%s" % (best["lock"], site, (" (%.1f km, %d deg)" % (g[0] / 1000.0, g[1])) if g else "")
-                        if "@" in bpin:
-                            anchor = "%s/%s" % (bpin.split("@")[1], bpin.split("@")[0])
-                            ps = brain.pair_site(anchor, best["lock"])
-                            if ps:
-                                g2 = brain.site_geo(ps.get("anchor_site"))
-                                txt += "; anchor %s -> %s%s - %s" % (bpin, ps.get("anchor_site"),
-                                        (" (%.1f km, %d deg)" % (g2[0] / 1000.0, g2[1])) if g2 else "",
-                                        "co-sited" if ps.get("same_site") else "cross-site")
-                                if ps.get("site_km") is not None: txt += ", %.1f km apart" % ps["site_km"]
-                                if ps.get("bearing_diff") is not None: txt += ", %d deg apart" % ps["bearing_diff"]
-                        lines.append(txt)
-                        co = [a for a in brain.nr_anchors(best["lock"]) if a.get("same_site") and brain.spec_of(a["anchor"]) != bpin]
-                        if co: lines.append("  co-sited pair available: %s (%s min)" % (brain.spec_of(co[0]["anchor"]), co[0]["min"]))
-                    if base: lines.append("  baseline (5G unlocked): " + dd(base).split(": ", 1)[1])
-                    if sig and sig["lock"] != best["lock"]:
-                        lines.append("  signal alone would pick %s (5G SINR %s) but internet quality picked %s" % (sig["lock"], na(sig.get("nr_sinr_p50")), best["lock"]))
-                    def _pin(lock):
-                        return next((r.get("pin") or "" for r in reversed(store.rows(DATA, "lock_tests"))
-                                     if r.get("lock") == lock and r.get("rat") == "nr"), "")
-                    def _cross(lock):
-                        cell = "%s/%s" % (lock.split("@")[1], lock.split("@")[0]) if "@" in lock else ""
-                        pin = _pin(lock)
-                        if not cell or "@" not in pin: return ""
-                        a = "%s/%s" % (pin.split("@")[1], pin.split("@")[0])
-                        ps = brain.pair_site(a, cell)
-                        return " - cross-site NSA, no pair history" if ps.get("same_site") is False and a not in ((brain.REG["nr"].get(cell) or {}).get("anchors") or {}) else ""
-                    if failed: lines.append("  not ranked (not seen / off target): " +
-                                            ", ".join(f + anchor_hint(f, _pin(f)) + _cross(f) for f in failed))
-                    applied = None; anchored = None
+                    lines = ["%s daytime lock test" % common.device_name(), "* best " + dd(best)] + (["  unlocked baseline: " + dd(base).split(": ", 1)[1]] if base else [])
+                    applied = None
                     if gain and fresh and brain.AUTO == "on" and best["lock"] != cur:
-                        try:
-                            guard.lock_request(best["lock"], "nr"); applied = best["lock"]
-                            want = (best.get("pin") or "").strip()   # the winning PAIR: the 5G cell and the LTE anchor that serves it
-                            cur_lte = (state().get("lte_lock") or {}).get("cell") or ""
-                            if want and want != cur_lte:             # a pair must not move the LTE lock to a worse anchor
-                                ok, why = brain.anchor_move_ok(want, cur_lte)
-                                if ok: guard.lock_request(want); anchored = want
-                                else: lines.append("  not moving the LTE lock to %s: %s - the 5G lock alone is applied" % (want, why))
-                            mode = (lt.get("modes") or {}).get(best["lock"])         # the mode the winning step measured with, re-applied at every boot
-                            if mode and getattr(dev, "antennas", None):
-                                dev.antennas.keep({"auto": "0", "ant5": mode[0], "ant6": mode[1]},
-                                                  src="auto-applied 5G lock %s and its measured mode" % best["lock"])
+                        try: guard.lock_request(best["lock"]); applied = best["lock"]
                         except Exception as e: lines.append("auto-apply failed: %r" % e)
-                    if applied: lines.append("-> AUTO-APPLIED 5G lock %s%s%s" % (
-                        applied, " with LTE anchor " + anchored if anchored else "", " with " + best["antennas"] if best.get("antennas") else ""))
-                    elif gain and best["lock"] == cur: lines.append("-> best is already your 5G lock %s" % cur)
-                    elif gain: lines.append("-> %s wins%s -> review to apply (lock it AND keep anchor %s for the same result)" % (best["lock"], "" if fresh else " (older result)", best.get("pin") or pin or base_pin or "?"))
-                    else: lines.append("-> no 5G cell clearly beats the unlocked baseline on internet quality - no 5G lock needed")
-                else:
-                    lines.append("no 5G cell ranked - not seen / off target: " + ", ".join(failed) if failed else
-                                 "no 5G cell ranked - the baseline and the candidates had an unstable LTE anchor")
-                if rk.get("unstable"): lines.append("  NOT RANKED (unstable LTE anchor): " + ", ".join(rk["unstable"]))
-                alert.report("\n".join(lines))
-        else:                                                               # daytime LTE test = real load: auto-apply the winner when AUTO=on
-            best, base, gain = brain.anchor_best()
-            if not best:
-                failed = brain.anchor_ranking("lte").get("failed") or []
-                if failed: alert.report("%s daytime lock test: no candidate result (not on the tested cell: %s)" % (common.device_name(), ", ".join(failed)))
-            if best:
-                dd = lambda r: "%s: call-ready %s%%, 5G SINR %s, anchor SINR %s" % (r["lock"], na(r.get("call_ok_pct")), na(r.get("nr_sinr_p50")), na(r.get("anchor_sinr_p50")))
-                cur = (state().get("lte_lock") or {}).get("cell")
-                try: fresh = abs(time.time() - time.mktime(time.strptime(best.get("time", ""), "%Y-%m-%d %H:%M:%S"))) < 3 * 3600
-                except (ValueError, TypeError): fresh = False
-                lines = ["%s daytime lock test" % common.device_name(), "* best " + dd(best)] + (["  unlocked baseline: " + dd(base).split(": ", 1)[1]] if base else [])
-                applied = None
-                if gain and fresh and brain.AUTO == "on" and best["lock"] != cur:
-                    try: guard.lock_request(best["lock"]); applied = best["lock"]
-                    except Exception as e: lines.append("auto-apply failed: %r" % e)
-                if applied: lines.append("-> AUTO-APPLIED %s (beats the unlocked baseline under load)" % applied)
-                elif gain and best["lock"] == cur: lines.append("-> best is already your lock %s" % cur)
-                elif gain: lines.append("-> %s wins%s -> review to apply" % (best["lock"], "" if fresh else " (older result)"))
-                else: lines.append("-> no candidate clearly beats unlocked - no lock needed")
-                alert.report("\n".join(lines))
+                    if applied: lines.append("-> AUTO-APPLIED %s (beats the unlocked baseline under load)" % applied)
+                    elif gain and best["lock"] == cur: lines.append("-> best is already your lock %s" % cur)
+                    elif gain: lines.append("-> %s wins%s -> review to apply" % (best["lock"], "" if fresh else " (older result)"))
+                    else: lines.append("-> no candidate clearly beats unlocked - no lock needed")
+                    alert.report("\n".join(lines))
+        except Exception as e:
+            log("lock test report/auto-apply failed: %r - locks are reset, the guard re-locks" % e)
         for key in guard.KEYS.values():
             w = state().get(key)
             if w and w.get("state") == "active" and not (key == "lte_lock" and back): state({key: dict(w, state="pending")})   # guard re-locks when idle
@@ -492,7 +504,7 @@ def night_candidates(now):
     """Strong cells of the main bands seen in the last 6 h, not the lock, not tested in NIGHT_RETEST_DAYS - strongest first."""
     lock = (state().get("lte_lock") or {}).get("cell")
     cut = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - NIGHT_RETEST_DAYS * 86400))
-    tested = {r["lock"] for r in store.rows(DATA, "lock_tests", cut) if r.get("mode") != "cut"}
+    tested = {r["lock"] for r in store.rows(DATA, "lock_tests", cut) if r.get("mode") != "cut" and (brain.f(r.get("minutes")) or 0) > 0}
     reg = brain.REG["lte"]; dead = _dead_cells(now); out = []
     for k, e in reg.items():
         if e.get("band") not in NIGHT_BANDS or now - e.get("last", 0) > 6 * 3600 or e.get("seen_min", 0) < 60 or e.get("rsrp") is None: continue
@@ -517,7 +529,7 @@ def maybe_night(row, now=None):
     w = state().get("lte_lock") or {}
     lockcell = w["cell"] if w.get("state") == "active" else None
     cut = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - NIGHT_RETEST_DAYS * 86400))
-    tested = {r["lock"] for r in store.rows(DATA, "lock_tests", cut) if r.get("mode") != "cut"}
+    tested = {r["lock"] for r in store.rows(DATA, "lock_tests", cut) if r.get("mode") != "cut" and (brain.f(r.get("minutes")) or 0) > 0}
     extra = [c for c in NIGHT_CELLS if c != lockcell and c not in tested and c not in _dead_cells(now)]   # home-set cells due for a re-check
     if not cands and not extra:
         log("night screen: no new candidates"); return False

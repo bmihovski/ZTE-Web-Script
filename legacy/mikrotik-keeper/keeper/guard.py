@@ -65,17 +65,23 @@ def pause_end(now):
 def lock_do(changes, why):
     """Apply `{"lte": spec|'none', "nr": spec|'none'}` together in the background (one reboot / one script)."""
     if guard["busy"]: return
-    guard["busy"] = True; guard["reboots"] = [t for t in guard["reboots"] if time.time() - t < 86400] + [time.time()]
+    guard["busy"] = True
     what = " + ".join("%s lock %s" % ("lte" if k == "lte" else "5g", "removed" if v == "none" else v) for k, v in sorted(changes.items()))
     def run():
         try:
-            devices.current().locks_apply(changes.get("lte"), changes.get("nr")); guard.update(bad=0, nosvc=0, nr_bad=0, nr_back=0)
+            devices.current().locks_apply(changes.get("lte"), changes.get("nr"))
+            guard["reboots"] = [t for t in guard["reboots"] if time.time() - t < 86400] + [time.time()]   # count the reboot only after it was issued
+            guard["changed_at"] = time.time()
+            guard.update(bad=0, nosvc=0, nr_bad=0, nr_back=0)
             log("%s: %s" % (what, why)); event({"event": what, "why": why})
         except Exception as e:
             log("%s failed: %r" % (what, e))
         finally:
             guard["busy"] = False
     threading.Thread(target=run, daemon=True).start()
+
+
+LOCK_RECONCILE_SETTLE = float(E("LOCK_RECONCILE_SETTLE_S", "120"))   # after a keeper lock change the modem reboots; its lock read-back is stale until ~this long
 
 
 def lock_reconcile(now):
@@ -88,6 +94,8 @@ def lock_reconcile(now):
         if has is None: continue
         label, raw = lv
         if w["state"] in ("released", "pending") and has:
+            if guard.get("changed_at") and now < guard["changed_at"] + LOCK_RECONCILE_SETTLE:
+                continue                                  # a just-issued change is still rebooting: this read-back is stale, don't flip back to active
             state({key: dict(w, state="active", since=now)}); log("%s %s: the %s still has it - marked active, no reboot" % (key, w["cell"], dev.NAME))
             event({"event": "%s %s still set" % (key.replace("_", " "), w["cell"]), "why": "%s %s = %r (an unlock did not go through)" % (dev.NAME, label, raw)})
         elif w["state"] == "active" and not has:

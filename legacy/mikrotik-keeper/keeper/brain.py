@@ -246,7 +246,7 @@ def quality_values(call_ready=None, loss=None, lat=None, jitter=None, sinr=None,
     """The keeper's decision tuple, highest wins: internet quality first - call-ready %, loss %, latency p95, jitter - and signal
     (5G SINR, RSRP) only as a tie-breaker. Missing values count as the worst."""
     n = lambda v, worst: worst if v is None else v
-    return (n(f(call_ready), -1), -n(f(loss), 999), -n(f(lat), 9999), -n(f(jitter), 9999), n(f(sinr), -99), n(f(rsrp), -999))
+    return (n(f(call_ready), -1000), -n(f(loss), 999), -n(f(lat), 9999), -n(f(jitter), 9999), n(f(sinr), -99), n(f(rsrp), -999))
 
 
 def clearly_better(a, b):
@@ -266,7 +266,7 @@ def load(data_dir):
     """fill HIST with the last 48 h from the store so analysis survives restarts"""
     cutoff = time.time() - 48 * 3600
     rows = [r for r in store.rows(data_dir, "samples", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(cutoff)))
-            if r.get("nr_cell") and r.get("time") and "255" not in r["nr_cell"].split("/")]       # 255 = boot placeholder (old files)
+            if r.get("nr_cell") and r.get("time") and "255" not in r.get("nr_cell").split("/")]       # 255 = boot placeholder (old files)
     for r in rows:
         try:
             if ts(r) >= cutoff: HIST.append(r)
@@ -299,14 +299,14 @@ def decide(row, events_log, now=None):
     if last and all(not r.get("lte_cell") for r in last):                  # 2026-10-28 01:03: 10 min without service, a reboot fixed it
         reason = "no mobile service for %d min" % NOSVC_MIN
     last = [r for r in list(HIST)[-60:] if not idle(r)][-NO5G_MIN:]          # only minutes with traffic: idle = 5G released on purpose
-    if not reason and len(last) >= NO5G_MIN and all(r["nr_cell"] == "no5G" for r in last):
+    if not reason and len(last) >= NO5G_MIN and all(r.get("nr_cell") == "no5G" for r in last):
         reason = "no 5G during %d min with traffic" % NO5G_MIN
     last = recent[-BAD_MIN:]
-    if not reason and len(last) >= BAD_MIN and all(r["nr_cell"] != "no5G" for r in last):
+    if not reason and len(last) >= BAD_MIN and all(r.get("nr_cell") != "no5G" for r in last):
         sinrs = [f(r.get("nr_sinr")) for r in last]
         if all(s is not None and s < MIN_SINR for s in sinrs):
             reason = "5G %s SINR < %g for %d min (median %s)" % (row["nr_cell"], MIN_SINR, BAD_MIN, med(sinrs))
-        elif PREFERRED and all(r["nr_cell"] not in PREFERRED for r in last):
+        elif PREFERRED and all(r.get("nr_cell") not in PREFERRED for r in last):
             reason = "5G on %s, not a preferred cell (%s) for %d min" % (row["nr_cell"], ",".join(PREFERRED), BAD_MIN)
     if not reason:
         return None
@@ -420,9 +420,9 @@ def _reliable_best(pairs, cell=None):
     evidence, neither clearly better) wins the tie: the operator's NSA combo is more likely to be intentional."""
     if not pairs: return None
     pairs = sorted(pairs, key=lambda ap: ap[1].get("min") or 0, reverse=True)
-    lead = pairs[0]
+    lead = pairs[0]; top_min = pairs[0][1].get("min") or 0
     for a, p in pairs[1:]:
-        if 2 * (p.get("min") or 0) < (lead[1].get("min") or 0): continue
+        if 2 * (p.get("min") or 0) < top_min: continue       # >= half the MOST-minutes pair (not the moving lead): no chain of small pairs unseats a long one
         if clearly_better(pair_quality(p, a)[:6], pair_quality(lead[1], lead[0])[:6]): lead = (a, p)
     if cell:
         q = lambda ap: pair_quality(ap[1], ap[0])[:6]
@@ -534,7 +534,7 @@ def track(row, now=None):
         if re.fullmatch(r"\d+/\d+", lte):                          # which LTE anchor served this 5G cell (NSA depends on the anchor)
             _pair_add(e.setdefault("anchors", {}), lte, row)
     for m in re.finditer(r"(\d+)/(\d+):(-?[\d.]*)/(-?[\d.]*)", row.get("nr_ca") or ""):     # 5G secondary carriers
-        if m.group(1) == "0": continue                       # placeholder right after boot
+        if m.group(1) == "0" or "255" in m.group(1, 2): continue       # 0 / 255 = placeholder right after boot
         e = REG["nr"].setdefault("%s/%s" % m.group(1, 2), {"first": now, "served_min": 0})
         e["last"] = now; e["ca_min"] = e.get("ca_min", 0) + 1
         e["ca_rsrp"] = _ew(e.get("ca_rsrp"), f(m.group(3))); e["ca_sinr"] = _ew(e.get("ca_sinr"), f(m.group(4)))
@@ -584,7 +584,7 @@ def load_registry(data_dir):
                               for c in (x.get("cells") or []) if str(c.get("rat", "")).upper() == "NR" and c.get("pci") is not None}
     except (OSError, ValueError):
         reg_st["sites"] = {}; reg_st["nr_sites"] = {}
-    if reg_st["dir"] and any("anchors" not in e for k, e in REG["nr"].items() if "255" not in k.split("/")):
+    if reg_st["dir"] and any("anchors" not in e for k, e in list(REG["nr"].items()) if "255" not in k.split("/")):
         try: backfill_anchors()          # one pass over the stored samples: the 5G cell <-> LTE anchor mapping
         except Exception: pass
 
@@ -666,28 +666,28 @@ def cells_view(now=None):
     lte = [dict({"cell": k, "band": e["band"], "rsrp": e.get("rsrp"), "sinr_when_used": e.get("sinr"), "bw_mhz": e.get("bw"),
                  "seen_min": e["seen_min"], "ca_min": e["ca_min"], "anchor_min": e["anchor_min"], "site": e.get("site") or eci(k),
                  "first": day(e.get("first")), "last": day(e.get("last")), "lock_test": e.get("lock_test")}, **site_info(e.get("site") or eci(k)))
-           for k, e in REG["lte"].items()]
+           for k, e in list(REG["lte"].items())]
     nr = [dict({"cell": k, "nci": ids.get("nr:" + k.replace("/", ":"), ""), "served_min": e["served_min"], "sinr": e.get("sinr"), "rsrp": e.get("rsrp"), "ca_min": e.get("ca_min", 0),
                 "ca_sinr": e.get("ca_sinr"), "ca_rsrp": e.get("ca_rsrp"), "first": day(e.get("first")), "last": day(e.get("last")),
                 "site": nr_site(k), "best_anchor": best_anchor(k),
                 "anchors": [dict(a, **pair_site(a["anchor"], k)) for a in nr_anchors(k)]},
                **({"site_dist_m": site_geo(nr_site(k))[0], "site_bearing": site_geo(nr_site(k))[1]} if site_geo(nr_site(k)) else {}))
-          for k, e in REG["nr"].items() if "255" not in k.split("/")]
+          for k, e in list(REG["nr"].items()) if "255" not in k.split("/")]
     return {"lte": sorted(lte, key=lambda x: (x["band"], -(x["rsrp"] or -999))), "nr": sorted(nr, key=lambda x: -(x["served_min"] + x["ca_min"]))}
 
 
 def network_changes(now=None):
     """new strong cells and cells that went away - the network evolves, so the best choice can change"""
     now = now or time.time(); out = []
-    for k, e in REG["lte"].items():
-        band_best = max((x.get("rsrp") or -999 for x in REG["lte"].values() if x["band"] == e["band"] and x is not e), default=-999)
+    for k, e in list(REG["lte"].items()):
+        band_best = max((x.get("rsrp") or -999 for x in list(REG["lte"].values()) if x["band"] == e["band"] and x is not e), default=-999)
         if e["first"] - (REG.get("since") or e["first"]) > 3600 and now - e["first"] < 86400 and e["seen_min"] >= 30 \
                 and (e.get("rsrp") or -999) >= band_best - 6:
             out.append("NEW: LTE %s %s seen for %d min, RSRP %s (strong for its band) - consider it in the next lock test" % (e["band"], k, e["seen_min"], e.get("rsrp")))
         if e["seen_min"] >= 600 and now - e["last"] > 86400:
             out.append("GONE: LTE %s %s not seen for %d h (was seen %d min) - re-check the lock / re-run the lock test"
                        % (e["band"], k, (now - e["last"]) / 3600, e["seen_min"]))
-    for k, e in REG["nr"].items():
+    for k, e in list(REG["nr"].items()):
         if e["served_min"] >= 600 and now - e["last"] > 86400:
             out.append("GONE: 5G %s not served for %d h" % (k, (now - e["last"]) / 3600))
     return out
@@ -772,6 +772,17 @@ def night_finding():
     return ["INFO: night screen %s: %s - none beat %s (%s)%s" % (run[:10], ", ".join(d(r) for r in meas) or "nothing measured", blabel, d(base), tail)]
 
 
+def _lte_gain(best, base):
+    """LTE daytime lock-vs-unlocked gain: quality-first. Quality clearly better -> yes; quality clearly worse -> no (never lock on
+    signal alone); on a quality tie a MEANINGFUL signal gain decides (anchor SINR +3 dB or 5G SINR +2 dB - not clearly_better's
+    +1 dB, which is for choosing between modes once you've decided to act, too sensitive for whether to lock at all)."""
+    q = lambda r: quality_values(r.get("call_ok_pct"), r.get("loss_pct"), r.get("lat_p95"), r.get("jitter_ms"))   # signal excluded
+    if clearly_better(q(best), q(base)): return True
+    if clearly_better(q(base), q(best)): return False
+    return ((f(best.get("anchor_sinr_p50")) or -99) - (f(base.get("anchor_sinr_p50")) or -99) >= 3 or
+            (f(best.get("nr_sinr_p50")) or -99) - (f(base.get("nr_sinr_p50")) or -99) >= 2)
+
+
 def anchor_best(rat="lte"):
     """Daytime ranking of one RAT (`lte`: anchors, `nr`: 5G cells) -> (best_row, base_row, gain) where gain = best clearly beats the
     unlocked baseline (under load). (None, None, False) with no ranked results or no baseline (we don't auto-apply without a baseline)."""
@@ -782,10 +793,7 @@ def anchor_best(rat="lte"):
         q = lambda r: quality_values(r.get("call_ok_pct"), r.get("loss_pct"), r.get("lat_p95"), r.get("jitter_ms"),
                                      r.get("nr_sinr_p50"), r.get("nr_rsrp_p50"))
         return best, base, clearly_better(q(best), q(base))
-    gain = ((f(best.get("call_ok_pct")) or 0) - (f(base.get("call_ok_pct")) or 0) >= 1 or
-            (f(best.get("nr_sinr_p50")) or -99) - (f(base.get("nr_sinr_p50")) or -99) >= 2 or
-            (f(best.get("anchor_sinr_p50")) or -99) - (f(base.get("anchor_sinr_p50")) or -99) >= 3)
-    return best, base, gain
+    return best, base, _lte_gain(best, base)
 
 
 def anchor_finding(rk):
@@ -795,9 +803,7 @@ def anchor_finding(rk):
     d = lambda r: "call-ready %s%%, 5G %s SINR %s, anchor SINR %s (~%s Mbit/s/layer)%s" % (r.get("call_ok_pct"), r.get("nr_cells"), r.get("nr_sinr_p50"),
         r.get("anchor_sinr_p50"), r.get("capacity"), (", site " + r["site"]) if r.get("site") else "")
     if base:
-        gain = ((f(best.get("call_ok_pct")) or 0) - (f(base.get("call_ok_pct")) or 0) >= 1 or
-                (f(best.get("nr_sinr_p50")) or -99) - (f(base.get("nr_sinr_p50")) or -99) >= 2 or
-                (f(best.get("anchor_sinr_p50")) or -99) - (f(base.get("anchor_sinr_p50")) or -99) >= 3)
+        gain = _lte_gain(best, base)
         if not gain:
             return ["OK: lock tests - no candidate clearly beats the unlocked baseline (%s); best %s: %s - no lock needed" % (d(base), best["lock"], d(best))]
     try:
@@ -814,6 +820,12 @@ def anchor_finding(rk):
 
 
 # ---------- analysis ----------
+def _mean_loss(rows):
+    """Average loss % over rows that actually have a loss probe; None when none do (never a fabricated 0%)."""
+    xs = [f(r.get("loss_pct")) for r in rows]; xs = [x for x in xs if x is not None]
+    return round(statistics.mean(xs), 2) if xs else None
+
+
 def report(hours=24):
     """Analysis of the last `hours`: call quality (overall, per hour, under load), 5G cells, LTE carriers and cells, findings."""
     rows = window(hours)
@@ -822,7 +834,7 @@ def report(hours=24):
         out["findings"] = ["no data yet"]; return out
     out["call"] = {"ok_pct": share(rows), "lat_p50": med([f(r.get("lat_p50")) for r in rows]), "lat_p95": med([f(r.get("lat_p95")) for r in rows]),
                    "jitter_ms": med([f(r.get("jitter_ms")) for r in rows]),
-                   "loss_pct": round(statistics.mean([f(r.get("loss_pct")) or 0 for r in rows]), 2)}
+                   "loss_pct": _mean_loss(rows)}
     by_hour = collections.defaultdict(list)
     for r in rows: by_hour[r["time"][11:13]].append(r)
     out["by_hour"] = {h: {"call_ok_pct": share(rs), "lat_p95": med([f(r.get("lat_p95")) for r in rs]),
@@ -832,13 +844,15 @@ def report(hours=24):
     out["under_load"] = {"busy_minutes": len(busy), "busy_lat_p95": med([f(r.get("lat_p95")) for r in busy]),
                          "idle_lat_p95": med([f(r.get("lat_p95")) for r in idle]), "busy_call_ok_pct": share(busy)}
     cells = collections.defaultdict(list)
-    for r in rows: cells[r["nr_cell"]].append(r)
+    for r in rows:
+        _c = r.get("nr_cell")
+        if _c: cells[_c].append(r)
     out["cells"] = sorted(({
         "cell": c, "minutes": len(rs), "share_pct": round(100 * len(rs) / len(rows), 1), "call_ok_pct": share(rs),
         "sinr_p10": pct([f(r.get("nr_sinr")) for r in rs], 10), "sinr_p50": med([f(r.get("nr_sinr")) for r in rs]),
         "rsrp_p50": med([f(r.get("nr_rsrp")) for r in rs]),
         "lat_p95": med([f(r.get("lat_p95")) for r in rs]), "jitter_ms": med([f(r.get("jitter_ms")) for r in rs]),
-        "loss_pct": round(statistics.mean([f(r.get("loss_pct")) or 0 for r in rs]), 2)} for c, rs in cells.items()),
+        "loss_pct": _mean_loss(rs)} for c, rs in cells.items()),
         key=lambda x: -x["minutes"])
     out["switches"] = sum(1 for a, b in zip(rows, rows[1:]) if a["nr_cell"] != b["nr_cell"])
     out["no5g_minutes"] = sum(1 for r in rows if no5g_busy(r))                # with traffic only; idle minutes without 5G are normal

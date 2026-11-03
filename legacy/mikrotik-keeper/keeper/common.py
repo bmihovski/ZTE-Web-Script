@@ -20,6 +20,7 @@ CLOCK_MAX_SKEW = float(E("CLOCK_MAX_SKEW_S", "300"))
 clock = {"ok": None, "skew": None, "bad_since": None}
 EVENT_COLS = ["time", "uptime_s", "event", "from", "to", "nr_sinr_before", "lte_cell", "lte_sinr", "why"]
 _state_lock = threading.Lock()
+_log_lock = threading.Lock()
 
 
 def stamp():
@@ -52,7 +53,7 @@ def check_clock(ct, now=None):
     off = "unreadable (%r)" % ct if skew is None else "%+.0f min" % (skew / 60)
     if not ok:
         clock["bad_since"] = stamp()
-        clock["bad_off"] = "unverifiable (modem time %r)" % ct if skew is None else "%.0f min %s" % (abs(skew) / 60, "behind" if skew > 0 else "ahead")
+        clock["bad_off"] = "%.0f min %s" % (abs(skew) / 60, "behind" if skew > 0 else "ahead")
         log("clock not verified: the modem's clock is %s from ours - LOCK_PAUSE / night screen wait" % off)
         event({"event": "clock not verified", "why": "modem clock %s from the router's (router booted without NTP?)" % off})
     elif was is False:
@@ -76,15 +77,17 @@ def rotate(path):
 def log(msg):
     """Print (container log) and append to `keeper.log`."""
     print(stamp(), msg, flush=True)
-    path = os.path.join(DATA, "keeper.log"); rotate(path)
-    with open(path, "a") as f: f.write("%s,%s\n" % (stamp(), msg))
+    with _log_lock:
+        path = os.path.join(DATA, "keeper.log"); rotate(path)
+        with open(path, "a") as f: f.write("%s,%s\n" % (stamp(), msg))
 
 
 def raw(head, body):
     """With RAW=1: append one TR-069 message to `tr069-raw.log` (debugging only - holds IMEI / IMSI / ICCID)."""
     if E("RAW") == "1":
-        path = os.path.join(DATA, "tr069-raw.log"); rotate(path)
-        with open(path, "a") as f: f.write("==== %s %s\n%s\n" % (stamp(), head, body))
+        with _log_lock:
+            path = os.path.join(DATA, "tr069-raw.log"); rotate(path)
+            with open(path, "a") as f: f.write("==== %s %s\n%s\n" % (stamp(), head, body))
 
 
 def state_file():

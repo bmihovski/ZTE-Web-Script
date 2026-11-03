@@ -33,6 +33,7 @@ SWEEP_COLS = ["time", "trigger", "mode", "nr_cell", "sinr_p50", "rsrp_p50", "rx0
               "lat_p50", "lat_p95", "jitter_ms", "loss_pct", "call_ok", "down_mbps", "inttest", "lte_switches", "nr_switches", "note"]
 sweep_st = {"running": False}
 common.register_busy("antenna sweep", lambda: sweep_st["running"], fast=False)
+_sweep_lock = threading.Lock()
 
 
 def ant_cfg():
@@ -78,8 +79,10 @@ def apply():
     a = effective()[0]; w = Web()
     err = w.login()
     if err: return err
-    bad = w.set_ant(a["auto"], a["ant5"], a["ant6"])
-    w.logout()
+    try:
+        bad = w.set_ant(a["auto"], a["ant5"], a["ant6"])
+    finally:
+        w.logout()
     return "apply failed: %s" % bad if bad else None
 
 
@@ -95,6 +98,8 @@ def apply_after_boot(uptime, keep=None):
         if keep and not keep():
             log("antennas: a newer boot superseded this apply - standing down"); return
         with web_lock:
+            if keep and not keep():                       # may have waited ~2 min for the web session; a newer boot could have superseded us
+                log("antennas: superseded while waiting for the web session - standing down"); return
             try: err = apply()
             except Exception as e: err = "web error %r" % e
         if not err:
@@ -260,8 +265,9 @@ def _restore(w, cur):
 def antenna_sweep(trigger):
     """Measure the 4 modes on the web page (~2 min, the browser's ZTE session is logged out meanwhile); keep the winner with AUTO=on.
     Rows go to `antenna_sweeps`. Returns the verdict text, "aborted: ..." or None."""
-    if sweep_st["running"]: return None
-    sweep_st["running"] = True
+    with _sweep_lock:
+        if sweep_st["running"]: return None
+        sweep_st["running"] = True
     rows = []
     try:
         with web_lock:
@@ -327,8 +333,9 @@ def sweep_for_test(expected, trigger="lock test"):
     `switching` (it changed too often), `anchor` (the pinned LTE anchor was unstable - the step is measured, not skipped) - and
     `skip` the matching short reason."""
     miss = {"aborted": "", "mode": "", "cell": expected, "switched": False, "no_cell": False, "skip": "", "why": ""}
-    if sweep_st["running"]: return dict(miss, aborted="an antenna sweep is already running", why="web", skip="an antenna sweep is already running")
-    sweep_st["running"] = True
+    with _sweep_lock:
+        if sweep_st["running"]: return dict(miss, aborted="an antenna sweep is already running", why="web", skip="an antenna sweep is already running")
+        sweep_st["running"] = True
     rows = []
     try:
         with web_lock:

@@ -14,7 +14,7 @@ reg = brain.REG["lte"]
 for cell, band, rsrp in [("100/340", "B1", -82), ("100/264", "B1", -86), ("100/434", "B1", -87), ("1550/434", "B3", -86), ("6400/112", "B20", -74), ("100/66", "B1", -95)]:
     reg[cell] = {"band": band, "rsrp": rsrp, "first": NOW - 86400, "last": NOW, "seen_min": 500, "anchor_min": 0, "ca_min": 0}
 common.state({"lte_lock": {"cell": "340@100", "state": "active"}})
-store.add(DATA, "lock_tests", {"time": common.stamp(), "lock": "434@1550", "mode": "aligned"})           # tested today -> skipped
+store.add(DATA, "lock_tests", {"time": common.stamp(), "lock": "434@1550", "mode": "aligned", "minutes": "12"})           # tested today -> skipped
 assert locktest.night_candidates(T230) == ["264@100", "434@100"], locktest.night_candidates(T230)                 # B1 strong, not the lock; B20 / weak out
 CELLS = {"340@100": ("100/340", "B1/100/340:-82/30@20", "8"), "264@100": ("100/264", "B1/100/264:-86/34@20", "11"), "434@100": ("100/434", "B1/100/434:-91/20@20", "7")}
 stop = threading.Event()

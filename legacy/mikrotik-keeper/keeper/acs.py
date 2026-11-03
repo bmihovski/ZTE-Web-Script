@@ -80,8 +80,8 @@ def tr069_set(pairs, reboot=False, timeout=180):
 
 def wait_informs(n=1, timeout=180):
     """Block until `n` more value reads arrived (or timeout). True if they did."""
-    start = tr["vals_n"]; t0 = time.time()
-    while tr["vals_n"] < start + n and time.time() - t0 < timeout: time.sleep(0.5)
+    start = tr["vals_n"]; t0 = time.monotonic()
+    while tr["vals_n"] < start + n and time.monotonic() - t0 < timeout: time.sleep(0.5)
     return tr["vals_n"] >= start + n
 
 
@@ -178,6 +178,8 @@ def serve(handler, req):
                     want = E("CPE", "") or common.state().get("cpe") or ""
                     if want: handler.foreign = want.lower() not in prod.lower()
                     else: common.state({"cpe": prod}); log("managing the %s %s (first seen) - set CPE= to pin it" % (maker.group(1), prod))
+                elif not handler.foreign and not prod and not (E("CPE", "") or common.state().get("cpe")) and not st.get("nopc_logged"):
+                    st["nopc_logged"] = True; log("managed CPE reports no ProductClass - set CPE= in the env to pin it if a 2nd ZTE is ever added")
                 if handler.foreign and not st.get("foreign_logged"):
                     st["foreign_logged"] = True
                     log("ignoring a %s CPE (%s) - this keeper manages %s" % (maker.group(1), prod or "?", E("CPE", "") or common.state().get("cpe") or dev.MAKER))

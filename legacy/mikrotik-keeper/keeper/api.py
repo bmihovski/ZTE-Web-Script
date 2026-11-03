@@ -198,6 +198,8 @@ class H(BaseHTTPRequestHandler):
                                        ("Content-Disposition", 'attachment; filename="%s.csv"' % kind)], data)
             else:
                 code, obj = brain.api(self.path, config(), DATA)
+        except ValueError as e:
+            code, obj = 400, {"error": str(e)}
         except Exception as e:
             code, obj = 500, {"error": repr(e)}
         self.json(code, obj)
@@ -207,6 +209,8 @@ class H(BaseHTTPRequestHandler):
         u = urllib.parse.urlsplit(self.path); path, q = u.path.rstrip("/") or "/", urllib.parse.parse_qs(u.query, keep_blank_values=True)
         g = lambda k, d="": q.get(k, [d])[0] or d          # blank = default (?none still shows up in q)
         if path == "/" or not any(m == "post" and p == path for m, p, *_ in ROUTES):       # the modem's CWMP session
+            if path != "/" and any(p == path for m, p, *_ in ROUTES):                        # a known route, wrong method
+                return self.send(405, [("Content-Type", "application/json"), ("Allow", "GET")], b'{"error": "method not allowed"}')
             return self.send(*acs.serve(self, self.body().decode("utf-8", "replace")))
         raw_body = self.body()
         if self.refused("post", path): return

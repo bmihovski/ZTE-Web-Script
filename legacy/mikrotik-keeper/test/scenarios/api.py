@@ -23,7 +23,7 @@ try:
     assert s == 200 and spec["openapi"].startswith("3.") and set(spec["paths"]) == listed and spec["paths"]["/lte-lock"]["post"]["parameters"][0]["name"] == "cell"
     s, t, b = get("/docs"); assert s == 200 and t.startswith("text/html") and "swagger-ui-bundle.js" in b and "/openapi.json" in b
     s, t, b = get("/export?kind=events&from=" + RECENT[:10]); assert s == 200 and t == "text/csv" and b.splitlines()[0] == "time,event,why" and "no LTE service, 3 min" in b, b
-    s, t, b = get("/export?kind=nope"); assert s == 500
+    s, t, b = get("/export?kind=nope"); assert s == 400
     def post(path, body):
         c = http.client.HTTPConnection("127.0.0.1", 18160); c.request("POST", path, body.encode(), {"Content-Type": "text/plain"}); r = c.getresponse()
         return r.status, json.loads(r.read())

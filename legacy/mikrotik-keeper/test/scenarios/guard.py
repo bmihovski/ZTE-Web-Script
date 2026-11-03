@@ -58,10 +58,16 @@ assert guard.lock_guard(R()) is None                                            
 guard.guard["reboots"] = []; guard.lock_request("none", "nr"); wait(); guard.lock_request("none"); wait()
 assert nr_locks()[-1] == "0,0,0,0" and locks()[-1] == "0@0" and common.state()["nr_lock"] is None
 # reconcile with what the ZTE really has (power cut / failed unlock): released but still locked -> active, no reboot
-guard.guard["reboots"] = []; n0 = len(m.st["sets"])
+guard.guard["reboots"] = []; guard.guard["changed_at"] = 0; n0 = len(m.st["sets"])
 common.state({"lte_lock": {"cell": "340@100", "state": "released", "retry_at": 0, "reason": "x"}})
 zlocks.seen["raw"] = {"LockLTECell": "340,100", "LockNr5gCell": ""}
 assert guard.lock_guard(R(nr="636576/534")) is None and common.state()["lte_lock"]["state"] == "active" and len(m.st["sets"]) == n0
+# the race: right after a keeper change (reboot in flight) a stale read still shows the lock - must NOT flip released->active
+common.state({"lte_lock": {"cell": "340@100", "state": "released", "retry_at": time.time() + 3600, "reason": "x"}})
+zlocks.seen["raw"] = {"LockLTECell": "340,100", "LockNr5gCell": ""}; guard.guard["changed_at"] = time.time()
+assert guard.lock_guard(R(nr="636576/534")) is None and common.state()["lte_lock"]["state"] == "released"   # gated: stale read in the reboot window, no flip
+guard.guard["changed_at"] = 0                                                                                  # change settled -> reconcile flips it
+assert guard.lock_guard(R(nr="636576/534")) is None and common.state()["lte_lock"]["state"] == "active"
 zlocks.seen["raw"] = {"LockLTECell": "", "LockNr5gCell": ""}                                 # active, but the ZTE lost it -> set again
 assert guard.lock_guard(R(nr="636576/534")) == "set"; wait(); assert locks()[-1] == "340@100"
 zlocks.seen["raw"] = None; guard.lock_request("none"); wait()
@@ -73,6 +79,6 @@ import csv; from keeper import store
 ev = [e["event"] for e in store.rows(DATA, "events")]; print(ev)
 assert ev == ["lte lock 434@1550", "lte lock removed", "lock restore pending", "lock restore pending", "lte lock 434@1550",
               "lte lock removed", "lte lock removed", "lte lock 340@100 + 5g lock 534@636576",
-              "5g lock removed", "5g lock 534@636576", "5g lock removed", "lte lock removed", "lte lock 340@100 still set",
+              "5g lock removed", "5g lock 534@636576", "5g lock removed", "lte lock removed", "lte lock 340@100 still set", "lte lock 340@100 still set",
               "lte lock 340@100 missing", "lte lock 340@100", "lte lock removed"], ev
 print("OK test_guard")

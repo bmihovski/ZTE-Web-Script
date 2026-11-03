@@ -56,9 +56,9 @@ def web_clear(nr=True):
         if err: raise RuntimeError(err)
         r = w.post({"goformId": "LTE_LOCK_CELL_SET", "lte_pci_lock": "0", "lte_earfcn_lock": "0"}).get("result")
         r2 = w.post({"goformId": "NR5G_LOCK_CELL_SET", "nr5g_cell_lock": "0,0,0,0"}).get("result") if nr else "success"
+        if r != "success" or r2 != "success": raise RuntimeError("clearing the locks -> %s / %s" % (r, r2))   # check before rebooting
         try: w.post({"goformId": "REBOOT_DEVICE"})
         except Exception: pass                                  # the ZTE may drop the connection while it goes down
-        if r != "success" or r2 != "success": raise RuntimeError("clearing the locks -> %s / %s" % (r, r2))
 
 
 def learn_lock_format(pci="434", earfcn="1550"):

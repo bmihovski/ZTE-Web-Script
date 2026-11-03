@@ -176,4 +176,10 @@ finally:
     p.terminate(); print(p.communicate()[0])
 sm = brain.api("/samples?from=2000-01-01%2000:00&cols=time,nr_cell", {}, DATA)[1]["rows"]
 assert sm and set(sm[-1]) == {"time", "nr_cell"}, sm[-1]
+# _lte_gain is quality-first: quality decides; signal only breaks a quality tie (regression for the old weak-OR gain)
+q = {"loss_pct": "0", "lat_p95": "50", "jitter_ms": "5", "anchor_rsrp_p50": "-80"}
+assert brain._lte_gain(dict(q, call_ok_pct="90", anchor_sinr_p50="15"), dict(q, call_ok_pct="100", anchor_sinr_p50="3")) is False   # worse call-ready, better signal -> no gain
+assert brain._lte_gain(dict(q, call_ok_pct="100", anchor_sinr_p50="3"), dict(q, call_ok_pct="90", anchor_sinr_p50="3")) is True    # +10pp call-ready -> gain
+assert brain._lte_gain(dict(q, call_ok_pct="100", anchor_sinr_p50="15"), dict(q, call_ok_pct="100", anchor_sinr_p50="3")) is True  # quality tied, +12dB -> signal breaks the tie
+print("OK _lte_gain")
 print("OK test_brain")

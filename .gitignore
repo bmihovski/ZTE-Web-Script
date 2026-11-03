@@ -16,3 +16,5 @@
 # local dsh plugins (machine-specific links; the repo skill stays in .dsh/skills)
 .dsh/plugins/
 /legacy/mikrotik-keeper/tools/__pycache__
+/.dsh/.DS_Store
+/.dsh/skills/.DS_Store

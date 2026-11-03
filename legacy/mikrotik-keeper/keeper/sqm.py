@@ -49,10 +49,16 @@ def mbit(s):
 def down_on(t=None):
     """Is download shaping on at time `t` (SQM_DOWN_HOURS, e.g. 'Mon-Fri 09:00-18:00'; empty = always)?"""
     if not DOWN_HOURS: return True
-    days, hours = DOWN_HOURS.split()
-    a, b = days.split("-") if "-" in days else (days, days)
-    lt = time.localtime(t or time.time()); h1, h2 = hours.split("-")
-    return DAYS.index(a) <= lt.tm_wday <= DAYS.index(b) and h1 <= time.strftime("%H:%M", lt) < h2
+    try:
+        days, hours = DOWN_HOURS.split(); h1, h2 = hours.split("-")
+        a, b = days.split("-") if "-" in days else (days, days)
+        wd_a, wd_b = DAYS.index(a), DAYS.index(b)
+    except (ValueError, KeyError):
+        return True                                           # misconfigured SQM_DOWN_HOURS -> shape always (safe), never disable SQM in an error loop
+    lt = time.localtime(t or time.time()); hhmm = time.strftime("%H:%M", lt)
+    day_ok = wd_a <= lt.tm_wday <= wd_b
+    time_ok = (h1 <= hhmm < h2) if h1 <= h2 else (hhmm >= h1 or hhmm < h2)     # window may wrap past midnight
+    return day_ok and time_ok
 
 
 def step(limit, rate, delay):
