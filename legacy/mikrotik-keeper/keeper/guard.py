@@ -22,7 +22,7 @@ LOCK_MAX_REBOOTS_DAY = int(E("LOCK_MAX_REBOOTS_DAY", "4"))
 LOCK_PAUSE = E("LOCK_PAUSE", "")
 KEYS = {"lte": "lte_lock", "nr": "nr_lock"}
 SPEC_RE = r"\d{1,3}@\d{1,6}"      # PCI@EARFCN, e.g. 434@1550 (one cell - the MC889 keeps only the first cell of a list)
-guard = {"bad": 0, "nosvc": 0, "nr_bad": 0, "nr_back": 0, "busy": False, "reboots": []}
+guard = {"bad": 0, "nosvc": 0, "nr_bad": 0, "nr_back": 0, "busy": False, "reboots": [], "wait": {}}
 common.register_busy("lock change", lambda: guard["busy"])
 
 
@@ -125,6 +125,7 @@ def lock_guard(row, now=None):
             why = "5G not on it for %d min (now %s)" % (guard["nr_bad"], row.get("nr_cell"))
             rel["nr"] = "none"; whys.append("5G %s: %s" % (w["cell"], why)); state({"nr_lock": dict(w, state="released", released_at=now, retry_at=now + LOCK_RETRY_H * 3600, reason=why)})
     if rel:
+        guard["wait"].update({k: 0 for k in rel})            # the release is logged; the wait starts after it
         lock_do(rel, "released %s - restored when the cell is back (%s)" % ("; ".join(whys), "after the pause" if "LOCK_PAUSE" in whys[0]
                                                                           else "after %g h at the earliest" % LOCK_RETRY_H))
         return "release"
@@ -141,13 +142,26 @@ def lock_guard(row, now=None):
                 back = [t for t in lock_target(w["cell"]) if t in seen and ((brain.REG["lte"].get(t) or {}).get("rsrp") is None
                                                                             or seen[t] >= brain.REG["lte"][t]["rsrp"] - 6)]
                 if back: todo[k] = w["cell"]; whys.append("%s restored - back: %s" % (w["cell"], ", ".join("%s (RSRP %s)" % (t, seen[t]) for t in back)))
+                else: wait_note("lte", w, "%s not in the neighbour list yet" % w["cell"], now)
             elif guard["nr_back"] >= NR_BACK_MIN:
                 todo[k] = w["cell"]; whys.append("%s restored - 5G served by it again for %d min" % (w["cell"], guard["nr_back"]))
+            else:
+                wait_note("nr", w, "5G not served by it again yet (%d min)" % guard["nr_back"], now)
     if not todo: return None
-    for k in todo: state({KEYS[k]: dict(want[k], state="active", since=now)})
+    for k in todo: guard["wait"].pop(k, None); state({KEYS[k]: dict(want[k], state="active", since=now)})
     restore = any(want[k].get("state") == "released" for k in todo)
     lock_do(todo, "; ".join(whys))
     return "restore" if restore else "set"
+
+
+def wait_note(kind, w, why, now):
+    """A released lock whose cell is not back yet: say so once an hour. Without this the events stay silent from the release until
+    the restore (2026-11-03: 340@100 released by LOCK_PAUSE at 00:50, back in the neighbours 08:18, restored 08:24 - nothing in
+    between, so the morning status could not explain the wait)."""
+    if now - (guard["wait"].get(kind) or 0) < 3600: return
+    guard["wait"][kind] = now
+    log("%s lock %s: restore pending - %s" % (kind, w["cell"], why))
+    event({"event": "lock restore pending", "to": "%s %s" % (kind, w["cell"]), "why": why})
 
 
 def lock_request(cell, kind="lte"):

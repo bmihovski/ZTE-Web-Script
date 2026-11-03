@@ -25,6 +25,11 @@ assert guard.lock_guard(row(cell="3350/340"), T) == "release"; wait()
 w = common.state()["lte_lock"]; assert locks() == ["434@1550", "0@0"] and w["state"] == "released" and "not on 1550/434 for 10 min" in w["reason"], w
 assert guard.lock_guard(row(cell="3350/340"), T + 600) is None                                # before the retry time
 assert guard.lock_guard(row(cell="3350/340", nb="3350/340:-92"), T + 4000) is None            # retry time, but the cell is not visible
+evs = lambda: [e for e in store.rows(DATA, "events") if e.get("event") == "lock restore pending"]
+assert evs() and evs()[-1]["to"] == "lte 434@1550" and "neighbour list" in evs()[-1]["why"], evs()[-1]   # the wait is traceable
+n = len(evs())
+assert guard.lock_guard(row(cell="3350/340", nb="3350/340:-92"), T + 4060) is None and len(evs()) == n     # once an hour, not per minute
+assert guard.lock_guard(row(cell="3350/340", nb="3350/340:-92"), T + 7700) is None and len(evs()) == n + 1   # an hour later: again
 assert guard.lock_guard(row(cell="3350/340"), T + 4000) == "restore"; wait()                   # back in the neighbour list
 assert locks()[-1] == "434@1550" and common.state()["lte_lock"]["state"] == "active"
 for i in range(2): assert guard.lock_guard(row(cell="")) is None             # no service ...
@@ -66,7 +71,8 @@ C = zdev.CI; monitor.sample({C + "CurrentAccessTechnology": "None", C + "LTE_EAR
 h = brain.HIST[-1]; assert h["lte_cell"] == "" and h["lte_sinr"] == "" and h["lte_rsrp"] == "", h
 import csv; from keeper import store
 ev = [e["event"] for e in store.rows(DATA, "events")]; print(ev)
-assert ev == ["lte lock 434@1550", "lte lock removed", "lte lock 434@1550", "lte lock removed", "lte lock removed", "lte lock 340@100 + 5g lock 534@636576",
+assert ev == ["lte lock 434@1550", "lte lock removed", "lock restore pending", "lock restore pending", "lte lock 434@1550",
+              "lte lock removed", "lte lock removed", "lte lock 340@100 + 5g lock 534@636576",
               "5g lock removed", "5g lock 534@636576", "5g lock removed", "lte lock removed", "lte lock 340@100 still set",
               "lte lock 340@100 missing", "lte lock 340@100", "lte lock removed"], ev
 print("OK test_guard")

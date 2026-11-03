@@ -42,7 +42,9 @@ at `/docs`.
 - `POST /lte-lock?cell=PCI@EARFCN|none` (guarded LTE anchor) and `POST /nr-lock?cell=PCI@ARFCN|none` (guarded 5G cell). The guard
   releases a lock when its cell is lost, restores it when it is back (idle only, `LOCK_RETRY_H`), and caps lock reboots
   (`LOCK_MAX_REBOOTS_DAY`). `LOCK_PAUSE` releases the LTE lock before a nightly window and restores it after (the operator switches
-  the B1 cell off at night).
+  the B1 cell off at night). A released lock whose cell is not back yet logs `lock restore pending` (event + log, at most once an
+  hour), so the events explain a long wait instead of staying silent between the release and the restore (2026-11-03: released
+  00:50, cell back 08:18, restored 08:24).
 - On the ZTE a lock is applied at boot only: one lock change = one `SetParameterValues` + reboot, and both legs (LTE + 5G) go in
   the same change. The LTE lock value format is learned once (`LockLTECell`), otherwise the web page is the fallback.
 - On the ATL a lock is a RouterOS script with `AT+QNWLOCK` (`common/4g` / `common/5g`) and an LTE-interface restart, no CPE

@@ -49,6 +49,9 @@ Durable project memory. Read this first; the details live in the keeper docs.
   cells; the anchors are resolved once at the start (a mid-run re-resolve would make steps cross-anchor). A pair may move the LTE
   lock only to a daytime-measured anchor not clearly worse than the current lock (call-ready -5 pp, anchor SINR -3 dB) - else the
   5G cell alone is applied and the refusal is reported. The refill only enriches known cells (never resurrects a forgotten one). Never call a cell "unreachable" from a test pinned to an anchor it was never served under.
+- **A released lock waiting for its cell is traceable:** the guard logs/events `lock restore pending` at most hourly while the
+  cell is not back (no Telegram - the event name is outside the alert rules). LOCK_PAUSE releases at 00:50 and restores when B1
+  returns; the wait is expected, not a bug.
 - **One lock change = one reboot** on the ZTE (both legs in one SetParameterValues); the ATL uses one script, no CPE reboot.
 - **Per device, never mixed:** DB rows carry `device`; `store.rows` defaults to the active `DEVICE`; state/cell files are per device.
 - The keeper applies the antenna mode once per boot; a superseded boot worker stands down (generation checked after the wait).
