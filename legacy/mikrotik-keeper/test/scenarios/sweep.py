@@ -165,4 +165,13 @@ try:
     assert r["aborted"] and m.st["sets"][-1][1] == "LOGOUT", (r, m.st["sets"][-3:])
 finally:
     antennas._measure = real_measure
+# a mid-sweep exception still frees the ZTE's single web session (posts LOGOUT) - no browser lockout (#18 residual)
+import keeper.devices.zte.antennas as _ant
+_rm = _ant._measure
+_ant._measure = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+m.st["sets"].clear()
+assert antennas.antenna_sweep("manual") is None, "a failing sweep returns None"
+assert any(x[1] == "LOGOUT" for x in m.st["sets"]), ("no LOGOUT after a mid-sweep error", m.st["sets"])
+assert antennas.sweep_st["running"] is False
+_ant._measure = _rm
 print("OK test_sweep")
