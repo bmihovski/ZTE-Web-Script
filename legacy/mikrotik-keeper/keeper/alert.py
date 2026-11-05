@@ -6,6 +6,7 @@ import json, os, re, threading, time, urllib.parse, urllib.request
 
 TOKEN, CHAT = os.environ.get("TG_TOKEN", ""), os.environ.get("TG_CHAT", "")
 GAP = float(os.environ.get("ALERT_GAP_MIN", "30")) * 60
+CALL_REBOOT_GRACE_S = float(os.environ.get("CALL_REBOOT_GRACE_S", "900"))   # no call-risk alarm in the first 15 min after a modem reboot/deploy - the reconnect is not a call problem
 _last, sent, _retry = {}, [], []
 _send_lock = threading.Lock()          # serialise actual sends: no interleaved "telegram alert failed" prints during a reboot storm          # _retry: messages that failed (no internet, modem rebooting) - sent again later
 # events (keeper.event "event" field) worth a message: regex -> alert kind
@@ -62,6 +63,10 @@ def check_calls(device, rows, now=None):
     busy = [r for r in rows[-15:] if r.get("call_ok") in ("0", "1")]
     if len(busy) >= 10 and sum(r["call_ok"] == "1" for r in busy) / len(busy) < 0.8:
         last = busy[-1]
+        try: up = float(last.get("uptime_s"))
+        except (TypeError, ValueError): up = None
+        if up is not None and up < CALL_REBOOT_GRACE_S:
+            return False                       # fresh reboot/deploy: the reconnect minutes are not a call problem
         return send("%s: calls at risk - %d of the last %d min not call-ready (latency p95 %s ms, jitter %s ms, loss %s %%; 5G %s, LTE %s)"
                     % (device, sum(r["call_ok"] == "0" for r in busy), len(busy), last.get("lat_p95"), last.get("jitter_ms"),
                        last.get("loss_pct"), last.get("nr_cell"), last.get("lte_cell")), "calls", now)
@@ -76,6 +81,8 @@ if __name__ == "__main__":          # self-check (nothing is sent: _post replace
     rows = [{"call_ok": "0" if i % 2 else "1", "lat_p95": "180", "jitter_ms": "40", "loss_pct": "0", "nr_cell": "no5G", "lte_cell": "100/340"} for i in range(15)]
     assert check_calls("ZTE", rows) and not check_calls("ZTE", rows)
     assert not check_calls("ATL", [{"call_ok": "1"}] * 15)
+    assert not check_calls("ZTE", [dict(r, uptime_s="120") for r in rows], now=2_000_000_000)    # modem up 120 s (deploy/reboot) -> suppressed
+    assert check_calls("ZTE", [dict(r, uptime_s="3600") for r in rows], now=2_000_000_000)       # modem up 1 h -> real call-risk still fires
     fails = []
     def _post(text):                                                    # first try fails (no internet), the retry goes out
         if not fails: fails.append(text); _retry.append((900.0, text)); return

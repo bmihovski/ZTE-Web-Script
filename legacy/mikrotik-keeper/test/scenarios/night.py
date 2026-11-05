@@ -80,4 +80,20 @@ rows = [r for r in store.rows(DATA, "lock_tests") if r.get("run") == run_id]
 assert rows and all(r.get("mode") == "night" for r in rows) and rows[0]["lock"] == "340@100" and rows[0]["note"].startswith("lock not set"), rows
 assert brain.night_best()[0] == run_id and brain.night_best()[1] is None, (brain.night_best()[0], run_id)
 assert reports and "night screen" in reports[-1] and "baseline was not measured" in reports[-1], reports[-1]
+# repeated night no-inform on a cell (CETIN powers it down overnight) -> skip it at night for NIGHT_NOINFORM_DAYS, so the 2 a.m.
+# run stops burning a reboot on it every night (2026-11-04: 201/236/202@1550 each failed "no boot inform" three nights running)
+NX = time.time(); store.db(DATA).execute("DELETE FROM rec WHERE kind = 'lock_tests'")
+t1 = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(NX - 86400)); t2 = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(NX - 2 * 86400))
+for tt in (t1, t2): store.add(DATA, "lock_tests", {"time": tt, "lock": "434@1550", "mode": "night", "minutes": 0, "note": "not measured: no boot inform within 420 s"})
+store.add(DATA, "lock_tests", {"time": t1, "lock": "100@1550", "mode": "night", "minutes": 0, "note": "no boot inform within 420 s"})   # only one night -> not skipped yet
+assert locktest._night_unreachable(NX) == {"434@1550"}, locktest._night_unreachable(NX)
+for _ in range(2): store.add(DATA, "lock_tests", {"time": t1, "lock": "264@100", "mode": "night", "minutes": 12, "note": ""})           # measured -> no vote
+assert "264@100" not in locktest._night_unreachable(NX)
+old = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(NX - 10 * 86400))
+for _ in range(2): store.add(DATA, "lock_tests", {"time": old, "lock": "900@1550", "mode": "night", "minutes": 0, "note": "no boot inform within 420 s"})
+assert "900@1550" not in locktest._night_unreachable(NX)                                                                              # outside the window -> retry
+common.state({"lte_lock": {"cell": "340@100", "state": "active"}}); reg["1550/434"].update(last=NX, seen_min=500, rsrp=-86)
+assert "434@1550" not in locktest.night_candidates(NX), locktest.night_candidates(NX)                                                  # the only B3, but skipped
+print("OK test_night_noinform_skip")
+
 print("OK test_night")

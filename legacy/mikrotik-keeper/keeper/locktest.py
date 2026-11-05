@@ -26,6 +26,7 @@ Env: LOCKTEST_SETTLE_S (180), LOCKTEST_MEASURE_MIN (12), LOCKTEST_BOOT_WAIT_S (4
 LOCKTEST_READY_TIMEOUT_S (180 - wait for the CPE web), LOCKTEST_ONLINE_TIMEOUT_S (180 - wait for stable probes),
 LOCKTEST_MAX_ANCHOR_SWITCHES (0), LOCKTEST_MIN_ANCHOR_PCT (80), LOCKTEST_MAX_GAP_MIN (3),
 NIGHT_SCREEN (02:00-05:00, off), NIGHT_MAX (3), NIGHT_IDLE_MIN (30), NIGHT_RETEST_DAYS (7), NIGHT_CELLS (always re-check, e.g. 340@3350).
+NIGHT_NOINFORM_SKIP (2) / NIGHT_NOINFORM_DAYS (3): after N night no-informs skip the cell for D days (CETIN powers it down overnight).
 """
 import collections, re, threading, time
 
@@ -49,6 +50,8 @@ LT_COLS = ["time", "rat", "lock", "minutes", "on_target_pct", "anchor", "site", 
 NIGHT = E("NIGHT_SCREEN", "02:00-05:00")
 NIGHT_MAX, NIGHT_IDLE_MIN = int(E("NIGHT_MAX", "3")), int(E("NIGHT_IDLE_MIN", "30"))
 NIGHT_RETEST_DAYS = float(E("NIGHT_RETEST_DAYS", "7"))
+NIGHT_NOINFORM_SKIP = int(E("NIGHT_NOINFORM_SKIP", "2"))    # skip a cell at night after this many recent night no-informs ...
+NIGHT_NOINFORM_DAYS = float(E("NIGHT_NOINFORM_DAYS", "3"))  # ... within this many days (CETIN powers some cells down overnight), then retry
 NIGHT_CELLS = [c for c in E("NIGHT_CELLS", "").replace(" ", "").split(",") if c]   # always re-check these (home set), same weekly throttle
 NIGHT_BANDS = ("B1", "B3", "B7")                       # B8 / B20 / B28 measured worse here: far, loaded, n28 5G (2026-10-27)
 lt = {"running": None, "plan": [], "done": [], "align": False, "waiting": False, "heading": "", "fixed": "", "go": threading.Event(),
@@ -500,12 +503,25 @@ def _dead_cells(now):
             and (brain.f(r.get("minutes")) or 0) > 0}
 
 
+def _night_unreachable(now):
+    """Cells that gave no boot inform on >= NIGHT_NOINFORM_SKIP of the last NIGHT_NOINFORM_DAYS nights - CETIN powers the cell
+    down overnight, so the lock never attaches and the boot inform never comes. Skip it at night (a 2 a.m. reboot for nothing)
+    until the window passes, then try again (the night map changes). Soft and night-only: unlike _dead_cells it is not a 30-day
+    blacklist and a measured row (minutes > 0) is no vote here - only repeated no-informs are."""
+    cut = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - NIGHT_NOINFORM_DAYS * 86400))
+    n = {}
+    for r in store.rows(DATA, "lock_tests", cut):
+        if r.get("mode") == "night" and (brain.f(r.get("minutes")) or 0) == 0 and "no boot inform" in (r.get("note") or ""):
+            n[r["lock"]] = n.get(r["lock"], 0) + 1
+    return {c for c, k in n.items() if k >= NIGHT_NOINFORM_SKIP}
+
+
 def night_candidates(now):
     """Strong cells of the main bands seen in the last 6 h, not the lock, not tested in NIGHT_RETEST_DAYS - strongest first."""
     lock = (state().get("lte_lock") or {}).get("cell")
     cut = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - NIGHT_RETEST_DAYS * 86400))
     tested = {r["lock"] for r in store.rows(DATA, "lock_tests", cut) if r.get("mode") != "cut" and (brain.f(r.get("minutes")) or 0) > 0}
-    reg = brain.REG["lte"]; dead = _dead_cells(now); out = []
+    reg = brain.REG["lte"]; dead = _dead_cells(now) | _night_unreachable(now); out = []
     for k, e in reg.items():
         if e.get("band") not in NIGHT_BANDS or now - e.get("last", 0) > 6 * 3600 or e.get("seen_min", 0) < 60 or e.get("rsrp") is None: continue
         best = max(x.get("rsrp") or -999 for x in reg.values() if x.get("band") == e["band"])
@@ -530,7 +546,7 @@ def maybe_night(row, now=None):
     lockcell = w["cell"] if w.get("state") == "active" else None
     cut = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - NIGHT_RETEST_DAYS * 86400))
     tested = {r["lock"] for r in store.rows(DATA, "lock_tests", cut) if r.get("mode") != "cut" and (brain.f(r.get("minutes")) or 0) > 0}
-    extra = [c for c in NIGHT_CELLS if c != lockcell and c not in tested and c not in _dead_cells(now)]   # home-set cells due for a re-check
+    extra = [c for c in NIGHT_CELLS if c != lockcell and c not in tested and c not in _dead_cells(now) and c not in _night_unreachable(now)]   # home-set cells due for a re-check
     if not cands and not extra:
         log("night screen: no new candidates"); return False
     plan = [lockcell or "none"] + extra + cands
