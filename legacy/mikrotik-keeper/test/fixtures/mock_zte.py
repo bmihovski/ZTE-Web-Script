@@ -8,7 +8,8 @@ script = []   # (from_s, fields) timeline relative to start
 T0 = time.time()
 def fields():
     el = time.time() - T0; f = {"network_type": "ENDC", "nr5g_pci": "216", "nr5g_action_channel": "636576", "Z5g_SINR": "9.5", "Z5g_rsrp": "-79",
-        "5g_rx0_rsrp": "-83", "5g_rx1_rsrp": "-88", "lte_pci": "154", "wan_active_channel": "3350", "lte_snr": "1.4", "nr5g_cell_lock": "", "Z5g_rssi": "-74.0", "lte_rssi": "-55"}
+        "5g_rx0_rsrp": "-83", "5g_rx1_rsrp": "-88", "lte_pci": "154", "wan_active_channel": "3350", "lte_snr": "1.4", "nr5g_cell_lock": "", "Z5g_rssi": "-74.0", "lte_rssi": "-55",
+        "modem_main_state": "modem_init_complete", "network_provider": "Yettel BG", "lte_rsrp": "-90"}
     for t, upd in script:
         if el >= t: f.update(upd)
     return f

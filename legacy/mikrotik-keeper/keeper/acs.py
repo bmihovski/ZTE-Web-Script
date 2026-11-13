@@ -8,7 +8,7 @@ Env: PORT (7557), INFORM_INTERVAL (60), FAST_INTERVAL (10), MIN_SAMPLE_S (55 - o
 """
 import re, threading, time, xml.etree.ElementTree as ET
 
-from keeper import brain, common, devices, monitor
+from keeper import brain, common, devices, guard, monitor
 from keeper.common import E, event, log, raw, stamp
 
 PORT, INTERVAL = int(E("PORT", "7557")), int(E("INFORM_INTERVAL", "60"))
@@ -21,6 +21,7 @@ ENV = ('<?xml version="1.0" encoding="UTF-8"?>\n<soap-env:Envelope xmlns:soap-en
        '<cwmp:ID soap-env:mustUnderstand="1">{id}</cwmp:ID></soap-env:Header><soap-env:Body>{body}</soap-env:Body></soap-env:Envelope>')
 lock = threading.Lock()                 # one CWMP message at a time
 st = {"ns": "urn:dslforum-org:cwmp-1-0", "step": None, "last_inform": 0.0, "boots": 0, "n": 0, "host": None}
+hooks = {"read": [], "values": []}         # extra names for the read / value listeners (keeper.captest)
 tr = {"writes": [], "sent": [], "ok": None, "ev": threading.Event(), "vals_n": 0, "last_sample": -1e9}      # monotonic times: a clock jump changes nothing
 common.register_busy("tr069 write", lambda: tr["writes"])
 
@@ -51,6 +52,12 @@ def gpv(names):
     """GetParameterValues body."""
     return ('<cwmp:GetParameterValues><ParameterNames soap-enc:arrayType="xsd:string[%d]">%s</ParameterNames></cwmp:GetParameterValues>'
             % (len(names), "".join("<string>%s</string>" % esc(n) for n in names)))
+
+
+def gpn(path, next_level=False):
+    """GetParameterNames body: the names under `path` (next_level=False: the whole subtree)."""
+    return ('<cwmp:GetParameterNames><ParameterPath>%s</ParameterPath><NextLevel>%s</NextLevel></cwmp:GetParameterNames>'
+            % (esc(path), "true" if next_level else "false"))
 
 
 def spv(pairs):
@@ -103,7 +110,7 @@ def handle(body):
     if not body.strip():
         if st["step"] == "inform":
             st["step"] = "read"
-            return gpv(dev.READ), False
+            return gpv(dev.READ + [n for h in hooks["read"] for n in h()]), False
         return None, False
     msg = next(iter(find(ET.fromstring(body), "Body")[0]))
     kind = local(msg.tag)
@@ -130,6 +137,7 @@ def handle(body):
     if kind == "GetParameterValuesResponse":
         vals = {text(p, "Name"): text(p, "Value") for p in find(msg, "ParameterValueStruct")}
         extra = dev.on_values(vals)                               # driver first: e.g. the ZTE's own lock values for the guard
+        for h in hooks["values"]: h(vals)                   # e.g. a running capacity test's result
         tr["vals_n"] += 1                                         # after on_values: wait_informs() callers then see this read's values
         if time.monotonic() - tr["last_sample"] >= MIN_SAMPLE_S:      # one sample a minute, also in fast mode
             tr["last_sample"] = time.monotonic(); monitor.sample(vals)
@@ -144,6 +152,9 @@ def handle(body):
         if want:
             st["step"] = "set"
             return spv(want), False
+        return reboot_if_pending()
+    if kind == "GetParameterNamesResponse":                        # the driver's own query (pending_rpc), e.g. the ZTE's TR-143 probe
+        dev.on_rpc(kind, msg, st["step"])
         return reboot_if_pending()
     if kind == "SetParameterValuesResponse":
         if tr["sent"]: tr["ok"] = True; tr["sent"] = []; tr["ev"].set()
@@ -202,11 +213,17 @@ def serve(handler, req):
 
 def watchdog():
     """Thread: warn once if the modem stops informing (e.g. its ACS URL was moved away from us)."""
-    warned = False
+    warned = False; t0 = time.monotonic()
     while True:
         time.sleep(60)
-        quiet = time.monotonic() - st["last_inform"]
-        if st["last_inform"] and quiet > 5 * INTERVAL + 300 and not common.busy():     # a lock test reboots the modem on purpose: not a real outage
+        quiet = time.monotonic() - (st["last_inform"] or t0)          # never informed since the keeper started counts too (2026-11-13)
+        try:
+            brain.note_health()
+            dev = devices.current()
+            if not guard.offline_release(quiet) and not guard.lte_held() and not common.busy() and hasattr(dev, "offline_health"):
+                brain.offline_decide(quiet, dev.offline_health, dev.offline_reboot)     # no lock: reboot only on the modem's evidence
+        except Exception as e: log("offline check failed: %r" % e)
+        if quiet > 5 * INTERVAL + 300 and not common.busy():     # a lock test reboots the modem on purpose: not a real outage
             if not warned:
                 log("no inform from the %s for %d s - check its TR-069 Server URL" % (devices.current().NAME, quiet)); event({"event": "no inform"})
             warned = True

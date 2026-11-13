@@ -7,7 +7,8 @@ Never touches the network mode (Yettel = NSA only), never locks anything on its 
 (it recommends them). Its only own action is a TR-069 reboot to re-pick the 5G cell, with hard limits.
 
 Env: AUTO (off | dryrun | on, default dryrun), MIN_SINR (3), BAD_MIN (15), NO5G_MIN (10), NOSVC_MIN (5), PREFERRED_NR (e.g. 636576/534),
-     MAX_REBOOTS_DAY (3), REBOOT_GAP_H (2), IDLE_DOWN_BYTES (250000), IDLE_UP_BYTES (62500), BUSY_UP_BYTES (125000) - bytes/s,
+     MAX_REBOOTS_DAY (3), REBOOT_GAP_H (2) - quality reboots; outage reboots (no service / no data / offline) need the modem's own
+     evidence of a fault and use OUTAGE_BACKOFF_MIN (15,30,60,120,240), OUTAGE_MAX_REBOOTS_DAY (6), DATA_DOWN_MIN (10), IDLE_DOWN_BYTES (250000), IDLE_UP_BYTES (62500), BUSY_UP_BYTES (125000) - bytes/s,
      LAT_TARGETS (1.1.1.1:443,8.8.8.8:443; off = no probe), CALL_P95_MS (150), CALL_JITTER_MS (30), CALL_LOSS_PCT (3.4 = 1 of 30 probes),
      INTTEST_URL (https://speed.cloudflare.com/__down?bytes=2000000; off = no download), INTTEST_MB (2) - the lock test's load generator,
      ONLINE_STABLE (5) - consecutive successful probes before a lock-test step measures,
@@ -23,6 +24,11 @@ MIN_SINR, BAD_MIN, NO5G_MIN = float(E("MIN_SINR", "3")), int(E("BAD_MIN", "15"))
 NOSVC_MIN = int(E("NOSVC_MIN", "5"))      # no mobile service at all this long -> reboot (a locked cell is released by the lock guard after 3)
 PREFERRED = [c for c in E("PREFERRED_NR", "").split(",") if c]
 MAX_REBOOTS_DAY, REBOOT_GAP = int(E("MAX_REBOOTS_DAY", "3")), float(E("REBOOT_GAP_H", "2")) * 3600
+OUTAGE_BACKOFF = [float(x) * 60 for x in E("OUTAGE_BACKOFF_MIN", "15,30,60,120,240").split(",")]   # gap after the 1st, 2nd, ... outage reboot
+OUTAGE_MAX_DAY = int(E("OUTAGE_MAX_REBOOTS_DAY", "6"))
+DATA_DOWN_MIN = int(E("DATA_DOWN_MIN", "10"))   # registered with signal but no data connection this long = the modem's fault
+SIM_FAULT = ("none", "blocked", "error")         # TR-069 USIM.Status values that are a SIM fault (Valid / Available are fine)
+outage = {"times": [], "healthy_since": None, "asked": 0.0}   # outage reboots since the link was last healthy for an hour
 # the ZTE's rate counters (down_bps / up_bps columns) are BYTES per second: the busiest minute read 25,024,504 = 200 Mbit/s, the plan cap.
 # idle: < 2 Mbit/s down and < 0.5 Mbit/s up; busy: >= 1 Mbit/s up (a Teams video call / screen share sends ~1-2.5 Mbit/s)
 IDLE_DOWN, IDLE_UP, BUSY_UP = float(E("IDLE_DOWN_BYTES", "250000")), float(E("IDLE_UP_BYTES", "62500")), float(E("BUSY_UP_BYTES", "125000"))
@@ -298,6 +304,9 @@ def decide(row, events_log, now=None):
     last = recent[-NOSVC_MIN:] if len(recent) >= NOSVC_MIN else []
     if last and all(not r.get("lte_cell") for r in last):                  # 2026-10-28 01:03: 10 min without service, a reboot fixed it
         reason = "no mobile service for %d min" % NOSVC_MIN
+    last = list(HIST)[-DATA_DOWN_MIN:]
+    if not reason and len(last) >= DATA_DOWN_MIN and all(r.get("lte_cell") and row_health(r)["data"] is False for r in last):
+        reason = "no data connection for %d min" % DATA_DOWN_MIN
     last = [r for r in list(HIST)[-60:] if not idle(r)][-NO5G_MIN:]          # only minutes with traffic: idle = 5G released on purpose
     if not reason and len(last) >= NO5G_MIN and all(r.get("nr_cell") == "no5G" for r in last):
         reason = "no 5G during %d min with traffic" % NO5G_MIN
@@ -311,14 +320,18 @@ def decide(row, events_log, now=None):
     if not reason:
         return None
     done = [a for a in list(ACTIONS) if a[3] == "on"]
-    blocked = None
-    if done and now - done[-1][0] < REBOOT_GAP:
+    blocked, outage_r = None, reason.startswith(("no mobile service", "no data connection"))
+    if outage_r:                                     # an outage: reboot only on the modem's own evidence of a fault, with the outage backoff
+        h = row_health(row); dev = device_fault(h)
+        if dev: reason = "%s - device: %s" % (reason, dev); blocked = outage_gate(now)
+        else: blocked = "no device evidence - the provider's outage? (%s)" % h["detail"]
+    elif done and now - done[-1][0] < REBOOT_GAP:
         blocked = "last reboot %d min ago" % ((now - done[-1][0]) / 60)
     elif len([a for a in done if now - a[0] < 86400]) >= MAX_REBOOTS_DAY:
         blocked = "%d reboots in 24 h already" % MAX_REBOOTS_DAY
-    elif (f(row.get("down_bps")) or 0) > IDLE_DOWN or (f(row.get("up_bps")) or 0) > IDLE_UP:
+    if not blocked and ((f(row.get("down_bps")) or 0) > IDLE_DOWN or (f(row.get("up_bps")) or 0) > IDLE_UP):
         blocked = "link busy (%.1f/%.1f Mbit/s down/up) - maybe a call" % ((f(row.get("down_bps")) or 0) * 8e-6, (f(row.get("up_bps")) or 0) * 8e-6)
-    key = reason.split(" for ")[0] + (blocked or "")
+    key = reason.split(" for ")[0] + (blocked or "").split(" (")[0]
     if now - ctx["last_hint"].get(key, 0) < 1800:          # same note at most every 30 min
         return None
     ctx["last_hint"][key] = now
@@ -328,11 +341,93 @@ def decide(row, events_log, now=None):
     if AUTO == "on":
         ctx["pending"] = "reboot"; ctx["reboot_from"] = row["nr_cell"]
         ACTIONS.append((now, "reboot", reason, "on"))
+        if outage_r: outage["times"].append(now)
         events_log({"event": "reboot queued", "to": reason})
     else:
         ACTIONS.append((now, "reboot", reason, "dryrun"))
         events_log({"event": "would reboot (dryrun)", "to": reason})
     return reason
+
+
+# ---------- outages: reboot only on the modem's own evidence, with a backoff ----------
+def conn_up(v):
+    """Data connection state: 'ppp_connected' -> True, 'ppp_disconnected' / 'ppp_connecting' -> False, '' -> None (unknown)."""
+    v = (v or "").lower()
+    return None if not v else (v.endswith("connected") and "disconnected" not in v)
+
+
+def row_health(r):
+    """A TR-069 sample -> the modem's own report: sim / registered / signal / data (True, False or None = unknown) + detail."""
+    sim, conn, net = r.get("sim") or "", r.get("conn") or "", r.get("net") or ""
+    return {"sim": None if not sim else sim.lower() not in SIM_FAULT, "registered": bool(r.get("lte_cell") or net),
+            "signal": f(r.get("lte_rsrp")) is not None or f(r.get("nr_rsrp")) is not None, "data": conn_up(conn),
+            "detail": "SIM %s, network %s, cell %s, RSRP %s, %s" % (sim or "?", net or "?", r.get("lte_cell") or "none",
+                                                                  r.get("lte_rsrp") or "?", conn or "?")}
+
+
+def device_fault(h):
+    """The modem's evidence that IT failed: a SIM / modem fault, or registered with signal but no data connection (a stuck data
+    session). None = no device evidence (no cells, not registered, unknown) - the provider's outage, a reboot would not help."""
+    if h.get("sim") is False: return "SIM / modem not ready"
+    if h.get("registered") and h.get("signal") and h.get("data") is False: return "registered with signal but no data connection"
+    return None
+
+
+def outage_gate(now=None):
+    """Outage-reboot backoff: 15 min, 30 min, 1 h, 2 h, 4 h after the previous one (the streak resets after an hour of working
+    internet - note_health), at most OUTAGE_MAX_DAY a day. None = may reboot, else why not."""
+    now = now or time.time(); t = [x for x in outage["times"] if now - x < 86400]
+    if len(t) >= OUTAGE_MAX_DAY: return "%d outage reboots in 24 h already" % OUTAGE_MAX_DAY
+    if t:
+        gap = OUTAGE_BACKOFF[min(len(t), len(OUTAGE_BACKOFF)) - 1]
+        if now - t[-1] < gap: return "backoff: %d min after the last outage reboot (%d so far)" % (gap / 60, len(t))
+    return None
+
+
+def no_internet(now=None, window=120):
+    """Every latency probe of the last `window` s failed (and there were >= 10). False without a probe (LAT_TARGETS=off)."""
+    now = now or time.time(); pts = [x for x in list(lat_buf) if now - x[0] <= window]
+    return bool(TARGETS) and len(pts) >= 10 and all(x[1] is None for x in pts)
+
+
+def note_health(now=None):
+    """Watchdog, every minute: an hour of working internet (>= 80 % of the probes) resets the outage backoff streak."""
+    now = now or time.time(); pts = [x for x in list(lat_buf) if now - x[0] <= 120]
+    if pts and sum(x[1] is not None for x in pts) >= 0.8 * len(pts):
+        outage["healthy_since"] = outage["healthy_since"] or now
+        if now - outage["healthy_since"] >= 3600: outage["times"] = []
+    else:
+        outage["healthy_since"] = None
+
+
+def _held(now, key, why):
+    if now - ctx["last_hint"].get(key, 0) >= 1800:                     # same note at most every 30 min
+        ctx["last_hint"][key] = now; common.log("reboot held: " + why); common.event({"event": "reboot held", "to": why})
+    return "held"
+
+
+def offline_decide(quiet_s, health, reboot, now=None):
+    """Watchdog, every minute, no LTE lock held: no inform for DATA_DOWN_MIN and no internet. After a boot without data the ZTE
+    never starts TR-069 (its client is bound to the WAN IP - 2026-11-13), so no samples and no decide(): ask the modem itself
+    (`health()`: its LAN web page; None = the page does not answer) every 5 min, and reboot (`reboot()`: the web page too) only on
+    its evidence of a fault, with the outage backoff. Returns 'reboot' / 'held' / None."""
+    now = now or time.time()
+    if AUTO == "off" or quiet_s < DATA_DOWN_MIN * 60 or ctx["pending"] or ctx.get("hold") or not no_internet(now): return None
+    if now - outage["asked"] < 300: return None
+    outage["asked"] = now
+    h = health()
+    if h is None: return _held(now, "offline-noweb", "no inform, no internet and the modem's web page does not answer - nothing to do from here")
+    dev = device_fault(h)
+    if not dev: return _held(now, "offline-provider", "no inform, no internet, no device evidence - the provider's outage? (%s)" % h.get("detail", "no web login"))
+    reason = "offline %d min - device: %s (%s)" % (quiet_s // 60, dev, h.get("detail", ""))
+    blocked = outage_gate(now)
+    if blocked: return _held(now, "offline-" + dev + blocked.split(" (")[0], "%s - %s" % (reason, blocked))
+    if AUTO != "on":
+        ACTIONS.append((now, "reboot", reason, "dryrun")); common.event({"event": "would reboot (dryrun)", "to": reason}); return "held"
+    reboot()
+    ACTIONS.append((now, "reboot", reason, "on")); outage["times"].append(now)
+    common.log("reboot over the web page: %s" % reason); common.event({"event": "reboot queued", "to": reason + " (web page)"})
+    return "reboot"
 
 
 def explain_switch(row):

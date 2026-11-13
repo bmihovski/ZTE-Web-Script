@@ -8,6 +8,7 @@ Latency = the keeper's own probe (brain.lat_buf: TCP connect to 1.1.1.1 / 8.8.8.
 Env: SQM_URL (http://192.168.6.1/rest; off when empty), SQM_USER, SQM_PASS, SQM_QUEUE (sqm), SQM_IFACE (ether5 = the WAN),
      SQM_MIN_UP / SQM_MAX_UP / SQM_MIN_DOWN / SQM_MAX_DOWN (Mbit/s: 5 / 26 / 20 / 150 here), SQM_DELAY_MS (15), SQM_TICK (10),
      SQM_INSECURE=1 only if the router's HTTPS certificate is self-signed (LAN only),
+     SQM_CUT_PROOF (3) / SQM_CUT_COOL_S (600): see earn_keep(),
      SQM_DOWN_HOURS ("Mon-Fri 09:00-18:00": shape the download only then - outside it the download is unlimited, full speed and no
      CAKE work for the CPU; empty = always). The upload is always shaped: cheap, and the biggest gain for calls.
 A TR-069 cell/RAT/boot change rebases the delay baseline once (a new cell has a different round trip; without it a slower cell
@@ -22,7 +23,9 @@ URL, USER, PASS, QUEUE, IFACE = E("SQM_URL", ""), E("SQM_USER", ""), E("SQM_PASS
 MIN = {"up": float(E("SQM_MIN_UP", "5")), "down": float(E("SQM_MIN_DOWN", "20"))}
 MAX = {"up": float(E("SQM_MAX_UP", "30")), "down": float(E("SQM_MAX_DOWN", "200"))}
 DELAY, TICK = float(E("SQM_DELAY_MS", "15")), float(E("SQM_TICK", "10"))
+CUT_PROOF, CUT_COOL = int(E("SQM_CUT_PROOF", "3")), float(E("SQM_CUT_COOL_S", "600"))   # cuts that must lower the delay / pause when they don't
 ERROR_WAIT_S = 300
+CEILING = [lambda d, now: MAX[d]]          # the ceiling now per direction (keeper.captest learns one per period of the day)
 DOWN_HOURS = E("SQM_DOWN_HOURS", "")
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 st = {"limit": None, "id": None, "last": None, "changes": 0, "error": None, "path_seen": 0.0}
@@ -61,7 +64,7 @@ def down_on(t=None):
     return day_ok and time_ok
 
 
-def step(limit, rate, delay):
+def step(limit, rate, delay, cap=None):
     """one decision. limit / rate: {"up": Mbit/s, "down": Mbit/s}; delay = ms above the idle baseline (None = no probe data)"""
     new = dict(limit)
     for d in ("up", "down"):
@@ -71,8 +74,43 @@ def step(limit, rate, delay):
             if delay is None or delay < DELAY: new[d] = limit[d] * 1.5     # ...and the link is calm -> climb back toward MAX, so the next burst isn't stuck at a low limit (a spike while idle isn't ours: leave it)
         elif delay is not None and delay > DELAY and load > 0.5: new[d] = limit[d] * 0.85
         elif delay is not None and delay < DELAY / 2 and load > 0.75: new[d] = limit[d] * 1.05
-        new[d] = round(min(MAX[d], max(MIN[d], new[d])), 1)
+        new[d] = round(min((cap or MAX)[d], max(MIN[d], new[d])), 1)
     return new
+
+
+def earn_keep(limit, new, delay, now):
+    """A cut must lower the latency. After CUT_PROOF cuts in a row in one direction with the delay not >= 20 % below the delay
+    before the first cut, the queue is not ours (it sits in the radio / operator buffers): back to the limit before the streak,
+    and no cuts in that direction for CUT_COOL s. Without this a download whose delay sits upstream slides 15 % a tick to the
+    floor (10-31: fq_codel at 120M of ~178 still added 58-80 ms) - throughput lost for no latency gain."""
+    for k in ("up", "down"):
+        s = st.setdefault("streak", {}).setdefault(k, {"n": 0})
+        cut = bool(limit[k]) and bool(new[k]) and new[k] < limit[k]
+        if cut and now < s.get("cool", 0): new[k] = limit[k]; continue             # cooling down: this direction is not cut
+        if not cut: s["n"] = 0; continue
+        if s["n"] == 0: s.update(d0=delay, lim0=limit[k])
+        s["n"] += 1
+        if s["n"] > CUT_PROOF and delay is not None and s.get("d0") is not None and delay > 0.8 * s["d0"]:
+            new[k] = s["lim0"]; s.update(n=0, cool=now + CUT_COOL); st["useless"] = st.get("useless", 0) + 1
+    return new
+
+
+def minute():
+    """The shaper over the last minute, for the sample (monitor.finish): limits now (Mbit/s, 0 = unlimited), the lowest limit,
+    the highest delay above idle, the highest rates the router saw, the busiest CPU core; then reset. {} while SQM is off."""
+    a, st["acc"] = st.get("acc"), {}
+    if not a or not st.get("limit"): return {}
+    r = lambda v: "" if v is None else round(v, 1)
+    return {"sqm_up": r(st["limit"]["up"]), "sqm_down": r(st["limit"]["down"]), "sqm_up_min": r(a.get("up_min")),
+            "sqm_down_min": r(a.get("down_min")), "sqm_delay": r(a.get("delay")), "sqm_rx": r(a.get("rx")), "sqm_tx": r(a.get("tx")),
+            "sqm_cpu": a.get("cpu", ""), "sqm_useless": st.get("useless", 0)}
+
+
+def _acc(new, rate, d, cpu):
+    a = st.setdefault("acc", {}); mx = lambda k, v: a.__setitem__(k, v if a.get(k) is None or (v is not None and v > a[k]) else a[k])
+    for k in ("up", "down"):
+        if new[k]: a[k + "_min"] = min(a.get(k + "_min") or new[k], new[k])
+    mx("delay", d); mx("rx", rate["down"]); mx("tx", rate["up"]); mx("cpu", max(cpu) if cpu else None)
 
 
 def delay_now(lat_buf, now, idle, rebase=False):
@@ -116,7 +154,7 @@ def tick(lat_buf, now=None, path_change=0.0):
     idle = all(rate[k] < 0.1 * (st["limit"][k] or MAX[k]) for k in rate)
     rebase = bool(path_change) and path_change > st.get("path_seen", 0) and now - path_change < 180
     if rebase: st["path_seen"] = path_change
-    d = delay_now(lat_buf, now, idle, rebase); new = step(st["limit"], rate, d)
+    d = delay_now(lat_buf, now, idle, rebase); new = earn_keep(st["limit"], step(st["limit"], rate, d, {k: CEILING[0](k, now) for k in MAX}), d, now)
     if rebase:                      # do not raise the limit on the rebase tick: let the next ticks see if the new path is calm
         for k in new:
             if st["limit"][k] and new[k] > st["limit"][k]: new[k] = st["limit"][k]
@@ -128,8 +166,9 @@ def tick(lat_buf, now=None, path_change=0.0):
     try: cpu = [int(c.get("load", 0)) for c in rest("GET", "/system/resource/cpu")]   # per core %, the price of CAKE
     except Exception: cpu = []
     if cpu: st["cpu_max"] = max(st.get("cpu_max", 0), max(cpu))
+    _acc(new, rate, d, cpu)
     st["last"] = {"time": time.strftime("%H:%M:%S"), "rate": rate, "delay_ms": None if d is None else round(d, 1), "limit": new,
-                  "cpu": cpu, "cpu_max_since_start": st.get("cpu_max")}
+                  "cpu": cpu, "cpu_max_since_start": st.get("cpu_max"), "useless_cut_streaks": st.get("useless", 0)}
     if any(new[k] != st["limit"][k] and (not new[k] or not st["limit"][k] or abs(new[k] - st["limit"][k]) >= 0.02 * st["limit"][k]) for k in new):
         fmt = lambda v: "%dk" % (v * 1000) if v else "0"    # 0 = unlimited
         rest("PATCH", "/queue/simple/%s" % st["id"], {"max-limit": "%s/%s" % (fmt(new["up"]), fmt(new["down"]))})
@@ -206,4 +245,23 @@ if __name__ == "__main__":          # self-check of the decision rule
     assert not [b for m, b in calls if m == "PATCH"], calls
     tick(load, now)                               # next tick: normal behaviour, and the same event is not rebased twice
     assert [b for m, b in calls if m == "PATCH"] == [{"max-limit": "30000k/150000k"}], calls
+    # a cut must lower the delay: 3 cuts with the delay still high -> back to the limit before the streak + 10 min cool-down
+    st.update(streak={}, useless=0); t = 5000.0; lim = {"up": 26.0, "down": 150.0}
+    for i in range(3):
+        n = earn_keep(lim, step(lim, {"up": 1, "down": lim["down"]}, 60), 60, t + i * 10)
+        assert n["down"] < lim["down"], (i, n); lim = n
+    n = earn_keep(lim, step(lim, {"up": 1, "down": lim["down"]}, 58), 58, t + 30)
+    assert n["down"] == 150.0 and st["useless"] == 1, n                                  # 4th cut, delay 58 vs 60: useless -> back
+    assert earn_keep(n, step(n, {"up": 1, "down": 150}, 60), 60, t + 40)["down"] == 150.0   # cooling: no cut
+    assert earn_keep(n, step(n, {"up": 1, "down": 150}, 60), 60, t + 700)["down"] == 127.5  # cool-down over: cuts again
+    st.update(streak={}); lim = {"up": 26.0, "down": 150.0}
+    for i, dl in enumerate((60, 40, 25)):                                                # cuts that work (60 -> 40 -> 25 -> 10)
+        lim = earn_keep(lim, step(lim, {"up": 1, "down": lim["down"]}, dl), dl, t + i * 10)
+    n = earn_keep(lim, step(lim, {"up": 1, "down": lim["down"]}, 16), 16, t + 30)
+    assert n["down"] < lim["down"] and st["useless"] == 1, n                             # 16 < 0.8 * 60: kept cutting
+    st.update(acc={}, limit={"up": 26.0, "down": 150.0})
+    _acc({"up": 26.0, "down": 140.0}, {"up": 2.0, "down": 130.0}, 12.0, [10, 40]); _acc({"up": 25.0, "down": 150.0}, {"up": 3.0, "down": 90.0}, 30.0, [5])
+    mm = minute(); assert mm["sqm_down_min"] == 140.0 and mm["sqm_up_min"] == 25.0 and mm["sqm_delay"] == 30.0 and mm["sqm_rx"] == 130.0 \
+        and mm["sqm_tx"] == 3.0 and mm["sqm_cpu"] == 40 and mm["sqm_down"] == 150.0, mm
+    assert minute() == {}                                                                # reset after reading
     print("OK sqm")

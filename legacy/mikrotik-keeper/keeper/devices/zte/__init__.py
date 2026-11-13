@@ -8,7 +8,7 @@ start before clearing the locks an interrupted lock test left).
 """
 import re, threading, time
 
-from keeper import acs, guard, locktest
+from keeper import acs, brain, captest, common, guard, locktest
 from keeper.common import E, event, log, state
 from keeper.devices.zte import antennas, checkin, locks, web
 from keeper.devices.zte.locks import lock_value, locks_apply, nr_value   # noqa: F401 (driver interface)
@@ -71,7 +71,8 @@ def row(vals):
            "down_bps": g("Stats.CurrentDownstreamRate"), "up_bps": g("Stats.CurrentUpstreamRate"),
            "net_delay": vals.get("Device.X_ZTE-COM_ROUTER.NetworkDelay", ""), "temps": "/".join(temps),
            "fota": "%s %s" % (vals.get("Device.FOTA.State", ""), vals.get("Device.FOTA.NewVersion", "")), "nr_ca": " ".join(nrca) if nr != "no5G" else "",
-           "zte_led_level": g("X_ZTE-COM_LedSignalLevel")}
+           "zte_led_level": g("X_ZTE-COM_LedSignalLevel"),
+           "sim": g("USIM.Status"), "conn": g("Stats.ConnectionStatus"), "net": g("NetworkInUse")}   # the modem's own health (brain.row_health)
     fota = "%s/%s/%s" % (vals.get("Device.FOTA.State", ""), vals.get("Device.FOTA.UpgradeState", ""), vals.get("Device.FOTA.NewVersion", ""))
     if "Device.FOTA.State" not in vals: fota = st["prev_fota"]          # not read this time: no change
     if fota != st["prev_fota"] and (st["prev_fota"] is not None or not fota.startswith("version_idle/fota_idle/")):
@@ -82,8 +83,47 @@ def row(vals):
 
 
 def minute_jobs():
-    """Sample jobs in order: scheduled sweep, lock guard, night screen."""
-    return [antennas.maybe_sweep, guard.lock_guard, locktest.maybe_night]
+    """Sample jobs in order: scheduled sweep, lock guard, quality A/B, capacity test, night screen."""
+    return [antennas.maybe_sweep, guard.lock_guard, guard.quality_ab, captest.maybe_test, locktest.maybe_night]
+
+
+MODEM_FAULT = ("sim_undetected", "sim_destroy", "waitpin", "waitpuk", "waitnck", "undetected")   # modem_main_state = SIM / modem fault
+
+
+def offline_health():
+    """The modem's own report from its web page (LAN - it answers while TR-069 is silent), for brain.offline_decide:
+    None = the page does not answer; {} = it answers but the login failed (the browser holds the session) = no evidence.
+    Logs in (the browser's session ends) - only while the link is down anyway."""
+    with web.web_lock:
+        w = web.Web()
+        try: err = w.login()
+        except Exception: return None
+        if err: return {}
+        try: v = w.get("modem_main_state,network_type,network_provider,lte_rsrp,Z5g_rsrp,ppp_status")
+        except Exception: return {}
+        finally:
+            try: w.logout()
+            except Exception: pass
+    ms, nt, pp = v.get("modem_main_state", ""), v.get("network_type", ""), v.get("ppp_status", "")
+    return {"sim": True if "init_complete" in ms else (False if any(x in ms for x in MODEM_FAULT) else None),
+            "registered": bool(nt) and nt.lower().replace("_", " ") not in ("no service", "limited service"),
+            "signal": bool(num(v.get("lte_rsrp")) or num(v.get("Z5g_rsrp"))), "data": brain.conn_up(pp),
+            "detail": "modem %s, network %s %s, RSRP %s/%s, %s" % (ms or "?", nt or "?", v.get("network_provider") or "", v.get("lte_rsrp") or "?",
+                                                               v.get("Z5g_rsrp") or "?", pp or "?")}
+
+
+def offline_reboot():
+    """Reboot over the web page: TR-069 is silent (brain.offline_decide)."""
+    with web.web_lock:
+        w = web.Web(); err = w.login()
+        if err: raise RuntimeError(err)
+        try: w.post({"goformId": "REBOOT_DEVICE"})
+        except Exception: pass                  # the ZTE may drop the connection while it goes down
+
+
+def offline_unlock_lte():
+    """LTE lock off + reboot on the web page (LAN): the modem is offline and not informing, so no TR-069 session (guard.offline_release)."""
+    locks.web_lock_reboot(0, 0)
 
 
 def nr_on(row, cell):
@@ -151,15 +191,33 @@ def on_values(vals):
     return []
 
 
+TR143 = "Device.IP.Diagnostics."
+probe = {"want": True, "sent": False, "after": time.monotonic() + 600}   # once per keeper start: does the ZTE have TR-143 (the modem runs a speed test itself)?
+
+
 def pending_rpc(host):
-    """No extra RPCs on the ZTE."""
+    """One extra RPC per keeper start, 10 min in, in a session with nothing else queued: GetParameterNames(Device.IP.Diagnostics.) - TR-143 support decides
+    how a capacity test can run (the keeper's own CPU, the RB450's Cortex-A7, can't fetch 200 Mbit/s over TLS)."""
+    if probe["want"] and time.monotonic() >= probe["after"] and not common.busy() and not brain.ctx.get("pending"):   # a plain, settled session only
+        probe.update(want=False, sent=True)
+        return acs.gpn(TR143)
     return None
 
 
 def on_rpc(kind, msg, step):
-    """A TransferComplete on the ZTE = firmware / file transfer (we never start one): logged as an event."""
+    """A TransferComplete on the ZTE = firmware / file transfer (we never start one): logged as an event.
+    The TR-143 probe's answer (names) or Fault is stored in state['tr143'] (shown in /status config)."""
     if kind in ("TransferComplete", "AutonomousTransferComplete"):
         event({"event": "firmware/transfer complete %s" % acs.text(msg, "FaultCode"), "why": acs.text(msg, "FaultString")})
+    elif probe["sent"] and kind in ("GetParameterNamesResponse", "Fault"):
+        probe["sent"] = False
+        if kind == "Fault":
+            res = {"supported": False, "fault": "%s %s" % (acs.text(msg, "FaultCode"), acs.text(msg, "FaultString"))}
+        else:
+            names = [acs.text(p, "Name") for p in acs.find(msg, "ParameterInfoStruct")]
+            res = {"supported": any("DownloadDiagnostics" in n for n in names), "n": len(names), "names": names[:150]}
+        state({"tr143": dict(res, time=time.strftime("%Y-%m-%d %H:%M:%S"))})
+        log("TR-143 probe (%s): %s" % (TR143, res.get("fault") or "%d names, download test %s" % (res["n"], "yes" if res["supported"] else "no")))
 
 
 def config():
@@ -169,4 +227,4 @@ def config():
             "antennas_env": {"auto": antennas.AUTO, "ant5": antennas.ANT5, "ant6": antennas.ANT6},
             "sweep_days": antennas.SWEEP_DAYS, "sweep_running": antennas.sweep_st["running"], "last_sweep": s().get("last_sweep"),
             "lte_lock_fmt": s().get("lte_lock_fmt"), "zte_locks_raw": locks.seen["raw"], "checkin_days": checkin.CHECKIN_DAYS,
-            "lock_upgrades": LOCK_UPGRADES}
+            "lock_upgrades": LOCK_UPGRADES, "tr143": s().get("tr143")}

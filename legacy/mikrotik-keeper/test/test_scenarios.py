@@ -12,7 +12,7 @@ import pytest
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SCENARIOS = sorted(glob.glob(os.path.join(HERE, "scenarios", "*.py")))
-SELF_CHECKS = ["keeper.store", "keeper.sqm", "keeper.alert"]           # modules with an `if __name__ == "__main__"` self-check
+SELF_CHECKS = ["keeper.store", "keeper.sqm", "keeper.alert", "keeper.captest"]           # modules with an `if __name__ == "__main__"` self-check
 
 
 # never reach the real operator ACS from a test (a fresh data dir makes the ZTE check-in due): scenarios that test the relay

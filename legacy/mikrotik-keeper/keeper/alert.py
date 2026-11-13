@@ -11,7 +11,7 @@ _last, sent, _retry = {}, [], []
 _send_lock = threading.Lock()          # serialise actual sends: no interleaved "telegram alert failed" prints during a reboot storm          # _retry: messages that failed (no internet, modem rebooting) - sent again later
 # events (keeper.event "event" field) worth a message: regex -> alert kind
 RULES = [(r"lock .*removed|lock .* still set|lock .* missing", "lock"), (r"^(lte|5g) lock ", "lock"), (r"^reboot (queued|held)$", "reboot"),
-         (r"^no inform$", "silent"), (r"^FOTA state$", "firmware"), (r"^night screen$", "night"), (r"^clock verified$", "clock")]
+         (r"^no inform$", "silent"), (r"^FOTA state$", "firmware"), (r"^night screen$", "night"), (r"^clock verified$", "clock"), (r"^capacity ceiling$", "sqm")]
 
 
 def send(text, kind, now=None):

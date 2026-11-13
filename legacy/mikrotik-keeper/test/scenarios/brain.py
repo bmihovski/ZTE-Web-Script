@@ -61,8 +61,11 @@ assert brain.decide(row(11, "no5G"), log, now) is None
 for i in range(12): brain.add(row(i, "no5G", down="900000"))                   # no 5G while there was traffic -> reason (acts when idle)
 assert "no 5G during 10 min with traffic" in (brain.decide(row(11, "no5G"), log, now) or ""), ev[-1]
 brain.HIST.clear(); brain.ctx["last_hint"].clear()
-for i in range(6): brain.add(dict(row(i, "no5G", down="0"), lte_cell="", lte_ca=""))           # no service at all (tech None, LTE 255) -> reboot
-assert "no mobile service for 5 min" in (brain.decide(dict(row(6, "no5G", down="0"), lte_cell="", lte_ca=""), log, now) or ""), ev[-1]
+for i in range(6): brain.add(dict(row(i, "no5G", down="0"), lte_cell="", lte_ca=""))           # no service at all (tech None, LTE 255)
+assert brain.decide(dict(row(6, "no5G", down="0"), lte_cell="", lte_ca=""), log, now) is None and "no device evidence" in ev[-1]["to"], ev[-1]   # no SIM/modem fault: the provider's -> held
+brain.ctx["last_hint"].clear()                                                                  # the modem itself reports a SIM fault -> reboot
+assert "no mobile service for 5 min - device: SIM" in (brain.decide(dict(row(6, "no5G", down="0"), lte_cell="", lte_ca="", sim="Error"), log, now) or ""), ev[-1]
+brain.ctx["pending"] = None
 # fresh after a boot (uptime < 10 min) -> never act
 brain.ctx["last_hint"].clear()
 assert brain.decide(row(0, "no5G", up=120), log, now) is None

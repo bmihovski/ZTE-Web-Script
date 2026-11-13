@@ -3,14 +3,15 @@
 The driver maps its own values to the shared sample fields (`SAMPLE_COLS`), so analysis, reports and the guard never see the
 device model; fields only one device has are its `EXTRA`.
 """
-from keeper import alert, brain, devices
+from keeper import alert, brain, devices, sqm
 from keeper.common import event, log, record, stamp
 
 import time
 
 SAMPLE_COLS = ["time", "uptime_s", "tech", "nr_cell", "nr_rsrp", "nr_rsrq", "nr_sinr", "nr_rssi", "nr_ssb_rsrp", "nr_ssb_sinr",
                "lte_cell", "lte_site", "lte_rsrp", "lte_rsrq", "lte_sinr", "lte_rssi", "lte_ca", "lte_neighbours", "rrc",
-               "down_bps", "up_bps", "net_delay", "temps", "fota", "nr_ca"] + brain.LAT_COLS
+               "down_bps", "up_bps", "net_delay", "temps", "fota", "nr_ca", "sim", "conn", "net"] + brain.LAT_COLS + \
+    ["sqm_up", "sqm_down", "sqm_up_min", "sqm_down_min", "sqm_delay", "sqm_rx", "sqm_tx", "sqm_cpu", "sqm_useless"]   # the shaper (sqm.minute)
 """Shared sample fields. `nr_cell` = `ARFCN/PCI` or `no5G`; `lte_cell` = `EARFCN/PCI` or '' (no service);
 `lte_ca` = `B7/3350/340:-91/1@20 ...` (band/EARFCN/PCI:RSRP/SINR@MHz, anchor first); rates in bytes/s."""
 st = {"prev_cell": None, "prev_sinr": "", "prev_lte": None, "prev_uptime": None}
@@ -26,7 +27,7 @@ def finish(row):
     dev = devices.current()
     nr = row["nr_cell"]
     if nr == "no5G": row["nr_sinr"] = ""
-    row.update(brain.latency_row())
+    row.update(brain.latency_row()); row.update(sqm.minute())
     record("samples", SAMPLE_COLS + dev.EXTRA, row)
     switched = st["prev_cell"] is not None and nr != st["prev_cell"]
     why = brain.explain_switch(row) if switched else ""
