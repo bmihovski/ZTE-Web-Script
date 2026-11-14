@@ -22,6 +22,24 @@ ENV = ('<?xml version="1.0" encoding="UTF-8"?>\n<soap-env:Envelope xmlns:soap-en
 lock = threading.Lock()                 # one CWMP message at a time
 st = {"ns": "urn:dslforum-org:cwmp-1-0", "step": None, "last_inform": 0.0, "boots": 0, "n": 0, "host": None}
 hooks = {"read": [], "values": []}         # extra names for the read / value listeners (keeper.captest)
+peek = {"want": None, "asked": None, "got": None, "time": None}   # one-off read of any subtree (POST /tr069/read)
+
+
+def peek_read():
+    """The asked subtree goes into the NEXT read only, once: an invalid path faults one read, then it is dropped."""
+    w = peek["want"]
+    if not w: return []
+    peek.update(want=None, asked=w, got=None, time=None)
+    return [w]
+
+
+def peek_values(vals):
+    if peek["asked"]:
+        got = {k: v for k, v in vals.items() if k.startswith(peek["asked"])}
+        if got: peek.update(got=got, time=stamp())
+
+
+hooks["read"].append(peek_read); hooks["values"].append(peek_values)
 tr = {"writes": [], "sent": [], "ok": None, "ev": threading.Event(), "vals_n": 0, "last_sample": -1e9}      # monotonic times: a clock jump changes nothing
 common.register_busy("tr069 write", lambda: tr["writes"])
 
@@ -73,10 +91,10 @@ def fast():
     return bool(common.busy(fast_only=True))
 
 
-def tr069_set(pairs, reboot=False, timeout=180):
+def tr069_set(pairs, reboot=False, timeout=180):    # after a refusal: tr["refused"] = [(name, code, why)] from the modem's fault
     """Queue SetParameterValues for the next session and wait for the answer (fast mode makes that <= ~10 s).
     reboot=True: a TR-069 Reboot follows in the same session once the values are accepted. True when the modem accepted them."""
-    tr["ev"].clear(); tr["ok"] = None
+    tr["ev"].clear(); tr["ok"] = None; tr["refused"] = []
     if reboot: brain.ctx["pending"] = "reboot"
     tr["writes"] = list(pairs)
     if not tr["ev"].wait(timeout):
@@ -163,7 +181,10 @@ def handle(body):
         log("reboot accepted by the %s" % dev.NAME); event({"event": "reboot sent"})
         return None, False
     if kind == "Fault":
-        log("CPE fault %s %s (step %s)" % (text(msg, "FaultCode"), text(msg, "FaultString"), st["step"]))
+        bad = [(text(f, "ParameterName"), text(f, "FaultCode"), text(f, "FaultString")) for f in find(msg, "SetParameterValuesFault")]
+        tr["refused"] = bad                                       # which of our values, and why (9003 alone says nothing)
+        log("CPE fault %s %s (step %s)%s" % (text(msg, "FaultCode"), text(msg, "FaultString"), st["step"],
+                                             ": " + "; ".join("%s %s %s" % b for b in bad) if bad else ""))
         dev.on_rpc(kind, msg, st["step"])
         if st["step"] == "set" and tr["sent"]:                  # our values were refused: no reboot, the caller falls back
             tr["ok"] = False; tr["sent"] = []; brain.ctx["pending"] = None; tr["ev"].set()

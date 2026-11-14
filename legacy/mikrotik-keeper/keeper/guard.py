@@ -103,6 +103,7 @@ def lock_reconcile(now):
             if guard.get("changed_at") and now < guard["changed_at"] + LOCK_RECONCILE_SETTLE:
                 continue                                  # a just-issued change is still rebooting: this read-back is stale, don't flip back to active
             state({key: dict(w, state="active", since=now)}); log("%s %s: the %s still has it - marked active, no reboot" % (key, w["cell"], dev.NAME))
+            if w["state"] == "pending": continue          # 2026-11-14 03:07: after a night screen the lock was never lost - a saved reboot, not an alert
             event({"event": "%s %s still set" % (key.replace("_", " "), w["cell"]), "why": "%s %s = %r (an unlock did not go through)" % (dev.NAME, label, raw)})
         elif w["state"] == "active" and not has:
             state({key: dict(w, state="pending")}); log("%s %s: the %s has no such lock (%s = %r) - set again when idle" % (key, w["cell"], dev.NAME, label, raw))

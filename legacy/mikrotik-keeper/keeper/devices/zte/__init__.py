@@ -14,7 +14,7 @@ from keeper.devices.zte import antennas, checkin, locks, web
 from keeper.devices.zte.locks import lock_value, locks_apply, nr_value   # noqa: F401 (driver interface)
 
 NAME, MAKER = "ZTE", "ZTE"
-CAN = {"antennas", "sweep", "lock_test", "night", "checkin"}
+CAN = {"antennas", "sweep", "lock_test", "night", "checkin", "captest"}
 ready = web.ready                     # driver hook: wait until the CPE web is back (a rebooted ZTE needs minutes)
 LOCKS_REBOOT = True                # a lock is applied only at boot: every lock change (and lock-test step) waits for a BOOT inform
 CLEANUP_WAIT_S = float(E("LOCKTEST_CLEANUP_S", "20"))
@@ -214,8 +214,9 @@ def on_rpc(kind, msg, step):
         if kind == "Fault":
             res = {"supported": False, "fault": "%s %s" % (acs.text(msg, "FaultCode"), acs.text(msg, "FaultString"))}
         else:
-            names = [acs.text(p, "Name") for p in acs.find(msg, "ParameterInfoStruct")]
-            res = {"supported": any("DownloadDiagnostics" in n for n in names), "n": len(names), "names": names[:150]}
+            ps = acs.find(msg, "ParameterInfoStruct"); names = [acs.text(p, "Name") for p in ps]
+            res = {"supported": any("DownloadDiagnostics" in n for n in names), "n": len(names), "names": names[:150],
+                   "writable": {acs.text(p, "Name"): acs.text(p, "Writable") in ("1", "true") for p in ps}}   # captest skips read-only ones
         state({"tr143": dict(res, time=time.strftime("%Y-%m-%d %H:%M:%S"))})
         log("TR-143 probe (%s): %s" % (TR143, res.get("fault") or "%d names, download test %s" % (res["n"], "yes" if res["supported"] else "no")))
 

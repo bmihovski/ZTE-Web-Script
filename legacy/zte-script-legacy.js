@@ -2097,7 +2097,7 @@ function keeper_table(rows, cols)
 function keeper_poll()
 {
     if (!$("#keeper_status").length) return;
-    Promise.all([keeper_get("/status"), keeper_get("/report?hours=24"), keeper_get("/events?n=30"), keeper_get("/antenna-sweeps"), keeper_get("/lock-tests"), keeper_get("/anchors"), keeper_get("/cells"), keeper_get("/anchors?rat=nr")]).then(function(res) {
+    Promise.all([keeper_get("/status"), keeper_get("/report?hours=24"), keeper_get("/events?n=30"), keeper_get("/antenna-sweeps"), keeper_get("/lock-tests"), keeper_get("/anchors"), keeper_get("/cells"), keeper_get("/anchors?rat=nr"), keeper_get("/captest").catch(function() { return null; })]).then(function(res) {
         var s = res[0], r = res[1], ev = res[2], sw = res[3], lk = res[4] || {}, an = res[5] || {}, cl = res[6] || {}, an5 = res[7] || {};
         var col = { good: "#2a2", fair: "#c80", poor: "#c22" }[s.verdict] || "#888";
         var L = s.latency || {};
@@ -2111,6 +2111,7 @@ function keeper_poll()
             (s.capacity ? "<br><span title='" + esc_html(s.capacity.note) + "'>signal allows ~<b>" + esc_html(s.capacity.est_down_mbps) + " Mbit/s</b> down (estimate, before load): " +
                 s.capacity.carriers.map(function(c) { return esc_html(c.carrier) + " " + esc_html(c.bw_mhz) + " MHz SINR " + esc_html(c.sinr) + " = " +
                     (c.mbps_layer == null ? "?" : esc_html(c.mbps_layer) + "x" + c.layers); }).join(", ") + "</span>" : ""));
+        keeper_cap_render(res[8]);
         $("#keeper_findings").html((r.findings || []).map(function(f) {
             var c = /^RECOMMEND/.test(f) ? "#06c" : /^WARN/.test(f) ? "#c22" : /^OK/.test(f) ? "#2a2" : "inherit";
             return "<li style='color:" + c + "'>" + esc_html(f) + "</li>"; }).join(""));
@@ -2155,6 +2156,79 @@ function keeper_poll()
     }).catch(function(e) {
         $("#keeper_status").html("<b style='color:#c22'>keeper not reachable</b> " + (keeper_api() ? "(via the app)" : "at " + esc_html(KEEPER_URL)) + " (" + esc_html(e.message) + ")");
     });
+}
+
+/* ---- capacity & shaper: the limit now and why, the learned ceilings, the tests; manual tests to check the line ---- */
+var keeper_cap_note = "", keeper_cap_last_time = null;     // the manual test's progress / result line; the newest test's time
+function keeper_cap_render(c)
+{
+    if (!c) { $("#keeper_cap_sum").text("capacity test not available (keeper too old, this device has no capacity test, or the app does not pass /captest yet - restart it)"); return; }
+    keeper_cap_last_time = ((c.last || {}).rec || {}).time;
+    var x = c.explain || {}, t = c.trigger || {}, v = function(a) { return a === null || a === undefined ? "-" : esc_html(a); };
+    var dir = function(d, name) {
+        var e = x[d] || {}, r = e.rate === null || e.rate === undefined ? "-" : Math.round(e.rate * 10) / 10;
+        return "<b>" + name + "</b>: limit <b>" + v(e.limit) + "</b> of ceiling <b>" + v(e.ceiling) + "</b> Mbit/s (traffic now " + r + ") - " + v(e.why) +
+            "<br><span style='font-size:11px'>&nbsp;&nbsp;ceiling: " + v(e.ceiling_from) + "; " + v(e.climb) + "</span>";
+    };
+    $("#keeper_cap_sum").html("period <b>" + v(c.period_now) + "</b> &nbsp; latency now +" + v(x.delay_ms) + " ms (the shaper cuts above +" + v(x.delay_limit_ms) + " ms while busy) &nbsp; " + v(x.time) +
+        (c.running ? " &nbsp; <b style='color:#c80'>capacity test running...</b>" : "") + "<br>" + dir("down", "Download") + "<br>" + dir("up", "Upload") +
+        "<br><span style='font-size:11px'>extra tests: " + (t.pending ? "<b>pending</b> - " + v(t.pending.why) + " (runs after 10 idle min, >= 1 h after the last test)" : "none pending") +
+        ", today " + v(t.today) + "/" + v(t.max_a_day) + " &nbsp; setup now " + v(t.setup_now) + ", last tested " + v(t.setup_tested) + "</span>" +
+        ((c.climbs || []).length ? "<br><span style='font-size:11px'>climbs: " + c.climbs.slice(-5).reverse().map(function(k) { return v(k.time.slice(11, 16)) + " " + v(k.dir) + " " + v(k.what); }).join(" | ") + "</span>" : "") +
+        "");
+    $("#keeper_cap_note").html(keeper_cap_note);
+    var per = c.ceilings_by_period || {}, n = c.counted_by_period || {};
+    $("#keeper_cap_periods").html(keeper_table((c.slots || []).map(function(s) {
+        return { period: s + (s == c.period_now ? " (now)" : ""), down_ceiling: per[s] && per[s].down || "env", up_ceiling: per[s] && per[s].up || "env",
+                 down_tests: (n[s] || {}).down, up_tests: (n[s] || {}).up };
+    }), ["period", "down_ceiling", "up_ceiling", "down_tests", "up_tests"]));
+    $("#keeper_cap_tests").html(keeper_table((c.recent || []).slice(-12).reverse().map(function(r) {
+        return { time: r.time, period: r.slot, down: r.down, up: r.up, kind: r.diag ? "check" : /^by hand/.test(r.trigger || "") ? "by hand" : r.trigger ? "triggered" : "scheduled",
+                 why: r.trigger || "", setup: r.setup || "", server: r.server, how: (r.down_how || r.up_how || "").slice(0, 90) };
+    }), ["time", "period", "down", "up", "kind", "why", "setup", "server", "how"]));
+}
+
+function keeper_captest(kind)
+{
+    var q = { count: "", down: "?secs=10", up: "?reverse=0&conn=1&secs=10" }[kind];
+    var what = { count: "a capacity test now that COUNTS for this period's ceiling (download, then upload; ~250 MB)",
+                 down: "a download check (diagnostic: shown, never changes a ceiling; ~250 MB)", up: "an upload check (1 stream, diagnostic; ~35 MB)" }[kind];
+    if (!confirm("Run " + what + "?\nThe modem runs it itself (~10 s of full load) - your own traffic lowers the result. Result in ~1-2 min.")) return;
+    var prev = keeper_cap_last_time, t0 = new Date().toLocaleTimeString();
+    var show = function(html) { keeper_cap_note = html; $("#keeper_cap_note").html(html); };
+    show("<b>" + kind + " test:</b> sending...");
+    keeper_call("POST", "/captest" + q).then(function(r) {
+        if (r.status != 202) { show("<b style='color:#c22'>" + kind + " test not started</b> (HTTP " + r.status + "): a capacity test, lock test or sweep is running - try again in a few minutes"); return; }
+        show("<b style='color:#c80'>" + kind + " test running</b> (started " + t0 + ") - the result shows here in ~1-2 min...");
+        keeper_cap_result(kind, 0, prev, t0);
+    }).catch(function(e) {
+        show("<b style='color:#c22'>" + kind + " test not started: " + esc_html(e.message) + "</b>" + (/refused/.test(e.message) ?
+            " - this app does not pass /captest to the keeper yet: restart the app (or rebuild ZTE Helper.app)" : " - keeper not reachable"));
+    });
+}
+
+function keeper_cap_result(kind, n, prev, t0)
+{
+    window.setTimeout(function() {
+        keeper_get("/captest").then(function(c) {
+            var r = (c.last || {}).rec || {};
+            if ((c.running || r.time == prev) && n < 24) {           // every 10 s, up to 4 min
+                $("#keeper_cap_note").html(keeper_cap_note = "<b style='color:#c80'>" + kind + " test running</b> (started " + t0 + ", " + (n + 1) * 10 + " s)...");
+                keeper_cap_result(kind, n + 1, prev, t0); return;
+            }
+            if (r.time == prev) { $("#keeper_cap_note").html(keeper_cap_note = "<b style='color:#c22'>" + kind + " test: no new result after 4 min</b> - see the keeper log"); return; }
+            var x = c.explain || {}, pct = function(d) { var cap = (x[d] || {}).ceiling; return r[d] && cap ? " = " + Math.round(100 * r[d] / cap) + " % of the ceiling " + cap : ""; };
+            keeper_cap_note = "<b>" + kind + " test " + esc_html(r.time || "") + "</b>: " + ["down", "up"].filter(function(d) { return r[d + "_how"]; }).map(function(d) {
+                return d + " <b>" + (r[d] === null || r[d] === undefined ? "no result" : esc_html(r[d]) + " Mbit/s") + "</b>" + esc_html(pct(d)) +
+                    (r[d] === null || r[d] === undefined ? " (" + esc_html(r[d + "_how"]) + ")" : "");
+            }).join(", ") + (r.diag ? " (check - no ceiling change)" : " (counts for the " + esc_html(r.slot) + " period)");
+            $("#keeper_cap_note").html(keeper_cap_note);
+            keeper_poll();
+        }).catch(function(e) {
+            if (n < 24) keeper_cap_result(kind, n + 1, prev, t0);
+            else $("#keeper_cap_note").html(keeper_cap_note = "<b style='color:#c22'>" + kind + " test: result not readable: " + esc_html(e.message) + "</b>");
+        });
+    }, 10000);
 }
 
 function keeper_sweep()
@@ -3666,6 +3740,15 @@ function inject_html()
                 <div id="keeper_status" style="margin:4px 0">loading...</div>
                 <div style="font-size:11px">Findings (last 24 h, goal: call-ready all the time) - the keeper decides reboots itself (within limits); locks stay your decision:</div>
                 <ul id="keeper_findings" style="margin:2px 0 6px 18px"></ul>
+                <div style="font-size:11px">Capacity &amp; shaper (SQM): the limit now, why, and where its ceiling comes from -
+                    <a onclick="keeper_captest('count')">Test now (counts)</a> | <a onclick="keeper_captest('down')">Download check</a> |
+                    <a onclick="keeper_captest('up')">Upload check</a> (checks never change a ceiling):</div>
+                <div id="keeper_cap_note" style="margin:4px 0"></div>
+                <div id="keeper_cap_sum" style="margin:4px 0"></div>
+                <div style="font-size:11px">Ceilings per period (0.92 x the median of the last 5 counted tests, 2 needed; env = SQM_MAX_*; the shaper may climb above while the latency stays clean):</div>
+                <div class="keeper_scroll"><table class="tools_table" id="keeper_cap_periods"></table></div>
+                <div style="font-size:11px">Capacity tests (the modem's own iperf3; check = diagnostic):</div>
+                <div class="keeper_scroll"><table class="tools_table" id="keeper_cap_tests"></table></div>
                 <div style="font-size:11px">5G cells (24 h):</div>
                 <div class="keeper_scroll"><table class="tools_table" id="keeper_cells"></table></div>
                 <div style="font-size:11px">LTE carriers (24 h, first = anchor; capacity = est. Mbit/s per MIMO layer before load (MHz x 3GPP TR 36.942 truncated Shannon) - RSRP is only comparable within one band):</div>

@@ -21,7 +21,7 @@ resp = "<cwmp:GetParameterNamesResponse><ParameterList>%s</ParameterList></cwmp:
 brain.ctx["pending"] = "reboot"                                                         # a queued reboot still goes out after the answer
 reply, _ = acs.handle(ENV % resp)
 assert "<cwmp:Reboot>" in reply, reply
-t = common.state()["tr143"]; assert t["supported"] and t["n"] == 4 and names[1] in t["names"], t
+t = common.state()["tr143"]; assert t["supported"] and t["n"] == 4 and names[1] in t["names"] and t["writable"][names[1]] is True, t
 assert z.config()["tr143"]["supported"]
 brain.ctx["pending"] = "reboot"; z.probe.update(want=True, sent=False)
 assert "<cwmp:Reboot>" in acs.reboot_if_pending()[0] and z.probe["want"]                # a queued reboot goes first, the probe waits

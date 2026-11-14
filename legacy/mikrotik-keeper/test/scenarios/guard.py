@@ -70,6 +70,9 @@ guard.guard["changed_at"] = 0                                                   
 assert guard.lock_guard(R(nr="636576/534")) is None and common.state()["lte_lock"]["state"] == "active"
 zlocks.seen["raw"] = {"LockLTECell": "", "LockNr5gCell": ""}                                 # active, but the ZTE lost it -> set again
 assert guard.lock_guard(R(nr="636576/534")) == "set"; wait(); assert locks()[-1] == "340@100"
+guard.guard["changed_at"] = 0; common.state({"lte_lock": dict(common.state()["lte_lock"], state="pending")}); n0 = len(m.st["sets"])
+zlocks.seen["raw"] = {"LockLTECell": "340,100", "LockNr5gCell": ""}       # after a night screen: pending, but the ZTE has it -> active, no set, no event
+assert guard.lock_guard(R(nr="636576/534")) is None and common.state()["lte_lock"]["state"] == "active" and len(m.st["sets"]) == n0
 zlocks.seen["raw"] = None; guard.lock_request("none"); wait()
 # 2026-10-28 01:03 replay: the ZTE lost all service while locked (tech None, LTE 255/255) -> "no LTE service" -> released after 3 min, not 10
 C = zdev.CI; monitor.sample({C + "CurrentAccessTechnology": "None", C + "LTE_EARFCN": "255", C + "LTE_PCI": "255", C + "LTE_SINR": "255", C + "LTE_RSRP": "255",

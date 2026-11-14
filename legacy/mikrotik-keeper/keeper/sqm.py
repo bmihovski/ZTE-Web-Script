@@ -8,7 +8,7 @@ Latency = the keeper's own probe (brain.lat_buf: TCP connect to 1.1.1.1 / 8.8.8.
 Env: SQM_URL (http://192.168.6.1/rest; off when empty), SQM_USER, SQM_PASS, SQM_QUEUE (sqm), SQM_IFACE (ether5 = the WAN),
      SQM_MIN_UP / SQM_MAX_UP / SQM_MIN_DOWN / SQM_MAX_DOWN (Mbit/s: 5 / 26 / 20 / 150 here), SQM_DELAY_MS (15), SQM_TICK (10),
      SQM_INSECURE=1 only if the router's HTTPS certificate is self-signed (LAN only),
-     SQM_CUT_PROOF (3) / SQM_CUT_COOL_S (600): see earn_keep(),
+     SQM_CUT_PROOF (3) / SQM_CUT_COOL_S (600): see earn_keep(), SQM_PLAN_UP / SQM_PLAN_DOWN (30 / 200) and SQM_CLIMB_S (600): see climb(),
      SQM_DOWN_HOURS ("Mon-Fri 09:00-18:00": shape the download only then - outside it the download is unlimited, full speed and no
      CAKE work for the CPU; empty = always). The upload is always shaped: cheap, and the biggest gain for calls.
 A TR-069 cell/RAT/boot change rebases the delay baseline once (a new cell has a different round trip; without it a slower cell
@@ -26,6 +26,9 @@ DELAY, TICK = float(E("SQM_DELAY_MS", "15")), float(E("SQM_TICK", "10"))
 CUT_PROOF, CUT_COOL = int(E("SQM_CUT_PROOF", "3")), float(E("SQM_CUT_COOL_S", "600"))   # cuts that must lower the delay / pause when they don't
 ERROR_WAIT_S = 300
 CEILING = [lambda d, now: MAX[d]]          # the ceiling now per direction (keeper.captest learns one per period of the day)
+PLAN = {"down": float(E("SQM_PLAN_DOWN", "200")), "up": float(E("SQM_PLAN_UP", "30"))}   # what Yettel sells: the climb's top
+CLIMB_S, CLIMB = float(E("SQM_CLIMB_S", "600")), 1.05   # busy at the ceiling with a clean delay this long -> the ceiling +5 % (latency first: slow)
+DEEP, DEEP_N = 0.7, 3                                   # cuts below 70 % of the ceiling, 3 in an hour -> the line lost capacity: ask for a test
 DOWN_HOURS = E("SQM_DOWN_HOURS", "")
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 st = {"limit": None, "id": None, "last": None, "changes": 0, "error": None, "path_seen": 0.0}
@@ -76,6 +79,63 @@ def step(limit, rate, delay, cap=None):
         elif delay is not None and delay < DELAY / 2 and load > 0.75: new[d] = limit[d] * 1.05
         new[d] = round(min((cap or MAX)[d], max(MIN[d], new[d])), 1)
     return new
+
+
+def climb(k, learned, limit, rate, delay, dt=TICK, now=None):
+    """The ceiling the shaper may use now in direction `k`: the learned one x a climb factor. Busy at that ceiling (load > 0.75)
+    with the delay below DELAY/2 for CLIMB_S s in total -> +5 %, up to the plan; a delay above DELAY while busy -> back to the learned
+    value at once. A new learned value (another period, a new test) starts from 1x. Climbing past +10 % asks for a test (want_test)."""
+    c = st.setdefault("climb", {}).setdefault(k, {"base": None, "x": 1.0, "clean": 0.0, "asked": False})
+    if c["base"] != learned: c.update(base=learned, x=1.0, clean=0.0, asked=False)
+    top = lambda: round(min(max(PLAN[k], learned), learned * c["x"]), 1)
+    if not limit.get(k): return top()                                       # unshaped (SQM_DOWN_HOURS): nothing to learn
+    load = rate[k] / limit[k]
+    if delay is not None and delay > DELAY and load > 0.5:
+        if c["x"] > 1: c.update(x=1.0); log_climb(k, learned, "back to the learned %g (delay %s ms)" % (learned, delay), now)
+        c["clean"] = 0.0
+    elif limit[k] >= 0.98 * top() and load > 0.75 and delay is not None and delay < DELAY / 2:
+        c["clean"] += dt
+        if c["clean"] >= CLIMB_S and top() < PLAN[k]:
+            c.update(x=round(c["x"] * CLIMB, 4), clean=0.0); log_climb(k, learned, "%g -> %g Mbit/s: busy at the ceiling with a clean delay" % (
+                round(learned * c["x"] / CLIMB, 1), top()), now)
+            if c["x"] > 1.1 and not c["asked"]:
+                c["asked"] = True; want_test("%s climbed to %g (+%d %% over the learned %g)" % (k, top(), round((c["x"] - 1) * 100), learned), now)
+    return top()
+
+
+def log_climb(k, learned, what, now=None):
+    st.setdefault("climbs", []).append({"time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now or time.time())), "dir": k, "what": what})
+    st["climbs"] = st["climbs"][-20:]
+
+
+def want_test(why, now=None):
+    """Ask keeper.captest for a capacity test at the next idle moment (it rate-limits; the newest reason wins)."""
+    st["want_test"] = {"why": why, "at": now or time.time()}
+
+
+def deep_cut(k, old, new, cap, now):
+    """A cut below DEEP x the ceiling: the line gives less than the period's ceiling. DEEP_N of them in an hour -> want_test."""
+    if not (old and new and new < old and new < DEEP * cap): return
+    xs = [t for t in st.setdefault("deep", {}).get(k, []) if now - t < 3600] + [now]
+    st["deep"][k] = xs
+    if len(xs) >= DEEP_N:
+        st["deep"][k] = []; want_test("%s: the shaper cut below %d %% of the ceiling %g %d times in 1 h" % (k, DEEP * 100, cap, DEEP_N), now)
+
+
+def reason(old, new, rate, delay, cap):
+    """Why the limit is what it is after this tick, in words (the panel and /status show it)."""
+    if not old: return "unshaped (outside SQM_DOWN_HOURS)"
+    load, dl = round(100 * rate / old), "latency +%s ms" % delay if delay is not None else "no latency data"
+    if new < old: return "cut %g -> %g: busy (%d %% of the limit) and %s > %g ms" % (old, new, load, dl, DELAY)
+    if new > old: return ("idle and calm: back up toward the ceiling %g" % cap if load < 10 else
+                          "busy (%d %%) and clean (%s): +5 %% -> %g" % (load, dl, new))
+    if old >= 0.98 * cap: return "at the ceiling %g (%d %% used, %s)" % (cap, load, dl)
+    if now_cooling(): return "holding: cuts paused - the last ones did not lower the latency (queue outside the router)"
+    return "holding: %d %% used, %s" % (load, dl)
+
+
+def now_cooling(now=None):
+    now = now or time.time(); return any(now < s.get("cool", 0) for s in (st.get("streak") or {}).values())
 
 
 def earn_keep(limit, new, delay, now):
@@ -154,7 +214,10 @@ def tick(lat_buf, now=None, path_change=0.0):
     idle = all(rate[k] < 0.1 * (st["limit"][k] or MAX[k]) for k in rate)
     rebase = bool(path_change) and path_change > st.get("path_seen", 0) and now - path_change < 180
     if rebase: st["path_seen"] = path_change
-    d = delay_now(lat_buf, now, idle, rebase); new = earn_keep(st["limit"], step(st["limit"], rate, d, {k: CEILING[0](k, now) for k in MAX}), d, now)
+    d = delay_now(lat_buf, now, idle, rebase)
+    caps = {k: climb(k, CEILING[0](k, now), st["limit"], rate, d, TICK, now) for k in MAX}
+    new = earn_keep(st["limit"], step(st["limit"], rate, d, caps), d, now)
+    for k in caps: deep_cut(k, st["limit"][k], new[k], caps[k], now)
     if rebase:                      # do not raise the limit on the rebase tick: let the next ticks see if the new path is calm
         for k in new:
             if st["limit"][k] and new[k] > st["limit"][k]: new[k] = st["limit"][k]
@@ -167,7 +230,8 @@ def tick(lat_buf, now=None, path_change=0.0):
     except Exception: cpu = []
     if cpu: st["cpu_max"] = max(st.get("cpu_max", 0), max(cpu))
     _acc(new, rate, d, cpu)
-    st["last"] = {"time": time.strftime("%H:%M:%S"), "rate": rate, "delay_ms": None if d is None else round(d, 1), "limit": new,
+    st["last"] = {"time": time.strftime("%H:%M:%S"), "rate": rate, "ceiling": caps,
+                  "why": {k: reason(st["limit"][k], new[k], rate[k], d, caps[k]) for k in new}, "delay_ms": None if d is None else round(d, 1), "limit": new,
                   "cpu": cpu, "cpu_max_since_start": st.get("cpu_max"), "useless_cut_streaks": st.get("useless", 0)}
     if any(new[k] != st["limit"][k] and (not new[k] or not st["limit"][k] or abs(new[k] - st["limit"][k]) >= 0.02 * st["limit"][k]) for k in new):
         fmt = lambda v: "%dk" % (v * 1000) if v else "0"    # 0 = unlimited
@@ -264,4 +328,28 @@ if __name__ == "__main__":          # self-check of the decision rule
     mm = minute(); assert mm["sqm_down_min"] == 140.0 and mm["sqm_up_min"] == 25.0 and mm["sqm_delay"] == 30.0 and mm["sqm_rx"] == 130.0 \
         and mm["sqm_tx"] == 3.0 and mm["sqm_cpu"] == 40 and mm["sqm_down"] == 150.0, mm
     assert minute() == {}                                                                # reset after reading
+    # climb: busy at the ceiling with a clean delay for CLIMB_S -> +5 %; a delay -> back to the learned value; past +10 % -> want a test
+    st.update(climb={}, climbs=[], want_test=None); L = 150.0; t = 9000.0
+    assert climb("down", L, {"down": 150.0}, {"down": 140.0}, 2, 10, t) == 150.0                    # clean, but not long enough yet
+    for i in range(int(CLIMB_S / 10)): top = climb("down", L, {"down": 150.0}, {"down": 140.0}, 2, 10, t)
+    assert top == 157.5 and st["climbs"][-1]["what"].startswith("150 -> 157.5"), (top, st["climbs"])
+    for x in (1.05 ** 2, 1.05 ** 3):                                                            # keeps climbing while the shaper follows
+        for i in range(int(CLIMB_S / 10)): top = climb("down", L, {"down": top}, {"down": top * 0.9}, 2, 10, t)
+    assert top == 173.6 and st["want_test"]["why"] == "down climbed to 165.4 (+10 % over the learned 150)", (top, st["want_test"])   # asked once, at > +10 %
+    assert climb("down", L, {"down": 170.0}, {"down": 160.0}, 2, 10, t) == 173.6                  # not at the ceiling: no clean time
+    assert climb("down", L, {"down": 170.0}, {"down": 160.0}, 40, 10, t) == 150.0 and "back to the learned 150" in st["climbs"][-1]["what"]
+    assert climb("down", 120.0, {"down": 120.0}, {"down": 110.0}, 2, 10, t) == 120.0 and st["climb"]["down"]["x"] == 1.0   # new period
+    st["climb"]["up"] = {"base": 29.0, "x": 1.1, "clean": 0.0, "asked": True}
+    assert climb("up", 29.0, {"up": 30.0}, {"up": 29.0}, 2, 10, t) == 30.0                        # never above the plan
+    assert climb("down", 120.0, {"down": 0}, {"down": 180.0}, 2, 10, t) == 120.0                  # unshaped: nothing learned
+    # deep cuts: 3 cuts below 70 % of the ceiling within an hour -> want a test
+    st.update(deep={}, want_test=None)
+    for i in range(2): deep_cut("down", 100.0, 85.0, 150.0, t + i * 60)
+    assert st["want_test"] is None; deep_cut("down", 130.0, 110.0, 150.0, t + 300); assert st["want_test"] is None   # 110 >= 70 % of 150: not deep
+    deep_cut("down", 100.0, 85.0, 150.0, t + 400); assert "cut below 70 % of the ceiling 150 3 times" in st["want_test"]["why"]
+    st.update(deep={}, want_test=None); deep_cut("down", 100.0, 85.0, 150.0, t); deep_cut("down", 100.0, 85.0, 150.0, t + 1800)
+    deep_cut("down", 100.0, 85.0, 150.0, t + 4000); assert st["want_test"] is None                 # spread over > 1 h: no
+    assert reason(150.0, 127.5, 140.0, 40, 150.0).startswith("cut 150 -> 127.5: busy (93 %") and reason(0, 0, 9, 1, 150.0).startswith("unshaped")
+    assert reason(100.0, 150.0, 1.0, 2, 150.0).startswith("idle and calm") and reason(140.0, 147.0, 130.0, 2, 150.0) == "busy (93 %) and clean (latency +2 ms): +5 % -> 147"
+    assert reason(150.0, 150.0, 140.0, 2, 150.0).startswith("at the ceiling 150 (93 %")
     print("OK sqm")

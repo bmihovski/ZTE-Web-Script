@@ -6,7 +6,7 @@ path is missing there. A route with a capability (5th field) is refused with 409
 import json, re, time, urllib.parse
 from http.server import BaseHTTPRequestHandler
 
-from keeper import VERSION, acs, alert, brain, common, devices, guard, locktest, selftest, sqm, store
+from keeper import VERSION, acs, alert, brain, captest, common, devices, guard, locktest, selftest, sqm, store
 from keeper.common import DATA, log, state
 
 UI_NAMES = ("zte_positions", "zte_ant_results", "zte_exp_results", "zte_exp_pending")     # app lists kept in the keeper's database
@@ -61,8 +61,18 @@ ROUTES = [   # method, path, summary, [(param, example, description)], capabilit
       ("device", "*", "zte | mikrotik | * (all)"), ("vacuum", "1", "1 = shrink the file (needs free space ~ its size, blocks the keeper a moment)"),
       ("csv", "1", "1 = also delete the old CSV files already imported")], None),
 
+    ("get", "/captest", "Capacity test (the modem's own TR-143 download to the operator's Ookla server): last result with the raw values, recent results, ceilings per period", [], "captest"),
+    ("post", "/captest", "Run a capacity test now (no slot / idle wait; ~124 MB download by the modem; counts for this period's ceiling). "
+     "Default: the modem's iperf3 download to Sofia (fallback Athens), counts like a scheduled test. Custom server / secs / conn / "
+     "reverse=0 / url / mode=tr143: a diagnostic - never counts for a ceiling",
+     [("url", "http://proof.ovh.net/files/100Mb.dat", "plain-HTTP file (optional)"), ("conn", "1", "connections 1-8 (optional)"),
+      ("secs", "10", "time based test, seconds 1-30 (optional)"), ("mode", "iperf3", "iperf3 (default) | tr143 (optional)"),
+      ("server", "37.19.203.1:5201", "iperf3 server host:port (optional)"), ("reverse", "1", "iperf3: 1 = download (default), 0 = upload")], "captest"),
     ("get", "/checks", "Self-test scenarios (ENUM) and the last run", [], None),
     ("post", "/checks", "Run self-test scenarios now and push the result to Telegram", [("name", "all", "all|clock|link|sqm|lock|night (comma-separated)")], None),
+    ("post", "/tr069/read", "Read any TR-069 subtree with the modem's next inform (once; an invalid path costs one read)",
+     [("path", "Device.IP.Diagnostics.Iperf3.", "a Device.* name or subtree ending in '.'")], None),
+    ("get", "/tr069/read", "The values of the last POST /tr069/read (asked path, values, time)", [], None),
     ("get", "/openapi.json", "This API as OpenAPI 3", [], None),
     ("get", "/docs", "Swagger UI for this API", [], None),
 ]
@@ -184,6 +194,11 @@ class H(BaseHTTPRequestHandler):
                 code, obj = 200, {"values": {k: v for k, v in dev.mt["last_vals"].items() if k.startswith(pre)}, "results": dev.mt["results"][-10:]}
             elif path == "/db":
                 code, obj = 200, store.info(DATA)
+            elif path == "/tr069/read":
+                code, obj = 200, {"asked": acs.peek["asked"], "pending": acs.peek["want"], "time": acs.peek["time"], "values": acs.peek["got"],
+                                  "note": None if acs.peek["got"] or not acs.peek["asked"] else "not answered (yet): wait for the next inform, or the path is invalid"}
+            elif path == "/captest":
+                code, obj = 200, captest.info()
             elif path == "/checks":
                 code, obj = 200, {"scenarios": {n: selftest.CHECKS[n][0] for n in selftest.ORDER}, "last": selftest.st["last"]}
             elif path == "/openapi.json":
@@ -280,6 +295,22 @@ class H(BaseHTTPRequestHandler):
             elif path == "/cells/refill":     # /cells/refill?days=7 - rebuild the 5G cell <-> LTE anchor mapping from the samples
                 res = {"cells": brain.backfill_anchors(max(1, min(90, int(g("days") or 7))))}
                 log("anchor mapping refilled from the samples: %d 5G cells" % len(res["cells"]))
+            elif path == "/tr069/read":        # /tr069/read?path=Device.IP.Diagnostics.Iperf3.
+                p = g("path")
+                if not re.fullmatch(r"Device\.[\w.-]+", p): raise ValueError("path=Device.<name> or Device.<subtree>.")
+                acs.peek.update(want=p); code, res = 202, {"queued": p, "note": "values with the next inform (<= 60 s): GET /tr069/read"}
+            elif path == "/captest":           # a capacity test now
+                url = g("url")
+                if url and not re.fullmatch(r"http://[\w.-]+(:\d+)?/\S*", url): raise ValueError("url=http://host[:port]/path (plain HTTP)")
+                conn, secs = g("conn"), g("secs")
+                if conn and not (conn.isdigit() and 1 <= int(conn) <= 8): raise ValueError("conn=1..8")
+                if secs and not (secs.isdigit() and 1 <= int(secs) <= 30): raise ValueError("secs=1..30")
+                mode, server = g("mode"), g("server")
+                if mode not in ("", "iperf3", "tr143"): raise ValueError("mode=iperf3|tr143 (default: CAPTEST_METHOD)")
+                if server and not re.fullmatch(r"[\w.-]+(:\d{1,5})?", server): raise ValueError("server=host[:port]")
+                ok = captest.force(url=url or None, conn=int(conn) if conn else None, secs=int(secs) if secs else None,
+                                   mode=mode or None, server=server or None, reverse=g("reverse", "1") != "0")
+                code, res = 202 if ok else 429, {"started": ok, "note": "result in ~1-3 min: GET /captest" if ok else "a test or another job is running"}
             elif path == "/checks":            # /checks?name=all (or clock,link,sqm,lock,night) - runs now, pushes to Telegram
                 res = selftest.run([n.strip() for n in g("name", "all").split(",") if n.strip()])
             elif path == "/db/prune":          # /db/prune?days=30&kind=samples&device=*&vacuum=1&csv=1

@@ -7,12 +7,13 @@ has full TR-143 (NumberOfConnections, PeriodOfFullLoading, *UnderFullLoading) + 
 Server: Ookla's list (https, small, once a day) -> CAPTEST_SERVER_ID (Yettel Sofia 69006) if listed, else the nearest server of
 CAPTEST_SPONSOR in CAPTEST_CC (Yettel Plovdiv 67058), else CAPTEST_HOST. Checked 2026-11-13 from the LAN: plain-HTTP
 /speedtest/random*.jpg answer 200, /download?size= answers 503 - so the download is random4000x4000.jpg (~31 MB) per connection.
-Run: one slot (CAPTEST_SLOTS) at a time, within 90 min after it, after CAPTEST_IDLE_MIN idle minutes, outside LOCK_PAUSE, not during
+Run: one slot (CAPTEST_SLOTS) at a time, within 90 min after it, after CAPTEST_IDLE_MIN idle minutes, modem up >= 15 min, not during
 a lock test / sweep / quality A/B; download then upload, results read from the modem's next informs (fast mode while busy).
 Result: Mbit/s = bytes under full loading * 8 / PeriodOfFullLoading (us) - only the time all connections ran, no TCP warm-up;
 older firmware: TestBytes / (EOMTime - BOMTime). Ceiling per slot = CAPTEST_SHARE x median of its last CAPTEST_KEEP results,
 capped at the plan (SQM_PLAN_DOWN / SQM_PLAN_UP) - the shaper must sit just below the real bottleneck to own the queue.
-Env: CAPTEST (1), CAPTEST_SLOTS (07:30,12:30,18:30,21:30), CAPTEST_CONN (4), CAPTEST_UP_BYTES (25000000), CAPTEST_SERVER_ID (69006),
+Night slots (01:30, 04:30) learn their own ceilings (night cells / LOCK_PAUSE anchor) - they never touch the daytime ones.
+Env: CAPTEST (1), CAPTEST_SLOTS (01:30,04:30,07:30,12:30,18:30,21:30), CAPTEST_CONN (4), CAPTEST_UP_BYTES (25000000), CAPTEST_SERVER_ID (69006),
 CAPTEST_SPONSOR (Yettel), CAPTEST_CC (BG), CAPTEST_HOST (speedtest1.yettel.bg:8080), CAPTEST_IDLE_MIN (10), CAPTEST_SHARE (0.92),
 CAPTEST_KEEP (5), SQM_PLAN_DOWN (200), SQM_PLAN_UP (30), CAPTEST_UP (0: no upload test, the upload ceiling is SQM_MAX_UP).
 Upload: TR-143 specifies HTTP PUT; tools/tr143_sim.py showed 2026-11-13 that Ookla drops PUT (POST works). The modem's upload is
@@ -24,16 +25,28 @@ from keeper import acs, brain, common, guard, sqm
 from keeper.common import E, event, log, state
 
 DL, UL = "Device.IP.Diagnostics.DownloadDiagnostics.", "Device.IP.Diagnostics.UploadDiagnostics."
-ON = E("CAPTEST", "1") == "1"
-SLOTS = sorted(s.strip() for s in E("CAPTEST_SLOTS", "07:30,12:30,18:30,21:30").split(",") if s.strip())
+ON = E("CAPTEST", "1") == "1"   # 4 slots a day; the method: CAPTEST_METHOD (iperf3 - TR-143 can't measure on the MC889 B07)
+SLOTS = sorted(s.strip() for s in E("CAPTEST_SLOTS", "01:30,04:30,07:30,12:30,18:30,21:30").split(",") if s.strip())   # night: 01:30, 04:30
+MIN_UPTIME_S = 900                 # the modem up >= 15 min: not right after the LOCK_PAUSE / night-screen reboots
 CONN, UP_BYTES = int(E("CAPTEST_CONN", "4")), int(E("CAPTEST_UP_BYTES", "25000000"))
-UP = E("CAPTEST_UP", "0") == "1"     # upload test: off - in NSA the upload rides the LTE anchor and sits at the plan cap (~28 Mbit/s,
+UP_MEASURE = E("CAPTEST_UP_MEASURE", "1") == "1"   # iperf3 upload after each download: measured and shown (~35 MB), ceiling only if CAPTEST_UP=1
+UP_CONN = int(E("CAPTEST_UP_CONN", "1"))   # upload streams: the MC889 gives no UplinkSpeed with 4 (2026-11-13), 27.8 Mbit/s with 1 (11-14)
+UP = E("CAPTEST_UP", "0") == "1"     # upload ceiling learning: off - in NSA the upload rides the LTE anchor and sits at the plan cap (~28 Mbit/s,
                                      # 10-31 and 11-13): the upload ceiling stays SQM_MAX_UP, the live controller cuts below it
 SERVER_ID, SPONSOR, CC = E("CAPTEST_SERVER_ID", "69006"), E("CAPTEST_SPONSOR", "Yettel"), E("CAPTEST_CC", "BG")
 HOST = E("CAPTEST_HOST", "speedtest1.yettel.bg:8080")
+IP3 = "Device.IP.Diagnostics.Iperf3."               # ZTE vendor object (probed 2026-11-13): the modem runs iperf3 itself
+IPERFS = [x.strip() for x in E("CAPTEST_IPERF", "37.19.203.1:5201,169.150.252.2:5201").split(",") if x.strip()]   # Sofia, Athens (public)
+METHOD = E("CAPTEST_METHOD", "iperf3")              # iperf3 (works) | tr143 (the MC889 B07 download stops after < 1 kB)
+ISECS = int(E("CAPTEST_SECS", "10"))
+IPERF_DONE = ("complete", "completed", "finish", "finished", "done", "success", "succeeded", "fail", "failed", "error", "stop", "stopped")
 IDLE_MIN, SHARE, KEEP = int(E("CAPTEST_IDLE_MIN", "10")), float(E("CAPTEST_SHARE", "0.92")), int(E("CAPTEST_KEEP", "5"))
-PLAN = {"down": float(E("SQM_PLAN_DOWN", "200")), "up": float(E("SQM_PLAN_UP", "30"))}
+PLAN = sqm.PLAN                    # SQM_PLAN_DOWN / SQM_PLAN_UP (200 / 30)
+TRIG_MAX, TRIG_GAP_S = int(E("CAPTEST_TRIGGER_MAX", "6")), 3600       # extra tests a day when the line changed; >= 1 h after the last test
+SETUP_STABLE_S = 900                                                   # a new anchor / 5G cell must hold 15 min before it is worth a test
 WINDOW_MIN, RESULT_WAIT_S = 90, 240
+MIN_BYTES = 1_000_000              # a result under 1 MB / 1 s is not a speed (2026-11-13: 2.8 kB in 4 ms read as 5.9 Mbit/s -> ceiling 20)
+MIN_TESTS = 2                      # valid results a period needs before its learned ceiling replaces SQM_MAX_*
 LIST_URL = "https://www.speedtest.net/api/js/servers?engine=js&search=%s"
 FINAL = ("Completed",)                                    # anything else that is not Requested / None is an Error_* (TR-143)
 st = {"running": False, "base": None, "armed": 0.0, "seen_requested": False, "vals": None, "ev": threading.Event(),
@@ -48,10 +61,13 @@ def pick(servers, want_id=SERVER_ID, sponsor=SPONSOR, cc=CC):
     return next((s for s in ok if str(s.get("id")) == str(want_id)), None) or min(ok, key=lambda s: float(s.get("distance") or 9e9), default=None)
 
 
-def down_params(host):
-    """TR-143 download: CONN parallel GETs of the classic Ookla file (~31 MB each), file based (no time limit)."""
-    return [(DL + "DownloadURL", "xsd:string", "http://%s/speedtest/random4000x4000.jpg" % host),
-            (DL + "NumberOfConnections", "xsd:unsignedInt", str(CONN)), (DL + "DiagnosticsState", "xsd:string", "Requested")]
+def down_params(host, url=None, conn=None, secs=None):
+    """TR-143 download: CONN parallel GETs of the classic Ookla file (~31 MB each), file based (no time limit). Diagnostics (POST
+    /captest): `url` another file, `conn` connections, `secs` > 0 = time based (TimeBasedTestDuration)."""
+    p = [(DL + "DownloadURL", "xsd:string", url or "http://%s/speedtest/random4000x4000.jpg" % host),
+         (DL + "NumberOfConnections", "xsd:unsignedInt", str(conn or CONN))]
+    p.append((DL + "TimeBasedTestDuration", "xsd:unsignedInt", str(secs or 0)))   # always written: a diagnostic's value stays set on the modem
+    return p + [(DL + "DiagnosticsState", "xsd:string", "Requested")]
 
 
 def up_params(server):
@@ -63,11 +79,11 @@ def up_params(server):
 
 def iso(s):
     """TR-069 dateTime ('2026-11-13T07:30:01.123456Z', any fraction length) -> epoch, None if unset / unreadable."""
-    m = re.match(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d+))?(Z|[+-]\d\d:?\d\d)?$", (s or "").strip())
+    m = re.match(r"(\d{4}-\d\d-\d\d)[T ](\d\d:\d\d:\d\d)(?:\.(\d+))?\s*(Z|[+-]\d\d:?\d\d)?$", (s or "").strip())
     if not m or s.startswith("0001"): return None
-    try: t = datetime.datetime.fromisoformat(m.group(1) + ("+00:00" if m.group(3) in (None, "Z") else m.group(3))).timestamp()
+    try: t = datetime.datetime.fromisoformat("%sT%s%s" % (m.group(1), m.group(2), "+00:00" if m.group(4) in (None, "Z") else m.group(4))).timestamp()
     except ValueError: return None
-    return t + (float("0." + m.group(2)) if m.group(2) else 0.0)
+    return t + (float("0." + m.group(3)) if m.group(3) else 0.0)
 
 
 def result(vals, base):
@@ -77,10 +93,16 @@ def result(vals, base):
     s = g("DiagnosticsState")
     if s not in FINAL: return None, s or "no result"
     b = brain.f(g("TestBytesReceivedUnderFullLoading") or g("TestBytesSentUnderFullLoading")); p = brain.f(g("PeriodOfFullLoading"))
-    if b and p: return round(b * 8 / p, 1), "full load %.1f s" % (p / 1e6)
-    b = brain.f(g("TestBytesReceived") or g("TestBytesSent")); t0, t1 = iso(g("BOMTime")), iso(g("EOMTime"))
-    if b and t0 and t1 and t1 > t0: return round(b * 8 / (t1 - t0) / 1e6, 1), "BOM-EOM %.1f s" % (t1 - t0)
-    return None, "no bytes in the result"
+    if b and p and b >= MIN_BYTES and p >= 1e6: return round(b * 8 / p, 1), "full load %.1f s" % (p / 1e6)
+    t1 = iso(g("EOMTime"))
+    for bk in ("TestBytesReceived", "TestBytesSent", "TotalBytesReceived", "TotalBytesSent"):
+        b = brain.f(g(bk))
+        for tk in ("BOMTime", "ROMTime"):
+            t0 = iso(g(tk))
+            if b and b >= MIN_BYTES and t0 and t1 and t1 - t0 >= 1: return round(b * 8 / (t1 - t0) / 1e6, 1), "%s %s-EOM %.1f s" % (bk, tk[:3], t1 - t0)
+    seen = ", ".join("%s=%s" % (k, g(k)) for k in ("TestBytesReceived", "TotalBytesReceived", "TestBytesSent", "PeriodOfFullLoading",
+                                                   "ROMTime", "BOMTime", "EOMTime") if g(k) != "")
+    return None, "no valid transfer (>= 1 MB in >= 1 s) in the result (%s)" % (seen or "no counters read")
 
 
 def slot_of(now):
@@ -98,12 +120,90 @@ def due(now, done):
     return None
 
 
+def slot_soon(now, within=TRIG_GAP_S):
+    """A scheduled slot starts within `within` s: a triggered test waits for it (it measures the same thing)."""
+    lt = time.localtime(now)
+    for s in SLOTS:
+        h, m = map(int, s.split(":"))
+        for dd in (0, 1):
+            start = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday + dd, h, m, 0, 0, 0, -1))
+            if 0 <= start - now < within: return True
+    return False
+
+
+def setup_key(row):
+    """'LTE anchor|5G cell' of a sample - what a capacity depends on besides the time of day. NSA drops the 5G leg when idle
+    ('no5G'): the last 5G cell seen is kept. None without an anchor."""
+    nr = row.get("nr_cell")
+    if nr and nr not in ("no5G", "/"): st["nr_last"] = nr
+    lte = row.get("lte_cell")
+    return "%s|%s" % (lte, st.get("nr_last") or "-") if lte and lte != "/" else None
+
+
+def trigger(row, now):
+    """Collect the reasons for an extra test: the setup changed since the last counted test (stable SETUP_STABLE_S), or the
+    shaper asked (sqm.want_test: climbed > +10 %, deep cuts). -> the pending reason or None."""
+    key = setup_key(row)
+    if key and key != st.get("seen_key"): st.update(seen_key=key, seen_since=now)
+    tested = state().get("captest_setup")
+    if key and not tested: state({"captest_setup": key})                    # first sample after the update: adopt, no test
+    elif key and key != tested and now - st["seen_since"] >= SETUP_STABLE_S and not st.get("want"):
+        st["want"] = {"why": "setup %s -> %s" % (tested, key), "at": now}
+    w = sqm.st.pop("want_test", None)
+    if w: st["want"] = w
+    return (st.get("want") or {}).get("why")
+
+
+def trig_ok(now):
+    """Rate limit of the triggered tests: TRIG_MAX a day, >= TRIG_GAP_S after the last counted test, none just before a slot."""
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    n = [t for t in state().get("captest_trig") or [] if time.strftime("%Y-%m-%d", time.localtime(t)) == day]
+    return len(n) < TRIG_MAX and now - (state().get("captest_last_t") or 0) >= TRIG_GAP_S and not slot_soon(now)
+
+
+def counted(now, trig=None):
+    """A test that counts for a ceiling starts: it answers any pending reason, and the setup it measures becomes the tested one."""
+    st.update(want=None, trigger=trig, setup_now=st.get("seen_key"))
+    state(dict({"captest_last_t": now}, **({"captest_setup": st["seen_key"]} if st.get("seen_key") else {})))
+
+
+def valid(r, d):
+    """A stored result is a speed: its 'how' says >= 1 s (records from before the 1 MB / 1 s check included)."""
+    m = re.search(r"([\d.]+) s$", str(r.get(d + "_how", "")))
+    return bool(m) and float(m.group(1)) >= 1
+
+
+def counted_results(hist, slot, d):
+    """The last KEEP results of `slot` that count for a ceiling (no diagnostic, no TR-143 file test, no pre-v2 iperf3 record)."""
+    return [r[d] for r in hist if r.get("slot") == slot and r.get(d) and valid(r, d) and not r.get("url") and not r.get("diag")
+            and not (str(r.get("server", "")).startswith("iperf3") and not r.get("v"))][-KEEP:]
+
+
 def ceilings(hist, slot):
     """{"down": Mbit/s, "up": Mbit/s} for `slot` from its last KEEP results: SHARE x median, capped at the plan; {} without data."""
     out = {}
     for d in ("down", "up"):
-        xs = [r[d] for r in hist if r.get("slot") == slot and r.get(d)][-KEEP:]
-        if xs: out[d] = round(min(PLAN[d], SHARE * statistics.median(xs)), 1)
+        xs = counted_results(hist, slot, d)
+        if len(xs) >= MIN_TESTS: out[d] = round(min(PLAN[d], SHARE * statistics.median(xs)), 1)
+    return out
+
+
+def explain(now=None):
+    """Per direction, in words: the limit now and why, the ceiling and where it comes from (tests / env / climb), what is next."""
+    now = now or time.time(); hist = state().get("captest_hist") or []; slot = slot_of(now); last = sqm.st.get("last") or {}
+    out = {}
+    for d in ("down", "up"):
+        xs = counted_results(hist, slot, d); learned = ceilings(hist, slot).get(d)
+        if d == "up" and not UP: src = "upload learning off (CAPTEST_UP=0): SQM_MAX_UP %g" % sqm.MAX["up"]
+        elif learned: src = "learned for the %s period: %g x the median %g of %d tests %s" % (slot, SHARE, statistics.median(xs), len(xs), xs)
+        else: src = "not learned yet for the %s period (%d of %d tests): SQM_MAX_%s %g" % (slot, len(xs), MIN_TESTS, d.upper(), sqm.MAX[d])
+        c = (sqm.st.get("climb") or {}).get(d) or {}
+        climb = ("climbed x%g (+%d %%) above it - busy at the ceiling with clean latency" % (c["x"], round((c["x"] - 1) * 100)) if c.get("x", 1) > 1
+                 else "no climb") + "; next +5 %% after %d more clean busy min at the ceiling (top: plan %g)" % (
+                     max(0, round((sqm.CLIMB_S - c.get("clean", 0)) / 60)), PLAN[d])
+        out[d] = {"limit": (last.get("limit") or {}).get(d), "rate": (last.get("rate") or {}).get(d), "ceiling": (last.get("ceiling") or {}).get(d),
+                  "why": (last.get("why") or {}).get(d), "ceiling_from": src, "climb": climb}
+    out["delay_ms"], out["delay_limit_ms"], out["time"] = last.get("delay_ms"), sqm.DELAY, last.get("time")
     return out
 
 
@@ -120,7 +220,9 @@ def servers(now):
     day = time.strftime("%Y-%m-%d", time.localtime(now))
     if st["servers_day"] != day:
         try:
-            with urllib.request.urlopen(LIST_URL % urllib.parse.quote(SPONSOR), timeout=15) as r: st["servers"] = json.loads(r.read())
+            req = urllib.request.Request(LIST_URL % urllib.parse.quote(SPONSOR), headers={"User-Agent": "Mozilla/5.0 (X11; Linux) zte-keeper",
+                                                                                     "Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=15) as r: st["servers"] = json.loads(r.read())
             st["servers_day"] = day
         except Exception as e:
             log("capacity test: Ookla server list failed: %r - using %s" % (e, HOST))
@@ -134,31 +236,37 @@ def extra_read():
 
 def on_values(vals):
     """ACS hook (every read): the running test's state; a final one (Completed / Error_*) after it was armed ends the wait."""
+    if st["running"] and st["base"] == IP3: return _ip3_values(vals)
     if not (st["running"] and st["base"]) or (st["base"] + "DiagnosticsState") not in vals: return
     s = vals[st["base"] + "DiagnosticsState"]
+    rom = vals.get(st["base"] + "ROMTime", "")
+    if st.get("first"):                                         # the first read after arming is in the session that carries our
+        st.update(first=False, stale_rom=rom); return           # write (it goes out after the read): the OLD result, by construction
     if s == "Requested": st["seen_requested"] = True; return
-    rom = iso(vals.get(st["base"] + "ROMTime", ""))
-    if s and s != "None" and (st["seen_requested"] or (rom and rom >= st["armed"] - 60)):   # not the previous test's result
+    # a new result: we saw it running, or its ROMTime differs from the old one (no clock compare - the MC889 writes local time with
+    # a 'Z', 2026-11-13: an 18:31 local result read as 20:31 UTC passed the old clock check and was taken for a 19:47 test)
+    if s and s != "None" and (st["seen_requested"] or rom != st.get("stale_rom")):
         st["vals"] = vals; st["ev"].set()
 
 
 def _one(base, params):
     """Arm one TR-143 test and wait for its result: (Mbit/s or None, why)."""
-    st.update(base=base, seen_requested=False, vals=None, armed=time.time()); st["ev"].clear()   # armed BEFORE the write: the
-    ok = acs.tr069_set(params)                                  # session that carries it first reads the previous test's result
+    st.update(base=base, seen_requested=False, vals=None, armed=time.time(), first=True, stale_rom=None); st["ev"].clear()
+    ok = acs.tr069_set(params)                                  # the session that carries it first reads the previous test's result
     if not ok and any("NumberOfConnections" in p[0] for p in params):                    # an older object: one connection
-        ok = acs.tr069_set([p for p in params if "NumberOfConnections" not in p[0]])
+        st["first"] = True; ok = acs.tr069_set([p for p in params if "NumberOfConnections" not in p[0]])
     if not ok: return None, "the modem refused the test parameters"
     if not st["ev"].wait(RESULT_WAIT_S): return None, "no result within %d s" % RESULT_WAIT_S
+    st.setdefault("raw", {})[base] = {k[len(base):]: v for k, v in st["vals"].items() if k.startswith(base) and "." not in k[len(base):]}
     return result(st["vals"], base)
 
 
-def run(slot, now=None):
+def run(slot, now=None, forced=False, url=None, conn=None, secs=None):
     """Thread: download then upload test in `slot`, record the result, move the ceilings."""
-    now = now or time.time()
+    now = now or time.time(); st["raw"] = {}
     try:
-        srv = pick(servers(now)) or {"host": HOST, "id": "?", "name": "fallback"}
-        down, dwhy = _one(DL, down_params(srv["host"]))
+        srv = pick(servers(now)) or {"host": HOST, "id": "fallback", "name": HOST}
+        down, dwhy = _one(DL, down_params(srv["host"], url, conn, secs))
         off = "CAPTEST_UP=0, the ceiling is SQM_MAX_UP" if not UP else (state().get("captest_up") or {}).get("off")
         if off: up, uwhy = None, "upload test off (%s)" % off
         else:
@@ -168,7 +276,8 @@ def run(slot, now=None):
                 event({"event": "capacity ceiling", "to": "upload test off", "why": "the modem's TR-143 upload failed (%s) - Ookla's"
                        " upload.php takes POST, not PUT; the upload ceiling stays SQM_MAX_UP" % uwhy})
         rec = {"time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)), "slot": slot, "down": down, "up": up,
-               "server": "%s %s" % (srv.get("id"), srv.get("name", "")), "down_how": dwhy, "up_how": uwhy}
+               "server": "%s %s" % (srv.get("id"), srv.get("name", "")), "down_how": dwhy, "up_how": uwhy, "forced": forced, "url": url, "diag": {k: v for k, v in (("conn", conn), ("secs", secs)) if v is not None} or None}
+        state({"captest_last": {"rec": rec, "raw": {"down": st["raw"].get(DL), "up": st["raw"].get(UL)}}})
         hist = (state().get("captest_hist") or []) + [rec]
         before = ceilings(state().get("captest_hist") or [], slot)
         state({"captest_hist": hist[-80:]}); after = ceilings(hist, slot)
@@ -176,32 +285,218 @@ def run(slot, now=None):
         event({"event": "capacity test", "to": "down %s / up %s Mbit/s" % (down, up), "why": "%s slot %s: %s; %s" % (rec["server"], slot, dwhy, uwhy)})
         moved = [d for d in after if not before.get(d) or abs(after[d] - before[d]) > 0.1 * before[d]]
         if moved:
-            event({"event": "capacity ceiling", "to": "%s: down %s / up %s Mbit/s" % (slot, after.get("down", "-"), after.get("up", "-")),
-                   "why": "%g x the median of the last %d tests in this period (plan %g / %g)" % (SHARE, KEEP, PLAN["down"], PLAN["up"])})
+            event(ceiling_event(slot, after, rec))
     except Exception as e:
         log("capacity test failed: %r" % e)
     finally:
         st.update(running=False, base=None)
 
 
-def maybe_test(row, now=None):
-    """Minute job: start a due slot's test when the link has been idle IDLE_MIN minutes and nothing else runs. True when started."""
+# ---------- iperf3 (the ZTE's own client) ----------
+IP3_OPTIONAL = ("Mode", "Omit", "OmitNum", "OutputReport", "LANTrafficBlock", "Parallel")   # dropped if the modem refuses them
+                                                                                          # (Mode: refused 2026-11-13, already 'client')
+DROP = set()            # optional names this modem refused: not written again until restart (one 9008 fault per start, not per test)
+
+
+def ceiling_event(slot, after, rec):
+    """The Telegram 'capacity ceiling' event: the new ceilings, and the upload's fixed cap with what was measured (CAPTEST_UP=0)."""
+    up = "up %s Mbit/s" % after["up"] if "up" in after else "up stays %g Mbit/s%s" % (
+        sqm.MAX["up"], " (measured %s)" % rec["up"] if rec.get("up") is not None else "")
+    return {"event": "capacity ceiling", "to": "%s: down %s Mbit/s / %s" % (slot, after.get("down", "-"), up),
+            "why": "this test: down %s / up %s Mbit/s; %g x the median of the last %d tests in this period (plan %g / %g)"
+                   % (rec.get("down"), rec.get("up"), SHARE, KEEP, PLAN["down"], PLAN["up"])}
+
+
+def iperf_params(server, secs=10, conn=4, reverse=True, plain=False):
+    """Iperf3 client settings (no Enable - that starts it, written on its own). plain=True: every value as xsd:string."""
+    host, _, port = server.partition(":")
+    t = (lambda typ: "xsd:string") if plain else (lambda typ: typ)
+    params = [(IP3 + "Mode", "xsd:string", "client"), (IP3 + "ServerAddress", "xsd:string", host),
+            (IP3 + "ServerPort", t("xsd:unsignedInt"), port or "5201"), (IP3 + "DurationTestTime", t("xsd:unsignedInt"), str(secs)),
+            (IP3 + "Reverse", t("xsd:boolean"), "1" if reverse else "0"), (IP3 + "Parallel", t("xsd:unsignedInt"), str(conn)),
+            (IP3 + "Omit", t("xsd:boolean"), "1"), (IP3 + "OmitNum", t("xsd:unsignedInt"), "2"),
+            (IP3 + "OutputReport", t("xsd:boolean"), "1"), (IP3 + "LANTrafficBlock", t("xsd:boolean"), "0")]
+    skip = DROP | read_only()
+    return [x for x in params if x[0][len(IP3):] not in skip]
+
+
+def read_only():
+    """Optional Iperf3 names the modem itself reports read-only (TR-143 probe, GetParameterNames Writable=0): never written."""
+    w = (state().get("tr143") or {}).get("writable") or {}
+    return {n[len(IP3):] for n, ok in w.items() if n.startswith(IP3) and not ok and n[len(IP3):] in IP3_OPTIONAL}
+
+
+def write_settings(params, tries=6):
+    """Write `params`, adapting to the modem's per-parameter refusals: an optional one is dropped, a required one is retried
+    as a plain string. -> (ok, notes)."""
+    params, notes = list(params), []
+    for _ in range(tries):
+        if acs.tr069_set(params): return True, notes
+        bad = [n for n, code, why in acs.tr.get("refused") or []]
+        if not bad:                                                    # no detail: everything as a string, once
+            if all(t == "xsd:string" for _, t, _ in params): return False, notes + ["refused without details"]
+            params = [(n, "xsd:string", v) for n, t, v in params]; notes.append("all as strings"); continue
+        for n in bad:
+            short = n[len(IP3):]
+            if short in IP3_OPTIONAL: params = [p for p in params if p[0] != n]; notes.append("dropped " + short); DROP.add(short)
+            elif any(p[0] == n and p[1] != "xsd:string" for p in params):
+                params = [(p[0], "xsd:string", p[2]) if p[0] == n else p for p in params]; notes.append(short + " as string")
+            else: return False, notes + ["refused %s" % short]
+    return False, notes + ["gave up"]
+
+
+def start_iperf():
+    """Enable = 1 on its own (the start): boolean 1, string 1, then 'true'. -> (ok, how)."""
+    for typ, val in (("xsd:boolean", "1"), ("xsd:string", "1"), ("xsd:string", "true")):
+        if acs.tr069_set([(IP3 + "Enable", typ, val)]): return True, "Enable=%s (%s)" % (val, typ)
+    return False, "Enable refused (%s)" % "; ".join("%s %s" % (c, w) for _, c, w in acs.tr.get("refused") or []) or "no detail"
+
+
+def _ip3_values(vals):
+    """Every read while iperf3 runs is kept (we learn the ZTE's formats from them); done when a LastTest / Status / speed field
+    changed from the pre-start read and Status is not 'running'-like - or Enable went back to 0 after we saw it 1."""
+    v = {k[len(IP3):]: x for k, x in vals.items() if k.startswith(IP3)}
+    if not v: return
+    st["ip3_snaps"].append(dict(v, _t=time.strftime("%H:%M:%S")))
+    if st.get("first"): st.update(first=False, ip3_base=v); return             # the read in the session that carries our write
+    if not st.get("ip3_started"): return              # before OUR Enable was accepted the modem shows the previous run's result
+    b = st.get("ip3_base") or {}; s = v.get("Status", "").lower()
+    if v.get("Enable") == "1" or s == "requested" or any(w in s for w in ("run", "progress")): st["ip3_seen_on"] = True
+    new = any(v.get(k) and v.get(k) != b.get(k) for k in ("DownlinkLastTest", "UplinkLastTest"))   # the minute of the run (MC889)
+    if (st.get("ip3_seen_on") or new) and (any(w == s for w in IPERF_DONE) or (new and v.get("Enable") != "1")):
+        st["vals"] = v; st["ev"].set()                # 2026-11-13 22:40: the old 22:17 'Complete 144' was taken before the start
+
+
+def mbit(v):
+    """'176.3 Mbits/sec' / '176300000' (bit/s) / '176.3' (Mbit/s) -> Mbit/s; None if unreadable."""
+    m = re.search(r"([\d.]+)\s*([kKmMgG]?)(bits?|bps|B)?", str(v or ""))
+    if not m: return None
+    x = float(m.group(1)); u = m.group(2).upper()
+    if u: return round(x * {"K": 1e-3, "M": 1.0, "G": 1e3}[u], 1)
+    return round(x / 1e6, 1) if x > 100000 else round(x, 1)         # a bare big number = bit/s, a small one = Mbit/s
+
+
+def ip3_result(v, reverse=True):
+    """(Mbit/s or None, how): iperf's own receiver summary in Report first, else Downlink/UplinkSpeed."""
+    rep = str(v.get("Report") or "")
+    sums = re.findall(r"\[SUM\].*?([\d.]+\s*[KMG]bits/sec).*?receiver", rep) or re.findall(r"([\d.]+\s*[KMG]bits/sec).*?receiver", rep)
+    if sums: return mbit(sums[-1]), "iperf3 receiver (Report)"
+    sp = mbit(v.get("DownlinkSpeed" if reverse else "UplinkSpeed"))
+    if sp: return sp, "iperf3 %s=%s" % ("DownlinkSpeed" if reverse else "UplinkSpeed", v.get("DownlinkSpeed" if reverse else "UplinkSpeed"))
+    f = "DownlinkSpeed" if reverse else "UplinkSpeed"
+    return None, "iperf3: no speed (Status=%s, %s=%s, Report=%s)" % (v.get("Status"), f, v.get(f), rep[:120])
+
+
+def _iperf_once(server, secs, conn, reverse):
+    """One iperf3 run by the modem against `server`: (Mbit/s or None, why, the reads)."""
+    st.update(base=IP3, first=True, vals=None, ip3_snaps=[], ip3_base=None, ip3_seen_on=False, ip3_started=False); st["ev"].clear()
+    ok, notes = write_settings(iperf_params(server, secs, conn, reverse))
+    if ok:
+        st["ev"].clear(); ok, how = start_iperf(); notes.append(how)
+        st["ip3_started"] = ok
+    if not ok: return None, "the modem refused the iperf3 settings: %s" % ", ".join(notes), st["ip3_snaps"]
+    if not st["ev"].wait(secs + 150): return None, "iperf3: no result within %d s (%s)" % (secs + 150, ", ".join(notes)), st["ip3_snaps"]
+    sp, why = ip3_result(st["vals"], reverse)
+    return sp, "%s (%s), %d streams %d s" % (why, ", ".join(notes), conn, secs), st["ip3_snaps"]     # ends in 'N s': valid()
+
+
+def run_iperf(now, servers, secs, conn, reverse, slot=None, diag=None):
+    """Thread: the modem's iperf3 against the first server that answers (Sofia, then Athens - public servers take one client at
+    a time); the result counts for the period's ceiling unless `diag` (a custom diagnostic run). Measured 2026-11-13 22:15: 144
+    Mbit/s download, Status Requested -> Complete, DownlinkSpeed '144Mbits/sec' (the MC889 fills no Report)."""
+    try:
+        slot = slot or slot_of(now); tried = []
+        for srv in servers:
+            sp, why, reads = _iperf_once(srv, secs, conn, reverse); tried.append("%s: %s" % (srv, why))
+            if sp: break
+        d = "down" if reverse else "up"
+        rec = {"time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)), "slot": slot, "down": None, "up": None, d: sp,
+               d + "_how": why if sp else "; ".join(tried), "server": "iperf3 " + srv, "forced": diag is not None or None, "diag": diag,
+               "v": 2}                                       # v2: started-check (records without it may be the previous run's result)
+        if not diag: rec.update(setup=st.get("setup_now"), trigger=st.get("trigger"))   # what was measured, and why now (None = the slot)
+        if reverse and sp and UP_MEASURE and not diag:                   # the upload: same server first, then the others
+            utried = []                                                  # 2026-11-13 23:17: Athens upload ended in 6 s, 'Mbits/sec' (no number)
+            for u in [srv] + [x for x in servers if x != srv]:
+                usp, uwhy, ureads = _iperf_once(u, secs, UP_CONN, False); reads = reads + ureads; utried.append("%s: %s" % (u, uwhy))
+                if usp: break
+            rec.update(up=usp, up_how=(uwhy if u == srv else utried[-1]) if usp else "; ".join(utried))
+        applied = lambda c: {k: x for k, x in c.items() if k == "down" or UP}       # the upload ceiling only with CAPTEST_UP=1
+        before = applied(ceilings(state().get("captest_hist") or [], slot))
+        hist = ((state().get("captest_hist") or []) + [rec])[-80:]
+        state({"captest_hist": hist, "captest_last": {"rec": rec, "raw": {"iperf3_reads": reads[-12:]}}})
+        log("capacity test (iperf3 %s): %s" % (srv, "; ".join("%s %s Mbit/s - %s" % (d, rec[d], rec[d + "_how"]) for d in ("down", "up") if rec.get(d + "_how"))))
+        event({"event": "capacity test", "to": "down %s%s Mbit/s (iperf3)" % (rec["down"], " / up %s" % rec["up"] if "up_how" in rec else ""),
+               "why": "%s slot %s: %s%s" % (srv, slot, rec.get("down_how") or rec.get("up_how"), "; up: %s" % rec["up_how"] if rec.get("up_how") and rec.get("down_how") else "")})
+        after = applied(ceilings(hist, slot))
+        moved = [k for k in after if not before.get(k) or abs(after[k] - before[k]) > 0.1 * before[k]]
+        if moved:
+            event(ceiling_event(slot, after, rec))
+    except Exception as e:
+        log("iperf3 test failed: %r" % e)
+    finally:
+        st.update(running=False, base=None)
+
+
+def force(now=None, url=None, conn=None, secs=None, mode=None, server=None, reverse=True):
+    """API (POST /captest): a test now - no slot, no idle wait (your own traffic lowers the result). False while one runs or the
+    keeper is busy (lock test, sweep, lock change). It counts for the current period's ceiling like a scheduled one."""
     now = now or time.time()
-    if not ON or st["running"] or common.busy() or not common.clock_ok() or guard.pause_end(now): return False
-    if (state().get("quality_ab") or {}).get("phase") == "trial": return False
-    done = state().get("captest_done") or {}
-    s = due(now, done)
-    if not s: return False
-    last = list(brain.HIST)[-IDLE_MIN:]
-    if len(last) < IDLE_MIN or not all(brain.idle(r) for r in last): return False
-    day = time.strftime("%Y-%m-%d", time.localtime(now))
-    state({"captest_done": {k: v for k, v in done.items() if k[:10] >= time.strftime("%Y-%m-%d", time.localtime(now - 3 * 86400))}
-           | {"%s %s" % (day, s): True}})
+    if st["running"] or common.busy(): return False
     st["running"] = True
-    threading.Thread(target=run, args=(s, now), daemon=True).start()
+    if (mode or ("tr143" if url else METHOD)) == "iperf3":          # a url= is a TR-143 file
+        custom = any(x is not None for x in (server, secs, conn)) or not reverse
+        diag = {"mode": "iperf3", "server": server, "secs": secs, "conn": conn, "reverse": reverse} if custom else None
+        if not diag: counted(now, "by hand (POST /captest)")
+        threading.Thread(target=run_iperf, args=(now, [server] if server else IPERFS, secs or ISECS, conn or CONN, reverse, None, diag),
+                         daemon=True).start()
+    else:
+        threading.Thread(target=run, args=(slot_of(now), now, True, url, conn, secs), daemon=True).start()
     return True
 
 
+def info(now=None):
+    """API (GET /captest): running, slots, the last test with the modem's raw values, recent results, the ceilings now."""
+    now = now or time.time(); hist = state().get("captest_hist") or []
+    return {"running": st["running"], "slots": SLOTS, "period_now": slot_of(now), "upload_test": UP, "host_fallback": HOST,
+            "server_list": "ok %s" % st["servers_day"] if st["servers"] else "not fetched yet / failed (fallback %s)" % HOST,
+            "last": state().get("captest_last"), "recent": hist[-20:],
+            "ceiling_now": {d: ceiling(d, now) for d in ("down", "up")},
+            "ceilings_by_period": {s: ceilings(hist, s) for s in SLOTS},
+            "shaper_ceiling_now": (sqm.st.get("last") or {}).get("ceiling"), "climb": sqm.st.get("climb"), "climbs": sqm.st.get("climbs"),
+            "explain": explain(now), "counted_by_period": {s: {d: len(counted_results(hist, s, d)) for d in ("down", "up")} for s in SLOTS},
+            "trigger": {"pending": st.get("want"), "setup_now": st.get("seen_key"), "setup_tested": state().get("captest_setup"),
+                        "today": len([t for t in state().get("captest_trig") or [] if now - t < 86400]), "max_a_day": TRIG_MAX}}
+
+
+def maybe_test(row, now=None):
+    """Minute job: start a due slot's test when the link has been idle IDLE_MIN minutes and nothing else runs. True when started."""
+    now = now or time.time()
+    if not ON or st["running"] or common.busy() or not common.clock_ok(): return False     # lock test / night screen / sweep: busy
+    if (brain.f(row.get("uptime_s")) or 0) < MIN_UPTIME_S: return False
+    if (state().get("quality_ab") or {}).get("phase") == "trial": return False
+    done = state().get("captest_done") or {}
+    why = trigger(row, now)
+    s = due(now, done)
+    if not s and not (why and trig_ok(now)): return False
+    last = list(brain.HIST)[-IDLE_MIN:]
+    if len(last) < IDLE_MIN or not all(brain.idle(r) for r in last): return False
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    trig = None
+    if s:
+        state({"captest_done": {k: v for k, v in done.items() if k[:10] >= time.strftime("%Y-%m-%d", time.localtime(now - 3 * 86400))}
+               | {"%s %s" % (day, s): True}})
+    else:
+        s, trig = slot_of(now), why; state({"captest_trig": [t for t in state().get("captest_trig") or [] if now - t < 86400] + [now]})
+    counted(now, trig)
+    st["running"] = True
+    if METHOD == "iperf3": threading.Thread(target=run_iperf, args=(now, IPERFS, ISECS, CONN, True, s), daemon=True).start()
+    else: threading.Thread(target=run, args=(s, now), daemon=True).start()
+    return True
+
+
+_h = state().get("captest_hist") or []
+if any(r.get("down") and not valid(r, "down") for r in _h):                        # 2026-11-13: drop the 5.9 Mbit/s non-result
+    state({"captest_hist": [dict(r, down=None, down_how="invalid: " + str(r.get("down_how"))) if r.get("down") and not valid(r, "down") else r for r in _h]})
 acs.hooks["read"].append(extra_read); acs.hooks["values"].append(on_values)   # the ACS reads the test's result while it runs
 sqm.CEILING[0] = ceiling                                                        # the shaper's ceiling: learned per period
 
@@ -219,14 +514,60 @@ if __name__ == "__main__":                       # self-check of the pure parts 
     v = {DL + "DiagnosticsState": "Completed", DL + "TestBytesReceivedUnderFullLoading": "112500000", DL + "PeriodOfFullLoading": "5000000"}
     assert result(v, DL) == (180.0, "full load 5.0 s")
     v = {DL + "DiagnosticsState": "Completed", DL + "TestBytesReceived": "25000000", DL + "BOMTime": "2026-11-13T07:30:00Z", DL + "EOMTime": "2026-11-13T07:30:08Z"}
-    assert result(v, DL) == (25.0, "BOM-EOM 8.0 s")
+    assert result(v, DL) == (25.0, "TestBytesReceived BOM-EOM 8.0 s")
     assert result({UL + "DiagnosticsState": "Error_NoTransferComplete"}, UL) == (None, "Error_NoTransferComplete")
+    v = {DL + "DiagnosticsState": "Completed", DL + "TestBytesReceived": "0", DL + "TotalBytesReceived": "62500000",
+         DL + "ROMTime": "2026-11-13 18:30:00", DL + "BOMTime": "", DL + "EOMTime": "2026-11-13 18:30:05.000"}
+    assert result(v, DL) == (100.0, "TotalBytesReceived ROM-EOM 5.0 s"), result(v, DL)          # space-separated dates, total bytes, ROM
+    r = result({DL + "DiagnosticsState": "Completed", DL + "TestBytesReceived": "0", DL + "EOMTime": "garbage"}, DL)
+    assert r[0] is None and "TestBytesReceived=0" in r[1] and "EOMTime=garbage" in r[1], r                     # the values in the why
+    assert iso("2026-11-13T18:30:00+02:00") == iso("2026-11-13T16:30:00Z")
+    assert mbit("176.3 Mbits/sec") == 176.3 and mbit("176300000") == 176.3 and mbit("176.3") == 176.3 and mbit("950 Kbits/sec") == 1.0 and mbit("") is None
+    rep = "[SUM]   0.00-10.00  sec   205 MBytes   172 Mbits/sec  12   sender\n[SUM]   0.00-10.00  sec   203 MBytes   170 Mbits/sec        receiver"
+    assert ip3_result({"Report": rep}) == (170.0, "iperf3 receiver (Report)") and ip3_result({"DownlinkSpeed": "168.5"})[0] == 168.5
+    assert ip3_result({"Status": "Error"})[0] is None
+    p = dict((k[len(IP3):], (t, v)) for k, t, v in iperf_params("37.19.203.1:5201", 10, 4, True))
+    assert p["ServerAddress"][1] == "37.19.203.1" and p["Reverse"][1] == "1" and p["Parallel"][1] == "4" and "Enable" not in p
+    sent = []
+    def fake(params, reboot=False, timeout=180):                               # the modem refuses Omit (optional) and Reverse typed
+        sent.append([n[len(IP3):] for n, t, v in params]); bad = []
+        if any(n.endswith(".Omit") for n, t, v in params): bad.append((IP3 + "Omit", "9007", "Invalid parameter value"))
+        if any(n.endswith(".Reverse") and t != "xsd:string" for n, t, v in params): bad.append((IP3 + "Reverse", "9006", "Invalid parameter type"))
+        acs.tr["refused"] = bad; return not bad
+    real, acs.tr069_set = acs.tr069_set, fake
+    ok, notes = write_settings(iperf_params("h:5201"))
+    assert ok and notes == ["dropped Omit", "Reverse as string"] and "Omit" not in sent[-1], (ok, notes, sent)
+    acs.tr069_set = lambda params, reboot=False, timeout=180: (acs.tr.update(refused=[(IP3 + "Mode", "9008", "read only")] if any(
+        n.endswith(".Mode") for n, t, v in params) else []) or not any(n.endswith(".Mode") for n, t, v in params))
+    ok, notes = write_settings(iperf_params("h:5201")); assert ok and notes == ["dropped Mode"], notes      # the real MC889
+    assert "Mode" in DROP and not any(n.endswith(".Mode") for n, t, v in iperf_params("h:5201"))           # ... not written again
+    assert write_settings(iperf_params("h:5201")) == (True, []); DROP.clear()
+    real_state = globals()["state"]
+    globals()["state"] = lambda u=None: {"tr143": {"writable": {IP3 + "Mode": False, IP3 + "ServerAddress": False, IP3 + "Omit": True}}}
+    names = [n[len(IP3):] for n, t, v in iperf_params("h:5201")]
+    assert "Mode" not in names and "ServerAddress" in names and "Omit" in names, names   # only optional read-only names are skipped
+    globals()["state"] = real_state
+    assert "UplinkSpeed=Mbits/sec" in ip3_result({"Status": "Complete", "UplinkSpeed": "Mbits/sec"}, False)[1]   # the real 23:17 upload
+    acs.tr069_set = lambda params, reboot=False, timeout=180: params[0][1] == "xsd:string" and params[0][2] == "true"
+    assert start_iperf() == (True, "Enable=true (xsd:string)")
+    acs.tr069_set = real
+    assert all(t == "xsd:string" for _, t, _ in iperf_params("h", plain=True))
+    v = {DL + "DiagnosticsState": "Completed", DL + "TestBytesReceived": "0", DL + "TotalBytesReceived": "2827", DL + "PeriodOfFullLoading": "120254",
+         DL + "BOMTime": "2026-11-13T18:31:01.679582Z", DL + "EOMTime": "2026-11-13T18:31:01.683401Z"}     # the real 18:30 result
+    assert result(v, DL)[0] is None and "TotalBytesReceived=2827" in result(v, DL)[1], result(v, DL)
+    assert not valid({"down": 5.9, "down_how": "TotalBytesReceived BOM-EOM 0.0 s"}, "down") and valid({"down_how": "full load 5.5 s"}, "down")
     SLOTS = ["07:30", "12:30", "18:30", "21:30"]
     T = time.mktime((2026, 11, 13, 7, 40, 0, 0, 0, -1))
     assert due(T, {}) == "07:30" and due(T, {"2026-11-13 07:30": True}) is None and due(T + 2 * 3600, {}) is None   # 09:40: out of the window
     assert slot_of(T) == "07:30" and slot_of(T - 3 * 3600) == "21:30" and slot_of(T + 12 * 3600) == "18:30"
-    H = [{"slot": "18:30", "down": x, "up": u} for x, u in ((150, 25), (170, 27), (90, 20), (160, 26), (300, 40), (165, 26))]
+    SLOTS = ["01:30", "04:30", "07:30", "12:30", "18:30", "21:30"]
+    assert slot_of(T - 3 * 3600) == "04:30" and slot_of(T - 6.5 * 3600) == "21:30" and due(T - 3 * 3600, {}) == "04:30"   # 04:40 -> the 04:30 slot
+    SLOTS = ["07:30", "12:30", "18:30", "21:30"]
+    H = [{"slot": "18:30", "down": x, "up": u, "down_how": "full load 5.0 s", "up_how": "TestBytesSent BOM-EOM 8.0 s"}
+         for x, u in ((150, 25), (170, 27), (90, 20), (160, 26), (300, 40), (165, 26))]
     c = ceilings(H, "18:30"); assert c == {"down": 151.8, "up": 23.9}, c                 # last 5: median 165 / 26 x 0.92
-    assert ceilings([{"slot": "07:30", "down": 260, "up": 45}], "07:30") == {"down": 200.0, "up": 30.0}   # capped at the plan
+    G = {"slot": "07:30", "down": 260, "up": 45, "down_how": "full load 5.0 s", "up_how": "full load 8.0 s"}
+    assert ceilings([G], "07:30") == {} and ceilings([G, G], "07:30") == {"down": 200.0, "up": 30.0}   # 2 tests needed; capped at the plan
+    assert ceilings([G, dict(G, down_how="TotalBytesReceived BOM-EOM 0.0 s")], "07:30").get("down") is None   # an invalid one doesn't count
     assert ceilings(H, "07:30") == {}
     print("OK captest")

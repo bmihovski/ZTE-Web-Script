@@ -132,6 +132,28 @@ at `/docs`.
 - The scheduled/manual antenna sweep (`POST /antenna-sweep`) is a different thing: 4 modes by median 5G SINR, kept with `AUTO=on`
   only if `SWEEP_MIN_GAIN_DB` better. The lock test's sweep is the internet-tested one above.
 
+## Capacity tests and the shaper (SQM)
+
+- **Shaper** (`sqm.tick`, every 10 s): busy + latency above `SQM_DELAY_MS` -> limit -15 %; busy + latency < half of it -> +5 %; idle ->
+  back up toward the ceiling. A cut that does not lower the latency (3 in a row) is undone and cuts pause 10 min (`earn_keep`).
+  `/status sqm.now.why` and the panel say why the limit is what it is.
+- **Ceiling per period** (`captest.ceilings`): `CAPTEST_SHARE` (0.92) x the median of the last 5 counted tests of that period of the
+  day, 2 needed, capped at the plan (`SQM_PLAN_DOWN`/`UP`, 200/30); without them `SQM_MAX_*`. Upload only with `CAPTEST_UP=1`.
+- **Tests** = the modem's own iperf3 (TR-143 cannot measure on the MC889 B07): download 4 streams, upload 1 stream (the MC889 gives no
+  upload result with 4). Scheduled at `CAPTEST_SLOTS` incl. night slots, only after 10 idle minutes, never while busy (lock test,
+  night screen, sweep, A/B trial) or < 15 min after a boot. Optional Iperf3 settings the modem reports read-only (TR-143 probe,
+  Writable flags) are never written; `tools/ip3_args.py` dry-runs the settings against them.
+- **Counted vs check:** `POST /captest` without options counts for the current period; any option (`secs`, `conn`, `reverse`,
+  `server`) makes it a diagnostic - shown, never in a ceiling.
+- **Climb** (`sqm.climb`): busy at the ceiling with clean latency for `SQM_CLIMB_S` (600 s in total) -> the ceiling x1.05, again and
+  again up to the plan; the first latency rise while busy -> back to the learned value; a new learned value restarts at x1.
+  `SQM_MAX_*` is only the start ceiling of a period without tests; the plan is the hard top.
+- **Triggered tests** (`captest.trigger`): the setup (LTE anchor | last 5G cell) changed and held 15 min, the climb passed +10 %, or 3
+  cuts below 70 % of the ceiling within an hour. Idle only, >= 1 h after the last counted test, none within 1 h before a slot,
+  `CAPTEST_TRIGGER_MAX` (6) a day. They count for the current period; records keep `setup` and `trigger`.
+- **Telegram:** only a moved ceiling (`capacity ceiling`, with "up stays N (measured M)" while the upload is not learned); single
+  tests and climbs are events / `/captest` only.
+
 ## API and docs
 
 - `ROUTES` in `keeper/api.py` is the single description; `/openapi.json` and `/docs` are generated from it, and the deploy tool

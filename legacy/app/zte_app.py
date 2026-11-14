@@ -83,8 +83,9 @@ ROUTER = CONFIG["zte"]
 MT_ROUTER = CONFIG["mikrotik"]
 ORIGINS = {ROUTER, MT_ROUTER}  # + any address opened from the launcher
 KEEPER = origin(os.environ.get("ZTE_KEEPER", "http://192.168.6.250:7557"))  # zte-keeper API (MikroTik container), read by the ZTE page
-KEEPER_PATH = re.compile(r"^/(status|report|events|cells|anchors|antennas|antenna-sweeps|antenna-sweep|lock-tests|lock-test-continue|lock-test-skip|lock-test-stop|lock-test|lte-lock|nr-lock|userdata|cell-ids)(\?[A-Za-z0-9_=&.@,;]*)?$")
+KEEPER_PATH = re.compile(r"^/(status|report|events|cells|anchors|antennas|antenna-sweeps|antenna-sweep|lock-tests|lock-test-continue|lock-test-skip|lock-test-stop|lock-test|lte-lock|nr-lock|userdata|cell-ids|captest)(\?[A-Za-z0-9_=&.@,;]*)?$")
 KEEPER_BOTH = ("/userdata", "/cell-ids")      # read and written by the app (its lists live in the keeper's database)
+KEEPER_RUN = ("/captest",)                     # read, and POST without a body (a capacity test now; its options in the query)
 KEEPER_WRITES = ("/antennas", "/antenna-sweep", "/lock-test", "/lock-test-continue", "/lock-test-skip", "/lock-test-stop", "/lte-lock", "/nr-lock")    # the only POSTs
 HERE = Path(__file__).resolve().parent
 TOKEN = secrets.token_urlsafe(16)
@@ -140,7 +141,7 @@ class JsApi:
         ("Load failed") while Chrome is fine. Only the keeper origin, its read paths and POST /antenna-sweep. Returns {status, text}."""
         path = str(path)
         p = path.split("?")[0]
-        if not KEEPER_PATH.match(path) or (p not in KEEPER_BOTH and (method, p in KEEPER_WRITES) not in (("GET", False), ("POST", True))) \
+        if not KEEPER_PATH.match(path) or (p not in KEEPER_BOTH + KEEPER_RUN and (method, p in KEEPER_WRITES) not in (("GET", False), ("POST", True))) \
                 or method not in ("GET", "POST") or (body is not None and (method != "POST" or p not in KEEPER_BOTH or len(str(body)) > 4000000)):
             return {"status": 0, "text": "refused"}
         req = urllib.request.Request(KEEPER + path, data=(str(body) if body is not None else "").encode() if method == "POST" else None, method=method,
