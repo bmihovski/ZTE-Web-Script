@@ -194,7 +194,16 @@ The keeper measures, analyses and decides; the userscript only shows the results
 - **Router clock after a power cut**: the RB450 has no battery clock; RouterOS boots with an old time and NTP fixes it only once the
   ZTE has internet (2026-10-30: booted at "10-29 18:00", real 06:25, fixed 75 s later). The keeper trusts its clock only while the
   modem's Inform `CurrentTime` agrees (`CLOCK_MAX_SKEW_S`, 300; 0 = don't check); until then LOCK_PAUSE and the night screen wait,
-  events `clock not verified` / `clock verified` mark the window (records in it carry the old time). `/status` -> `config.clock`.
+  events `clock not verified` / `clock verified` mark the window; the latter names the wrongly stamped range
+  (`records stamped A to B (47 s)`, measured on the monotonic clock - later records carry real times and sort among them).
+  Once verified in a run, a later disagreement is the modem's clock (a router reboot restarts the keeper): event `modem clock wrong`,
+  the router's time stays trusted. After a power cut, `tools/powercut.py --wait --follow 15` saves the router's log (memory, since
+  its boot, keeper lines included), maps it to real time via `ntp change time A => B` and checks: keeper started, flagged its clock
+  before the NTP step, verified it within 120 s after, blamed the router, no time-of-day action on the wrong clock (exit 1 on FAIL).
+  While unverified, the watchdog also asks the internet each minute (`CLOCK_URL`, HEAD, the HTTP `Date`; no answer before the WAN
+  has its dynamic address). Whose clock was off is decided by whether ours jumped (NTP stepped it) - not jumped = the modem's.
+  Smoke test any time: `POST /checks?name=clock` -> `verified (modem -1 s, internet +0 s)`; `warn` when verified but the internet
+  disagrees by > CLOCK_MAX_SKEW_S, `fail` while unverified. `/status` -> `config.clock`.
   Health releases (no service, wrong cell) don't need the clock. Intervals (sampling, "no inform" watchdog) use a monotonic clock.
 - **Self-test scenarios** (read-only health checks, pushed to Telegram; not the lock tests, which reboot): `GET /checks` lists the
   scenarios (`clock`, `link`, `sqm`, `lock`, `night`) and the last run; `POST /checks?name=all` (or a comma list) runs them now and
@@ -289,7 +298,7 @@ The keeper measures, analyses and decides; the userscript only shows the results
   `SQM_MAX_UP=26`, `SQM_DOWN_HOURS` (e.g. `Mon-Sun 07:00-24:00`; empty = always), `SQM_INSECURE=1` only for https with a self-signed certificate.
 - **Telegram alerts** (`alert.py`, off until both are set): `TG_TOKEN` (from @BotFather), `TG_CHAT` (your chat id: send the bot a message,
   then open `https://api.telegram.org/bot<token>/getUpdates`). Messages: lock released / restored / missing, reboot queued / held,
-  ZTE silent (no inform), FOTA activity, night-screen recommendation, calls at risk (>= 10 busy minutes of the last 15, under 80 %
+  ZTE silent (no inform; `inform back` with the silent minutes when it returns), FOTA activity, night-screen recommendation, calls at risk (>= 10 busy minutes of the last 15, under 80 %
   call-ready). Each kind at most once per `ALERT_GAP_MIN` (30). A message that fails (no internet, modem rebooting) is sent again within a minute, with its original time. The token is never logged; `/status` -> `config.alerts` shows the last 5.
 
 ### Code, docs, tests (development on the Mac)

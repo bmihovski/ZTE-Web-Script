@@ -15,13 +15,13 @@ capped at the plan (SQM_PLAN_DOWN / SQM_PLAN_UP) - the shaper must sit just belo
 Night slots (01:30, 04:30) learn their own ceilings (night cells / LOCK_PAUSE anchor) - they never touch the daytime ones.
 Env: CAPTEST (1), CAPTEST_SLOTS (01:30,04:30,07:30,12:30,18:30,21:30), CAPTEST_CONN (4), CAPTEST_UP_BYTES (25000000), CAPTEST_SERVER_ID (69006),
 CAPTEST_SPONSOR (Yettel), CAPTEST_CC (BG), CAPTEST_HOST (speedtest1.yettel.bg:8080), CAPTEST_IDLE_MIN (10), CAPTEST_SHARE (0.92),
-CAPTEST_KEEP (5), SQM_PLAN_DOWN (200), SQM_PLAN_UP (30), CAPTEST_UP (0: no upload test, the upload ceiling is SQM_MAX_UP).
+CAPTEST_KEEP (5), CAPTEST_WEEKLY (Mon 09:05: weekly summary to Telegram, empty = off), SQM_PLAN_DOWN (200), SQM_PLAN_UP (30), CAPTEST_UP (0: no upload test, the upload ceiling is SQM_MAX_UP).
 Upload: TR-143 specifies HTTP PUT; tools/tr143_sim.py showed 2026-11-13 that Ookla drops PUT (POST works). The modem's upload is
 tried; an Error_* turns it off for good (state captest_up, one message) - the upload ceiling then stays SQM_MAX_UP.
 """
 import datetime, json, re, statistics, threading, time, urllib.parse, urllib.request
 
-from keeper import acs, brain, common, guard, sqm
+from keeper import acs, alert, brain, common, guard, sqm, store
 from keeper.common import E, event, log, state
 
 DL, UL = "Device.IP.Diagnostics.DownloadDiagnostics.", "Device.IP.Diagnostics.UploadDiagnostics."
@@ -46,6 +46,7 @@ TRIG_MAX, TRIG_GAP_S = int(E("CAPTEST_TRIGGER_MAX", "6")), 3600       # extra te
 SETUP_STABLE_S = 900                                                   # a new anchor / 5G cell must hold 15 min before it is worth a test
 WINDOW_MIN, RESULT_WAIT_S = 90, 240
 MIN_BYTES = 1_000_000              # a result under 1 MB / 1 s is not a speed (2026-11-13: 2.8 kB in 4 ms read as 5.9 Mbit/s -> ceiling 20)
+WEEKLY = E("CAPTEST_WEEKLY", "Mon 09:05")    # the week's capacity summary to Telegram: "<Mon..Sun> HH:MM" (local), empty = off
 MIN_TESTS = 2                      # valid results a period needs before its learned ceiling replaces SQM_MAX_*
 LIST_URL = "https://www.speedtest.net/api/js/servers?engine=js&search=%s"
 FINAL = ("Completed",)                                    # anything else that is not Requested / None is an Error_* (TR-143)
@@ -154,11 +155,15 @@ def trigger(row, now):
     return (st.get("want") or {}).get("why")
 
 
+def trig_today(now):
+    """Triggered tests started on `now`'s calendar day (local time): the TRIG_MAX budget and the panel's 'today' count."""
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    return len([t for t in state().get("captest_trig") or [] if time.strftime("%Y-%m-%d", time.localtime(t)) == day])
+
+
 def trig_ok(now):
     """Rate limit of the triggered tests: TRIG_MAX a day, >= TRIG_GAP_S after the last counted test, none just before a slot."""
-    day = time.strftime("%Y-%m-%d", time.localtime(now))
-    n = [t for t in state().get("captest_trig") or [] if time.strftime("%Y-%m-%d", time.localtime(t)) == day]
-    return len(n) < TRIG_MAX and now - (state().get("captest_last_t") or 0) >= TRIG_GAP_S and not slot_soon(now)
+    return trig_today(now) < TRIG_MAX and now - (state().get("captest_last_t") or 0) >= TRIG_GAP_S and not slot_soon(now)
 
 
 def counted(now, trig=None):
@@ -465,7 +470,45 @@ def info(now=None):
             "shaper_ceiling_now": (sqm.st.get("last") or {}).get("ceiling"), "climb": sqm.st.get("climb"), "climbs": sqm.st.get("climbs"),
             "explain": explain(now), "counted_by_period": {s: {d: len(counted_results(hist, s, d)) for d in ("down", "up")} for s in SLOTS},
             "trigger": {"pending": st.get("want"), "setup_now": st.get("seen_key"), "setup_tested": state().get("captest_setup"),
-                        "today": len([t for t in state().get("captest_trig") or [] if now - t < 86400]), "max_a_day": TRIG_MAX}}
+                        "today": trig_today(now), "max_a_day": TRIG_MAX}}
+
+
+def week_text(now):
+    """The week's capacity summary: counted tests, the ceilings now, and the shaper's evidence that keeps phases 3 / 4 closed (2026-11-17:
+    busy minutes' latency ~ idle + 1-2 ms, so there is no rate where the delay rises to learn a lower ceiling from). Latency = the
+    minute's max delay above the idle baseline (sqm_delay); busy = rx >= 50 % of the download limit; cut = the limit fell > 10 % in the minute."""
+    frm = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - 7 * 86400)); hist = state().get("captest_hist") or []
+    wk = [r for r in hist if r.get("time", "") >= frm and not r.get("diag") and not r.get("url")]
+    g = lambda v: "-" if v is None else "%g" % round(v, 1)
+    rng = lambda xs: "%s-%s (median %s)" % (g(min(xs)), g(max(xs)), g(statistics.median(xs))) if xs else "none"
+    f, med = brain.f, lambda xs: statistics.median(xs) if xs else None
+    rows = [r for r in store.rows(common.DATA, "samples", frm) if f(r.get("sqm_rx")) is not None]
+    load = lambda r: f(r["sqm_rx"]) / f(r["sqm_down"]) if f(r.get("sqm_down")) else 0
+    dly = lambda sel: g(med([f(r["sqm_delay"]) for r in rows if sel(r) and f(r.get("sqm_delay")) is not None]))
+    idle = lambda r: f(r["sqm_rx"]) < 1 and (f(r.get("sqm_tx")) or 0) < 0.5
+    cpu = [r for r in rows if (f(r.get("sqm_cpu")) or 0) >= 90]; spikes = sqm.st.get("spikes") or []
+    return "\n".join([
+        "capacity week to %s: %d tests (%d extra) - down %s, up %s Mbit/s" % (time.strftime("%Y-%m-%d", time.localtime(now)), len(wk),
+            len([r for r in wk if r.get("trigger")]), rng([r["down"] for r in wk if r.get("down")]), rng([r["up"] for r in wk if r.get("up")])),
+        "ceilings down/up: " + " · ".join("%s %s/%s" % (s, g(c.get("down")), g(c.get("up"))) for s in SLOTS for c in [ceilings(hist, s)]),
+        "shaper: %d busy min (>= 50 %% of the limit), %d at the ceiling; latency median idle %s / busy %s / at the ceiling %s ms; %d min with a cut; "
+        "climbs since start: %d" % (len([r for r in rows if load(r) >= 0.5]), len([r for r in rows if load(r) >= 0.9]), dly(idle),
+            dly(lambda r: load(r) >= 0.5), dly(lambda r: load(r) >= 0.9),
+            len([r for r in rows if (f(r.get("sqm_down_min")) or 0) and f(r["sqm_down_min"]) < 0.9 * (f(r.get("sqm_down")) or 0)]), len(sqm.st.get("climbs") or [])),
+        "router CPU >= 90 %%: %d min (%d idle)%s" % (len(cpu), len([r for r in cpu if idle(r)]), "; last spike: " + spikes[-1] if spikes else "")])
+
+
+def weekly(row, now=None):
+    """Minute job: week_text() to Telegram once a week at CAPTEST_WEEKLY (or the first minute after it that day: a power cut)."""
+    now = now or time.time(); lt = time.localtime(now)
+    try: day, hm = WEEKLY.split()
+    except ValueError: return False                                     # empty / misconfigured: off
+    if not common.clock_ok() or time.strftime("%a", lt) != day or time.strftime("%H:%M", lt) < hm: return False
+    wk = time.strftime("%G-W%V", lt)
+    if state().get("captest_weekly") == wk: return False
+    state({"captest_weekly": wk})                                       # first: a failing summary must not retry every minute
+    txt = week_text(now); log("weekly capacity summary: " + txt.replace("\n", " | ")); alert.report(txt)
+    return True
 
 
 def maybe_test(row, now=None):

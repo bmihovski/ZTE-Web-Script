@@ -201,10 +201,30 @@ c.st["running"] = True; c.run_iperf(D, ["a:1"], 10, 4, False, None, {"mode": "ip
 assert "setup" not in common.state()["captest_last"]["rec"]
 c._iperf_once = real1; c.st["running"] = False
 assert set(c.info(D)["trigger"]) == {"pending", "setup_now", "setup_tested", "today", "max_a_day"}
+common.state({"captest_trig": [D - 10.5 * 3600, D - 3600]})                              # yesterday 23:30 + today 09:00
+assert c.info(D)["trigger"]["today"] == 1                                                  # calendar day, as trig_ok counts it
 sqm.st.update(last={"limit": {"down": 150.0, "up": 28.0}, "rate": {"down": 140.0, "up": 1.0}, "ceiling": {"down": 150.0, "up": 28.0},
                     "why": {"down": "at the ceiling 150", "up": "holding"}, "delay_ms": 2.0, "time": "10:00:00"}, climb={"down": {"x": 1.1025, "clean": 300}})
 x = c.info(D)["explain"]                                                                  # the panel's 'why' for each direction
 assert x["down"]["ceiling_from"].startswith("learned for the 07:30 period: 0.92 x the median") and x["down"]["why"] == "at the ceiling 150", x
 assert "+10 %" in x["down"]["climb"] and "after 5 more clean busy min" in x["down"]["climb"] and x["delay_limit_ms"] == sqm.DELAY, x
 assert x["up"]["ceiling_from"].startswith("upload learning off") if not c.UP else "learned" in x["up"]["ceiling_from"] or "not learned" in x["up"]["ceiling_from"]
+# weekly summary (Telegram): tests, ceilings, the shaper's busy vs idle latency - the evidence that keeps phases 3 / 4 closed
+from keeper import store
+assert c.weekly in z.minute_jobs()
+lt = time.localtime(); W = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 10, 0, 0, 0, 0, -1)); c.WEEKLY = time.strftime("%a", lt) + " 09:05"
+ts = lambda t: time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t))
+for i, (rx, dmin, dl, cpu) in enumerate([(0.1, 150, 9, 5), (0.2, 150, 10, 95), (120, 150, 11, 40), (149, 120, 13, 50)]):
+    store.add(DATA, "samples", {"time": ts(W - 3600 + 60 * i), "sqm_rx": rx, "sqm_tx": 0.1, "sqm_down": 150, "sqm_down_min": dmin, "sqm_delay": dl, "sqm_cpu": cpu})
+rec = lambda t, d, u, **k: dict({"time": ts(t), "slot": "07:30", "down": d, "up": u, "down_how": "dl, 4 streams 10 s", "up_how": "ul, 1 streams 10 s", "v": 2}, **k)
+common.state({"captest_weekly": None, "captest_hist": [rec(W - 9 * 86400, 100.0, 20.0), rec(W - 2 * 86400, 150.0, 27.0),
+                                                       rec(W - 86400, 160.0, 25.0, trigger="setup a -> b"), rec(W - 3600, 90.0, 9.0, diag=True)]})
+common.clock["ok"] = True; alert.TOKEN = alert.CHAT = "x"; alert._post = lambda text: None; sqm.st["spikes"] = ["networking 35 %"]
+assert c.weekly({}, W - 3 * 3600) is False                                               # 07:00: before 09:05
+assert c.weekly({}, W) is True and alert.sent[-1][1] == "report"
+txt = alert.sent[-1][2]
+for part in ("2 tests (1 extra) - down 150-160 (median 155), up 25-27 (median 26) Mbit/s", "07:30 ", "2 busy min (>= 50 % of the limit), 1 at the ceiling",
+             "latency median idle 9.5 / busy 12 / at the ceiling 13 ms", "1 min with a cut", "router CPU >= 90 %: 1 min (1 idle); last spike: networking 35 %"):
+    assert part in txt, (part, txt)
+assert c.weekly({}, W + 3600) is False                                                   # once a week
 print("OK test_captest")

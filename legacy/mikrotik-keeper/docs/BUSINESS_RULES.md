@@ -136,7 +136,8 @@ at `/docs`.
 
 - **Shaper** (`sqm.tick`, every 10 s): busy + latency above `SQM_DELAY_MS` -> limit -15 %; busy + latency < half of it -> +5 %; idle ->
   back up toward the ceiling. A cut that does not lower the latency (3 in a row) is undone and cuts pause 10 min (`earn_keep`).
-  `/status sqm.now.why` and the panel say why the limit is what it is.
+  `/status sqm.now.why` and the panel say why the limit is what it is; a limit that only follows a changed learned ceiling (new
+  period or test) says `new period ceiling X (was Y)`, an idle limit at the ceiling `idle, limit parked at the ceiling X`.
 - **Ceiling per period** (`captest.ceilings`): `CAPTEST_SHARE` (0.92) x the median of the last 5 counted tests of that period of the
   day, 2 needed, capped at the plan (`SQM_PLAN_DOWN`/`UP`, 200/30); without them `SQM_MAX_*`. Upload only with `CAPTEST_UP=1`.
 - **Tests** = the modem's own iperf3 (TR-143 cannot measure on the MC889 B07): download 4 streams, upload 1 stream (the MC889 gives no
@@ -150,7 +151,24 @@ at `/docs`.
   `SQM_MAX_*` is only the start ceiling of a period without tests; the plan is the hard top.
 - **Triggered tests** (`captest.trigger`): the setup (LTE anchor | last 5G cell) changed and held 15 min, the climb passed +10 %, or 3
   cuts below 70 % of the ceiling within an hour. Idle only, >= 1 h after the last counted test, none within 1 h before a slot,
-  `CAPTEST_TRIGGER_MAX` (6) a day. They count for the current period; records keep `setup` and `trigger`.
+  `CAPTEST_TRIGGER_MAX` (6) per calendar day (local; `GET /captest trigger.today` counts the same way). They count for the current period; records keep `setup` and `trigger`.
+- **Weekly summary** (`captest.weekly`, `CAPTEST_WEEKLY` Mon 09:05, empty = off): one Telegram per ISO week - counted tests (extra),
+  down/up range and median, ceilings per period, the shaper's busy / at-ceiling minutes and their latency vs idle, cut minutes, climbs,
+  router CPU >= 90 % minutes and the last spike. Sent at the first minute at/after the time that day (a power cut delays, not skips it).
+- **Phases 3 / 4 closed by data (2026-11-17, 5744 shaped minutes over 4 days):** latency (minute max above idle) median idle 9.7 ms,
+  busy (>= 50 % of the limit) 10.8 ms, at the ceiling 11.7 ms - own traffic does not raise the delay at the learned ceilings, so there
+  is no rate to lower a ceiling toward (phase 3); day (100/340) and night (3350/340) setups differ < 2 % (phase 4). Reopen phase 3 when
+  the weekly summary shows busy latency >= idle + 10 ms for weeks; phase 4 when two setups' medians differ > 10 %.
+- **CPU spikes** (`sqm.cpu_spy`): a core at >= 90 % -> RouterOS `/tool/profile` for 2 s, top 3 processes kept in
+  `/status sqm.now.cpu_spikes` and the keeper log (`router CPU spike`), at most every 10 min. 2026-11-13..17: 100 % every ~8 min in
+  hour-long windows, mostly idle - not the shaper's traffic.
+  A permission error (`not enough permissions`, the SQM_USER group lacks the policy) turns the probe off until the next restart,
+  said once in `cpu_spikes` and the log; other errors retry after 10 min. An answer with nothing to rank is kept raw
+  (`no profile data (raw: ...)`, 300 chars) so its format can be read. Skipped in the keeper's first 2 min (its own start load);
+  each spike line ends `keeper N %` = the keeper's own CPU (all threads, % of one core) since the last tick. API requests taking
+  `SLOW_REQUEST_S` (2) or more are logged `slow request: GET /report?hours=24 3.4 s` - the ZTE panel polls ~9 endpoints every 60 s.
+  `/status` (its `findings_24h`) and `/report` share `brain.report_cached`: the 24 h analysis (~2.5 s of a router core) at most once
+  a minute or per new sample; the keeper's own logic keeps calling the fresh `brain.report`.
 - **Telegram:** only a moved ceiling (`capacity ceiling`, with "up stays N (measured M)" while the upload is not learned); single
   tests and climbs are events / `/captest` only.
 

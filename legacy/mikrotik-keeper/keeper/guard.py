@@ -200,10 +200,12 @@ def _ab_apply(ab, arm, now):
 
 
 def _ab_restore(ab, now):
-    """Your locks back: released -> the guard restores each once its cell is back and the link idle. A lock changed by hand stays."""
+    """Your locks back: pending -> the guard's next idle minute writes both legs at once, ONE reboot. Not 'released': each leg then
+    waited for its own 'back' check and got its own reboot (2026-11-17: 17:23:53 the 5G, 17:26:53 the LTE). A lock changed by hand stays."""
     for k, o in ab["orig"].items():
         w = state().get(KEYS[k])
-        if o and w and w.get("ab"): state({KEYS[k]: dict(o, state="released", released_at=now, retry_at=now, reason="A/B over")})
+        if o and w and w.get("ab"):
+            state({KEYS[k]: {x: v for x, v in dict(o, state="pending", requested=now, reason="A/B over").items() if x not in ("released_at", "retry_at")}})
 
 
 def quality_ab(row, now=None):

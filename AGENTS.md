@@ -17,6 +17,8 @@ Durable project memory. Read this first; the details live in the keeper docs.
   `backups/<time>/`, uploads **code only** (never `keeper/data/`), restarts, verifies version / OpenAPI contract / config /
   fresh sample / DB, and auto-rolls back on failure. `check`, `status`, `logs`, `backup`, `verify`, `rollback <dir>` are the rest.
   Use `--skip-tests` only right after a fresh suite. The deploy refuses while a lock test runs.
+  It also refuses when it cannot reach the API (it could not verify, so it would roll back blind): `KEEPER_URL=http://192.168.6.250:7557`
+  when `keeper.lan` does not resolve / a proxy is in the way on the Mac (2026-11-17); verify names the last error; `--force` for a keeper that is down.
 - Tests: `.venv/bin/python -m pytest -q` (each `test/scenarios/*.py` runs in its own process). A scenario that patches a function
   must be paired with a real-body test — the `INTEST_MB` typo shipped because every test patched `brain.internet_test`.
 - Version: bump `VERSION` in `keeper/__init__.py` (`YYYY-MM-DD<letter>`) on every keeper change; the deploy verify compares it
@@ -55,8 +57,17 @@ Durable project memory. Read this first; the details live in the keeper docs.
 - **A released lock waiting for its cell is traceable:** the guard logs/events `lock restore pending` at most hourly while the
   cell is not back (no Telegram - the event name is outside the alert rules). LOCK_PAUSE releases at 00:50 and restores when B1
   returns; the wait is expected, not a bug.
+- **Clock:** verified by the modem's Inform time or the internet's HTTP Date (`CLOCK_URL`, only while unverified); whose clock was
+  off = did ours jump (NTP) - else the modem's, and nothing is blamed on the router. Once verified in a run it stays (a modem reboot
+  is not a router reboot).
+  After a power cut run `legacy/mikrotik-keeper/tools/powercut.py --wait --follow 15` (router log -> real time -> PASS/FAIL;
+  reports/ is git-ignored); the fixture `test/fixtures/routeros-powercut-2026-11-17.log` is the real 3rd cut of that day.
 - **One lock change = one reboot** on the ZTE (both legs in one SetParameterValues); the ATL uses one script, no CPE reboot.
+  The quality A/B's end puts your locks back as `pending` (both legs, one write) - not `released`, which restored each leg on its
+  own 'back' check with its own reboot (2026-11-17). A ZTE reports other-frequency neighbours only ~2-3 min after a boot.
 - **Per device, never mixed:** DB rows carry `device`; `store.rows` defaults to the active `DEVICE`; state/cell files are per device.
+- **SQM phases 3 / 4 are closed by data** (2026-11-17: busy latency ~ idle + 1-2 ms, setups < 2 % apart); the weekly Telegram
+  summary (`CAPTEST_WEEKLY`) carries the evidence - reopen only on its numbers (rules in BUSINESS_RULES).
 - The keeper applies the antenna mode once per boot; a superseded boot worker stands down (generation checked after the wait).
 
 ## Workflow

@@ -28,12 +28,24 @@ assert common.cpe_skew("1970-01-01T00:00:00", t0055) < -1e9 and common.cpe_skew(
 common.state({"lte_lock": {"cell": "340@100", "state": "active"}})
 row = {"lte_cell": "100/340", "uptime_s": "9000", "down_bps": "100", "up_bps": "100", "lte_neighbours": "100/340:-82", "lte_ca": "B1/100/340:-82/30@20"}
 assert guard.lock_guard(row, t0055) is None                                             # router clock says 00:55 but is not verified: no pause release
+common.clock["bad_mono"] -= 47                                                         # wrong for 47 s, then NTP fixed it
 assert common.check_clock(iso(t0055), t0055) is True and common.clock_ok()
 ev = [e["event"] for e in __import__("keeper.store", fromlist=["x"]).rows(common.DATA, "events")]
 assert ev[-2:] == ["clock not verified", "clock verified"], ev
+import datetime, re                              # the wrong stamps cover only the 47 s, not "until now" (2026-11-17: 04:27:02 .. 04:27:49)
+why, bad = __import__("keeper.store", fromlist=["x"]).rows(common.DATA, "events")[-1]["why"], common.clock["bad_since"]
+end = (datetime.datetime.strptime(bad, "%Y-%m-%d %H:%M:%S") + datetime.timedelta(seconds=47)).strftime("%H:%M:%S")
+assert re.search(r"records stamped %s to at most \d\d:\d\d:\d\d carry that wrong time" % re.escape(bad), why), why   # the 47 s + the test's own runtime
 assert common.check_clock("") is True and common.clock["ok"] is True   # empty modem time in an Inform: no change to the verdict
 from keeper import alert; alert.TOKEN = alert.CHAT = "x"; alert._post = lambda text: None
 assert alert.on_event("ZTE", __import__("keeper.store", fromlist=["x"]).rows(common.DATA, "events")[-1]) and "clock was 720 min behind" in alert.sent[-1][2], alert.sent[-1:]
+# verified in this run, then a modem clock off = the MODEM's clock (a router reboot would have restarted the keeper): stay trusted
+# (constructed; the 2026-11-17 14:53 case that looked like this was the router after a 3rd power cut - see test/scenarios/clock.py case 6)
+evn = lambda: [e["event"] for e in __import__("keeper.store", fromlist=["x"]).rows(common.DATA, "events")]
+assert common.check_clock(iso(t0055 + 86 * 60), t0055) is True and common.clock_ok() and evn()[-1] == "modem clock wrong", evn()[-2:]
+assert "router's time stays trusted" in __import__("keeper.store", fromlist=["x"]).rows(common.DATA, "events")[-1]["why"]
+n = len(evn()); assert common.check_clock(iso(t0055 + 86 * 60), t0055 + 60) is True and len(evn()) == n      # said once
+assert common.check_clock(iso(t0055), t0055 + 120) is True and len(evn()) == n                                # right again: quiet
 assert guard.lock_guard(dict(row, down_bps="900000"), t0055) is None                    # busy: wait
 assert guard.lock_guard(row, t0055) == "release"; wait()
 w = common.state()["lte_lock"]; assert w["state"] == "released" and w["retry_at"] == t0055 + 5 * 3600 + 15 * 60 and "LOCK_PAUSE" in w["reason"], w

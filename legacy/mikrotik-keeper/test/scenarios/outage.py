@@ -86,4 +86,15 @@ for i in range(60): brain.lat_buf.append((time.time() - 120 + 2 * i, 20.0, "1.1.
 assert brain.offline_decide(11 * 60, z.offline_health, reboot) is None                                        # internet works: not offline
 # the real web reboot posts REBOOT_DEVICE
 m.st["sets"].clear(); z.offline_reboot(); assert [s[1] for s in m.st["sets"]] == ["REBOOT_DEVICE"], m.st["sets"]
+# a silent-modem alert never stands alone: 'inform back' once it informs again (2026-11-17 02:45: 'no inform', boot 22 s later, no word)
+import re
+evs = lambda: [e["event"] for e in store.rows(DATA, "events")]
+Q = 5 * acs.INTERVAL + 300; n = len(evs())
+assert acs.silence(Q + 100, None, True) is None and evs()[n:] == []                 # a lock test reboots it on purpose: no alert
+w = acs.silence(Q + 100, None, False); assert w is not None and evs()[n:] == ["no inform"]
+assert acs.silence(Q + 160, w, False) == w and acs.silence(Q + 160, w, True) == w and evs()[n:] == ["no inform"]   # once per silence
+assert acs.silence(5, w, False) is None and evs()[n:] == ["no inform", "inform back"] and "informs again after" in last_ev()["why"], last_ev()
+assert acs.silence(5, None, False) is None and evs()[n:] == ["no inform", "inform back"]                 # no 'back' without an alert
+from keeper import alert
+assert [k for rx, k in alert.RULES if re.search(rx, "inform back")] == ["back"]     # its own kind: the 30-min gap of 'silent' can't eat it
 print("OK test_outage")

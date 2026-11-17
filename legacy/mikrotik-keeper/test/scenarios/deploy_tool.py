@@ -93,4 +93,13 @@ night = [dict(vrow("none", "N1", "5", "0", "60", "10", "7", "-80", on="", rat="l
          dict(vrow("340@1550", "N1", "5", "0", "55", "9", "12", "-75", rat="lte"), mode="night")]
 v = d.run_verdict(night, "lte", run="N1", lock="")
 assert v["night"] is True and v["verdict"] == "recommend" and "night screen (unloaded)" in "\n".join(d.verdict_text(v)), v
+# an unreachable API says why (2026-11-17: two deploys failed "did not answer within 120 s" while the keeper ran fine - the cause hidden)
+probs, _, spec_ = d.verify(ROOT, "http://keeper-test.invalid:7557", contract=False, require_keys=False)
+assert spec_ is None and re.search(r"\(last error: \w+Error: .+\)$", probs[0]), probs       # URLError / HTTPError (a proxy) ...
+d._ssh = d._sftp = lambda *a, **k: (_ for _ in ()).throw(AssertionError("touched the router"))
+try: d.deploy(ROOT, url="http://keeper-test.invalid:7557", skip_tests=True); raise AssertionError("deployed blind")
+except SystemExit as e: assert "not reachable" in str(e) and "KEEPER_URL" in str(e) and "last error" in str(e), e   # no upload it can't verify
+os.environ["KEEPER_URL"] = "http://192.168.6.250:7557"; d2 = importlib.util.module_from_spec(spec); spec.loader.exec_module(d2)
+assert d2.URL == "http://192.168.6.250:7557"                                      # the name can fail to resolve on the Mac: override it
+
 print("OK test_deploy_tool")

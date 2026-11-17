@@ -1,0 +1,39 @@
+# RouterOS `/log print` around a keeper lock change on 2026-11-17 (340@100 restored): the ZTE reboots, the router stays up (its
+# clock right, no NTP step), the WAN is down ~70 s. A lock test on an unavailable cell stretches this to the boot wait (420 s) or more.
+ 2026-11-17 17:26:53 container,info,debug zte-keeper: 2026-11-17 17:26:53 reboot accepted by the ZTE
+ 2026-11-17 17:26:59 interface,info ether5 link down
+ 2026-11-17 17:26:59 dhcp,info ether5 on ether5 lost IP address 10.98.174.118 - lease stopped locally
+ 2026-11-17 17:27:07 interface,info ether5 link up (speed 100M, full duplex)
+ 2026-11-17 17:27:07 interface,info ether5 detect LAN
+ 2026-11-17 17:27:07 interface,info ether5 detect UNKNOWN
+ 2026-11-17 17:27:13 interface,info ether5 detect WAN
+ 2026-11-17 17:27:18 interface,info ether5 link down
+ 2026-11-17 17:27:20 interface,info ether5 link up (speed 1G, full duplex)
+ 2026-11-17 17:27:20 interface,info ether5 detect LAN
+ 2026-11-17 17:27:21 interface,info ether5 detect UNKNOWN
+ 2026-11-17 17:27:27 interface,info ether5 detect WAN
+ 2026-11-17 17:27:40 interface,info ether5 link down
+ 2026-11-17 17:27:42 interface,info ether5 link up (speed 1G, full duplex)
+ 2026-11-17 17:27:42 interface,info ether5 detect LAN
+ 2026-11-17 17:27:42 interface,info ether5 detect UNKNOWN
+ 2026-11-17 17:27:46 interface,info ether5 link down
+ 2026-11-17 17:27:48 interface,info ether5 link up (speed 1G, full duplex)
+ 2026-11-17 17:27:48 interface,info ether5 detect LAN
+ 2026-11-17 17:27:48 interface,info ether5 detect UNKNOWN
+ 2026-11-17 17:27:54 interface,info ether5 detect WAN
+ 2026-11-17 17:27:59 interface,info ether5 link down
+ 2026-11-17 17:28:01 interface,info ether5 link up (speed 100M, half duplex)
+ 2026-11-17 17:28:01 interface,info ether5 detect LAN
+ 2026-11-17 17:28:01 interface,info ether5 detect UNKNOWN
+ 2026-11-17 17:28:03 interface,info ether5 link down
+ 2026-11-17 17:28:05 interface,info ether5 link up (speed 1G, full duplex)
+ 2026-11-17 17:28:05 interface,info ether5 detect LAN
+ 2026-11-17 17:28:05 interface,info ether5 detect UNKNOWN
+ 2026-11-17 17:28:07 container,info,debug zte-keeper: 2026-11-17 17:28:07 ZTE boot inform ['1 BOOT', 'M Reboot', '4 VALUE CHANGE']
+ 2026-11-17 17:28:08 dhcp,info ether5 on ether5 got IP address 10.47.125.152
+ 2026-11-17 17:28:08 container,info,debug zte-keeper: 2026-11-17 17:28:08 5G 636576/534 -> no5G: 5G leg released (LTE only) - link idle: normal in NSA, added again on traffic
+ 2026-11-17 17:28:08 container,info,debug zte-keeper: 2026-11-17 17:28:08 setting PeriodicInformInterval 10 -> 60
+ 2026-11-17 17:28:11 interface,info ether5 detect INTERNET
+ 2026-11-17 17:28:24 container,info,debug zte-keeper: 2026-11-17 17:28:24 applied: ant5 dir / ant6 dir (auto=0 ant5=4 ant6=4, cell 534@636576 (measured 2026-11-02))
+ 2026-11-17 17:28:52 container,info,debug zte-keeper: 2026-11-17 17:28:52 TR-143 probe (Device.IP.Diagnostics.): 162 names, download test yes
+ 2026-11-17 17:29:23 system,info,account user keeper-sqm logged out via api

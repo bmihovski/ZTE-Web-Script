@@ -921,6 +921,18 @@ def _mean_loss(rows):
     return round(statistics.mean(xs), 2) if xs else None
 
 
+REPORT_CACHE_S = 60
+_rep = {}
+
+
+def report_cached(hours=24, now=None):
+    """report(hours) for the HTTP readers, computed again only after REPORT_CACHE_S or a new sample: /status (its findings) and the
+    ZTE panel's /report?hours=24 each cost ~2.5 s of a router core (2026-11-17) - twice a minute while the page was open."""
+    now = now or time.time(); h = list(HIST); key = (len(h), h[-1].get("time") if h else None); c = _rep.get(hours)
+    if c and c[1] == key and now - c[0] < REPORT_CACHE_S: return c[2]
+    out = report(hours); _rep[hours] = (now, key, out); return out
+
+
 def report(hours=24):
     """Analysis of the last `hours`: call quality (overall, per hour, under load), 5G cells, LTE carriers and cells, findings."""
     rows = window(hours)
@@ -1053,14 +1065,14 @@ def status(cfg):
             "lte_anchor": ("B%s %s/%s SINR %s" % (ca[0][0], ca[0][1], ca[0][2], ca[0][4])) if ca else last.get("lte_cell"),
             "lte_ca": last.get("lte_ca"), "latency": {c: last.get(c) for c in LAT_COLS}, "uptime_s": last.get("uptime_s"),
             "temps": last.get("temps"), "fota": last.get("fota"), "auto": AUTO, "capacity": capacity_now(last) if last else None, "pending": ctx["pending"], "config": cfg,
-            "findings_24h": report(24)["findings"]}
+            "findings_24h": report_cached(24)["findings"]}
 
 
 def api(path, cfg, data_dir):
     """GET endpoints -> (status, dict)"""
     u = path.split("?", 1); q = dict(p.split("=", 1) for p in (u[1].split("&") if len(u) > 1 else []) if "=" in p)
     if u[0] in ("/", "/status"): return 200, status(cfg)
-    if u[0] == "/report": return 200, report(float(q.get("hours", "24")))
+    if u[0] == "/report": return 200, report_cached(float(q.get("hours", "24")))
     if u[0] == "/cells": return 200, cells_view()
     if u[0] == "/samples":                  # raw minutes: ?from=2026-10-28 01:00&to=2026-10-28 01:15&cols=time,lte_cell (newest 500)
         uq = lambda v: urllib.parse.unquote_plus(v)

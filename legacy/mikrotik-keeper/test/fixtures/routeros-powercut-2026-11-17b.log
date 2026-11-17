@@ -1,0 +1,74 @@
+# RouterOS `/log print` after the power-cut test of 2026-11-17 ~19:31 (unplugged ~10 s), keeper 2026-11-17i: the router booted on
+# 16:19:58, NTP stepped 16:21:31 -> 19:33:57 - THIS RouterOS stamps the ntp line with the OLD time (the 1st fixture: the new one).
+ 2026-11-17 16:19:58 system,error,critical router rebooted without proper shutdown, probably power outage
+ 2026-11-17 16:20:01 interface,info lo link up
+ 2026-11-17 16:20:03 container,info,debug adguardhome: *** start on boot
+ 2026-11-17 16:20:03 container,info,debug zte-keeper: *** start on boot
+ 2026-11-17 16:20:03 container,info,debug aria: *** start on boot
+ 2026-11-17 16:20:03 interface,info agh link up
+ 2026-11-17 16:20:03 interface,info zte-keeper link up
+ 2026-11-17 16:20:03 container,info,debug adguardhome: *** started /opt/adguardhome/AdGuardHome -c /opt/adguardhome/conf/AdGuardHome.yaml -h 0.0.0.0 -w /opt/adguardhome/work
+ 2026-11-17 16:20:03 interface,info aria link up
+ 2026-11-17 16:20:03 container,info,debug zte-keeper: *** started /bin/sh /keeper/start.sh
+ 2026-11-17 16:20:03 container,info,debug aria: *** started /bin/sh /aria/start.sh
+ 2026-11-17 16:20:06 bridge,info hardware offloading activated on bridge "bridge" ports: ether4,ether2,ether3,ether1
+ 2026-11-17 16:20:07 poe-out,info ether5 detected poe-out status: on
+ 2026-11-17 16:20:08 interface,info ether2 link up (speed 1G, full duplex)
+ 2026-11-17 16:20:08 interface,info ether1 link up (speed 1G, full duplex)
+ 2026-11-17 16:20:09 interface,info ether3 link up (speed 1G, full duplex)
+ 2026-11-17 16:20:10 interface,info ether4 link up (speed 100M, full duplex)
+ 2026-11-17 16:20:11 container,info,debug aria: aria (auto) on :80 -> www.fitbit.com, log /aria/data/aria-raw.log
+ 2026-11-17 16:20:13 interface,info ether5 link up (speed 100M, full duplex)
+ 2026-11-17 16:20:13 interface,info ether5 detect LAN
+ 2026-11-17 16:20:13 interface,info ether5 detect UNKNOWN
+ 2026-11-17 16:20:15 container,info,debug zte-keeper: 2026-11-17 16:20:15 start (v2 2026-11-17i): DEVICE=zte, ACS + API on :7557, inform every 60s, ZTE antennas after boot: auto=0 ant5=4 ant6=4, operator check-in every 0.0 days, actions on
+ 2026-11-17 16:20:19 interface,info ether5 detect WAN
+ 2026-11-17 16:20:21 container,info,debug zte-keeper: telegram alert failed: URLError - retried within a minute
+ 2026-11-17 16:20:25 interface,info ether5 link down
+ 2026-11-17 16:20:26 interface,info ether5 link up (speed 1G, full duplex)
+ 2026-11-17 16:20:26 interface,info ether5 detect LAN
+ 2026-11-17 16:20:26 interface,info ether5 detect UNKNOWN
+ 2026-11-17 16:20:29 system,info,account user keeper-sqm logged in from 192.168.6.250 via rest-api
+ 2026-11-17 16:20:29 system,info,account user keeper-sqm logged in via api
+ 2026-11-17 16:20:29 container,info,debug zte-keeper: 2026-11-17 16:20:29 SQM limit now 25.3/146.7 Mbit/s up/down (delay None ms)
+ 2026-11-17 16:20:29 system,info simple queue changed by api:keeper-sqm@::/action:0 (/queue simple set sqm max-limit=25300k/146700k)
+ 2026-11-17 16:20:32 interface,info ether5 detect WAN
+ 2026-11-17 16:20:46 interface,info ether5 link down
+ 2026-11-17 16:20:47 interface,info ether5 link up (speed 1G, full duplex)
+ 2026-11-17 16:20:47 interface,info ether5 detect LAN
+ 2026-11-17 16:20:48 interface,info ether5 detect UNKNOWN
+ 2026-11-17 16:20:49 system,info,account user admin logged in from 192.168.6.20 via winbox
+ 2026-11-17 16:20:52 interface,info ether5 link down
+ 2026-11-17 16:20:53 interface,info ether5 link up (speed 1G, full duplex)
+ 2026-11-17 16:20:53 interface,info ether5 detect LAN
+ 2026-11-17 16:20:53 interface,info ether5 detect UNKNOWN
+ 2026-11-17 16:20:59 interface,info ether5 detect WAN
+ 2026-11-17 16:21:05 interface,info ether5 link down
+ 2026-11-17 16:21:07 interface,info ether5 link up (speed 100M, half duplex)
+ 2026-11-17 16:21:07 interface,info ether5 detect LAN
+ 2026-11-17 16:21:07 interface,info ether5 detect UNKNOWN
+ 2026-11-17 16:21:09 interface,info ether5 link down
+ 2026-11-17 16:21:11 interface,info ether5 link up (speed 1G, full duplex)
+ 2026-11-17 16:21:11 interface,info ether5 detect LAN
+ 2026-11-17 16:21:11 interface,info ether5 detect UNKNOWN
+ 2026-11-17 16:21:12 container,info,debug zte-keeper: 2026-11-17 16:21:12 clock not verified: the modem's clock is +192 min from ours - LOCK_PAUSE / night screen wait
+ 2026-11-17 16:21:13 container,info,debug zte-keeper: 2026-11-17 16:21:13 ZTE boot inform ['1 BOOT', '4 VALUE CHANGE']
+ 2026-11-17 16:21:14 container,info,debug zte-keeper: 2026-11-17 16:21:14 ZTE cell ids: LTE 1243/81 (ECGI 284054db51); 5G NCI/gNB not reported in NSA
+ 2026-11-17 16:21:14 container,info,debug zte-keeper: 2026-11-17 16:21:14 ZTE status: firmware YETTEL_BG_MC889V2.0.0B11, UpgradesManaged=1, FOTA version_idle/fota_idle, FOTA NewVersion YETTEL_BG_MC889V2.0.0B07 (not newer than installed: no update), inform every 60s
+ 2026-11-17 16:21:15 dhcp,info ether5 on ether5 got IP address 10.98.153.62
+ 2026-11-17 16:21:17 interface,info ether5 detect INTERNET
+ 2026-11-17 16:21:19 container,info,debug zte-keeper: 2026-11-17 16:21:19 internet time: ours is -192 min off - waiting for the router's NTP
+ 2026-11-17 16:21:22 container,info,debug zte-keeper: 2026-11-17 16:21:22 router CPU spike: 11-17 16:21 core 92 %: no profile data (raw: [{".section": "0", "name": "total", "usage": "0"}, {".section": "1", "name": "total", "usage": "0"}])
+ 2026-11-17 16:21:30 container,info,debug zte-keeper: 2026-11-17 16:21:30 applied: ant5 dir / ant6 dir (auto=0 ant5=4 ant6=4, cell 534@636576 (measured 2026-11-02))
+ 2026-11-17 16:21:31 system,clock,critical,info ntp change time Nov/17/2026 16:21:31 => Nov/17/2026 19:33:57
+ 2026-11-17 19:34:00 system,info simple queue changed by api:keeper-sqm@::/action:1 (/queue simple set sqm max-limit=24600k/150M)
+ 2026-11-17 19:34:00 container,info,debug zte-keeper: 2026-11-17 19:34:00 router CPU spike: 11-17 19:33 core 97 %: no profile data (raw: [{".section": "0", "name": "total", "usage": "0"}, {".section": "1", "name": "total", "usage": "0"}])
+ 2026-11-17 19:34:45 container,info,debug zte-keeper: 2026-11-17 19:34:45 clock verified again by the internet's time (HTTP Date)
+ 2026-11-17 19:34:52 container,info,debug zte-keeper: 2026-11-17 19:34:52 5G no5G -> 636576/534: after a ZTE boot
+ 2026-11-17 19:35:59 system,info,account user admin logged in from 192.168.6.20 via winbox
+ 2026-11-17 19:40:26 ssh,info 49020 publickey accepted for user: admin, fingerprint: SHA256:TH1Gl/dJdPUwujXH7i7/aTGgTduQsrEQXO6fWX8q+bw=
+ 2026-11-17 19:40:26 system,info,account user admin logged in from 192.168.6.20 via ssh
+ 2026-11-17 19:40:27 system,info,account user admin logged out from 192.168.6.20 via ssh
+ 2026-11-17 19:40:29 ssh,info 49ff0 publickey accepted for user: admin, fingerprint: SHA256:TH1Gl/dJdPUwujXH7i7/aTGgTduQsrEQXO6fWX8q+bw=
+ 2026-11-17 19:40:29 system,info,account user admin logged in from 192.168.6.20 via ssh
+

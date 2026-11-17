@@ -2,13 +2,14 @@
 
 Every other module uses these instead of its own copies, so log lines, record formats and the per-device state file stay one thing.
 Env: DATA (/keeper/data), MAX_MB (30 - per log file before it rotates to `.1`), RAW=1 (log every TR-069 message, contains IMEI / IMSI),
-CLOCK_MAX_SKEW_S (300; 0 = trust the router clock unchecked).
+CLOCK_MAX_SKEW_S (300; 0 = trust the router clock unchecked), CLOCK_URL (http://www.google.com/generate_204: its HTTP Date verifies
+our clock while unverified; empty = off).
 
 Clock: the RB450 has no battery clock - after a power cut RouterOS starts with an old time and NTP fixes it only once the ZTE has
 internet (2026-10-30: 18:00 instead of 06:25 for 75 s). The keeper's clock counts as verified only while the modem's own clock
 (Inform CurrentTime) agrees with it; time-of-day actions (LOCK_PAUSE, night screen) wait for that. Intervals use time.monotonic().
 """
-import calendar, datetime, json, os, re, threading, time
+import calendar, datetime, email.utils, json, os, re, threading, time, urllib.error, urllib.request
 
 from keeper import alert, store
 
@@ -17,7 +18,10 @@ DATA = E("DATA", "/keeper/data")
 MAX_BYTES = int(float(E("MAX_MB", "30")) * 1e6)
 DEVICE = store.DEVICE
 CLOCK_MAX_SKEW = float(E("CLOCK_MAX_SKEW_S", "300"))
-clock = {"ok": None, "skew": None, "bad_since": None}
+mono = time.monotonic        # the uptime clock (tests replay a real power cut through it)
+CLOCK_URL = E("CLOCK_URL", "http://www.google.com/generate_204")   # its HTTP Date verifies our clock while it is not verified; empty = off
+clock = {"ok": None, "skew": None, "bad_since": None, "bad_mono": None}
+clock["start"] = (time.time(), mono())   # the keeper's start: its records are on the old clock from here until it is verified
 EVENT_COLS = ["time", "uptime_s", "event", "from", "to", "nr_sinr_before", "lte_cell", "lte_sinr", "why"]
 _state_lock = threading.Lock()
 _log_lock = threading.Lock()
@@ -45,22 +49,74 @@ def cpe_skew(ct, now=None):
 
 def check_clock(ct, now=None):
     """Each Inform: compare our clock with the modem's; an event when it stops / starts agreeing."""
+    now = now or time.time()
     skew = cpe_skew(ct, now)
     if skew is None: return clock_ok()                  # no readable modem time in this Inform (or a foreign/odd CPE): no evidence, leave the verdict
     ok = abs(skew) <= CLOCK_MAX_SKEW
-    was = clock["ok"]; clock.update(ok=ok, skew=skew)
-    if ok == was: return ok
-    off = "unreadable (%r)" % ct if skew is None else "%+.0f min" % (skew / 60)
-    if not ok:
-        clock["bad_since"] = stamp()
-        clock["bad_off"] = "%.0f min %s" % (abs(skew) / 60, "behind" if skew > 0 else "ahead")
-        log("clock not verified: the modem's clock is %s from ours - LOCK_PAUSE / night screen wait" % off)
-        event({"event": "clock not verified", "why": "modem clock %s from the router's (router booted without NTP?)" % off})
-    elif was is False:
-        log("clock verified again (modem %s)" % off)
-        event({"event": "clock verified", "why": "the router's clock was %s (booted without NTP, e.g. after a power cut); LOCK_PAUSE / night "
-                                                 "screen waited; records stamped from %s until now carry the old time" % (clock.get("bad_off"), clock["bad_since"])})
+    if clock["ok"] is True:     # verified in this run: a router reboot would have restarted the keeper, so it is the MODEM's clock
+        clock["skew"] = skew    # (a modem booting with a wrong clock must not stop LOCK_PAUSE / night screen / tests)
+        if not ok and not clock.get("modem_bad"):
+            log("the modem's clock is %+.0f min from ours (verified) - its clock is wrong, ours stays trusted" % (skew / 60))
+            event({"event": "modem clock wrong", "why": "modem clock %+.0f min from the router's, verified in this run - the router's time "
+                                                       "stays trusted (LOCK_PAUSE / night screen / tests go on)" % (skew / 60)})
+        clock["modem_bad"] = not ok
+        return True
+    was = clock["ok"]; clock["skew"] = skew
+    if ok and was is False: return _verified(now, "the modem's time (it agrees now)")
+    clock["ok"] = ok
+    if ok == was or ok: return ok
+    off = "%+.0f min" % (skew / 60)
+    t0, m0 = clock["start"] if was is None else (now, mono())   # never verified in this run: wrong since the keeper's start
+    clock.update(bad_since=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t0)), bad_mono=m0, bad_offset=now - mono(), bad_skew=skew,
+                 bad_off="%.0f min %s" % (abs(skew) / 60, "behind" if skew > 0 else "ahead"))
+    log("clock not verified: the modem's clock is %s from ours - LOCK_PAUSE / night screen wait" % off)
+    event({"event": "clock not verified", "why": "modem clock %s from the router's (router booted without NTP?)" % off})
     return ok
+
+
+def _verified(now, by):
+    """The clock agrees again. Whose was off: OUR wall clock jumped since the disagreement began (NTP stepped it; the monotonic
+    clock does not move with it) = the router's, and the records in between carry its wrong time; it did not = the modem's."""
+    clock.update(ok=True, net_said=False)
+    if abs((now - mono()) - clock.get("bad_offset", now - mono())) <= CLOCK_MAX_SKEW:
+        clock["modem_bad"] = abs(clock.get("skew") or 0) > CLOCK_MAX_SKEW
+        log("clock verified by %s: ours was right, the modem's was off" % by)
+        event({"event": "modem clock wrong", "why": "modem clock %+.0f min from ours since %s; %s confirms ours - nothing was stamped "
+                                                   "wrong, LOCK_PAUSE / night screen / tests go on" % ((clock.get("bad_skew") or 0) / 60, clock.get("bad_since"), by)})
+        return True
+    log("clock verified again by %s" % by)
+    # the wall clock jumped when NTP fixed it: only the monotonic clock knows how long the wrong stamps ran (2026-11-17: 47 s, not
+    # "04:27 until now" - the records after the fix carry real times and sort among the wrong ones)
+    dur = round(mono() - clock["bad_mono"]) if clock.get("bad_mono") is not None else 0
+    end = (datetime.datetime.strptime(clock["bad_since"], "%Y-%m-%d %H:%M:%S") + datetime.timedelta(seconds=dur)).strftime("%H:%M:%S")
+    event({"event": "clock verified", "why": "the router's clock was %s (booted without NTP, e.g. after a power cut) - confirmed by %s; "
+                                             "LOCK_PAUSE / night screen waited; records stamped %s to at most %s carry that wrong time" % (
+                                                 clock.get("bad_off"), by, clock["bad_since"], end)})   # exact: tools/powercut.py
+    return True
+
+
+def fetch_date(url=None):
+    """The `Date` header of one HEAD request (plain HTTP: the container has no CA store), None without an answer (no WAN yet)."""
+    url = CLOCK_URL if url is None else url
+    if not url: return None
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=5) as r: return r.headers.get("Date")
+    except urllib.error.HTTPError as e: return e.headers.get("Date")
+    except Exception: return None
+
+
+def check_net(date, now=None):
+    """The watchdog, each minute while the clock is not verified: the internet's time (HTTP `Date`) vs ours. Agrees -> verified
+    (no waiting for the modem, whose clock can be the wrong one); far off -> the router's NTP has not synced yet: wait, said once."""
+    now = now or time.time()
+    try: skew = email.utils.parsedate_to_datetime(date).timestamp() - now if date else None
+    except (TypeError, ValueError, IndexError): skew = None
+    if skew is None or clock["ok"] is True: return clock_ok()
+    if abs(skew) > CLOCK_MAX_SKEW:
+        if not clock.get("net_said"): log("internet time: ours is %+.0f min off - waiting for the router's NTP" % (-skew / 60))
+        clock["net_said"] = True; return clock_ok()
+    if clock["ok"] is None: clock["ok"] = True; return True      # never disagreed: verified quietly
+    return _verified(now, "the internet's time (HTTP Date)")
 
 
 def clock_ok():

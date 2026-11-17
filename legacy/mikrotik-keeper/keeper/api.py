@@ -124,6 +124,9 @@ def config():
                  "call_limits": {"p95_ms": brain.CALL_P95, "jitter_ms": brain.CALL_JITTER, "loss_pct": brain.CALL_LOSS}}, **dev.config())
 
 
+SLOW_S = float(common.E("SLOW_REQUEST_S", "2"))    # requests slower than this are logged (the router's CPU spikes vs the panel's polls)
+
+
 class H(BaseHTTPRequestHandler):
     """One HTTP connection: API requests and the modem's CWMP session (keep-alive)."""
     protocol_version = "HTTP/1.1"
@@ -143,13 +146,19 @@ class H(BaseHTTPRequestHandler):
                 out += self.rfile.read(n); self.rfile.readline()
         return self.rfile.read(int(self.headers.get("Content-Length") or 0))
 
+    def parse_request(self):
+        """The request's start (after its first line arrived - keep-alive idle time is not the request's)."""
+        self.t0 = time.monotonic(); return super().parse_request()
+
     def send(self, status, headers, data):
-        """Send a full response with Content-Length (keep-alive)."""
+        """Send a full response with Content-Length (keep-alive); log it when it took SLOW_REQUEST_S or more."""
         self.send_response(status)
         for k, v in headers: self.send_header(k, v)
         self.send_header("Content-Length", str(len(data)))
         try: self.end_headers(); self.wfile.write(data)
         except (BrokenPipeError, ConnectionResetError): pass      # the browser / app went away first (page reload): nothing to answer
+        secs = time.monotonic() - getattr(self, "t0", time.monotonic())
+        if secs >= SLOW_S: log("slow request: %s %s %.1f s" % (self.command, self.path, secs))
 
     def json(self, code, obj):
         """JSON response with CORS open and no caching."""

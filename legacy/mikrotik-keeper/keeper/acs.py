@@ -232,21 +232,39 @@ def serve(handler, req):
         return 200, [("Content-Type", 'text/xml; charset="utf-8"')], b
 
 
+def silence(quiet, warned, busy):
+    """The watchdog's silent-modem alert: 'no inform' once per silence (none while a lock test reboots the modem on purpose), and
+    'inform back' when it informs again after one - an alert never stands alone (2026-11-17 02:45: 'no inform', the boot 22 s later,
+    no word). warned: None, or the monotonic start of the silence alerted -> the new warned."""
+    if quiet > 5 * INTERVAL + 300:
+        if warned is None and not busy:
+            log("no inform from the %s for %d s - check its TR-069 Server URL" % (devices.current().NAME, quiet)); event({"event": "no inform"})
+            return time.monotonic() - quiet
+        return warned
+    if warned is not None:
+        event({"event": "inform back", "why": "the %s informs again after %d min silent" % (
+            devices.current().NAME, round((time.monotonic() - quiet - warned) / 60))})
+    return None
+
+
+def clock_tick():
+    """Watchdog minute: while the clock is not verified, ask the internet's time (common.check_net) - no NTP before the WAN has its
+    dynamic address, and the modem's own clock can be the wrong one. Verified: nothing to ask."""
+    return common.clock_ok() or common.check_net(common.fetch_date())
+
+
 def watchdog():
     """Thread: warn once if the modem stops informing (e.g. its ACS URL was moved away from us)."""
-    warned = False; t0 = time.monotonic()
+    warned = None; t0 = time.monotonic()
     while True:
         time.sleep(60)
         quiet = time.monotonic() - (st["last_inform"] or t0)          # never informed since the keeper started counts too (2026-11-13)
+        try: clock_tick()
+        except Exception as e: log("clock check failed: %r" % e)
         try:
             brain.note_health()
             dev = devices.current()
             if not guard.offline_release(quiet) and not guard.lte_held() and not common.busy() and hasattr(dev, "offline_health"):
                 brain.offline_decide(quiet, dev.offline_health, dev.offline_reboot)     # no lock: reboot only on the modem's evidence
         except Exception as e: log("offline check failed: %r" % e)
-        if quiet > 5 * INTERVAL + 300 and not common.busy():     # a lock test reboots the modem on purpose: not a real outage
-            if not warned:
-                log("no inform from the %s for %d s - check its TR-069 Server URL" % (devices.current().NAME, quiet)); event({"event": "no inform"})
-            warned = True
-        else:
-            warned = False
+        warned = silence(quiet, warned, common.busy())

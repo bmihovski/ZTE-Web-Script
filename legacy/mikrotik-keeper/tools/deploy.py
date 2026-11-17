@@ -20,7 +20,9 @@ router first, and when the verification fails it puts the backup back. Host / de
 import argparse, datetime, glob, hashlib, json, os, re, shutil, subprocess, sys, tempfile, time, urllib.request
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))          # legacy/mikrotik-keeper
-HOST, DST, URL = "admin@192.168.6.1", "disk1/zte-keeper/keeper", "http://keeper.lan:7557"
+HOST, DST = "admin@192.168.6.1", "disk1/zte-keeper/keeper"
+URL = os.environ.get("KEEPER_URL", "http://keeper.lan:7557")   # KEEPER_URL=http://192.168.6.250:7557 when the name does not resolve on the Mac
+LAST_ERR = [None]                                              # why the last _api() call failed (verify says it)
 CONTAINER = "zte-keeper"
 SSH_TIMEOUT = 180
 
@@ -110,7 +112,7 @@ def _get(url, path, timeout=10):
 
 def _api(url, timeout=3):
     try: return _get(url, "/openapi.json", timeout)
-    except Exception: return None
+    except Exception as e: LAST_ERR[0] = "%s: %s" % (type(e).__name__, e); return None
 
 
 def _wait_api(url, timeout=120):
@@ -258,7 +260,7 @@ def verify(base=BASE, url=URL, expected_version=None, before=None, since=None, c
     sample (when `since`) and the before/after DB compare (warnings)."""
     problems, warnings = [], []
     spec = _wait_api(url) if since else _api(url)
-    if not spec: return ["the API did not answer within 120 s at %s" % url], warnings, None
+    if not spec: return ["the API did not answer within 120 s at %s (last error: %s)" % (url, LAST_ERR[0])], warnings, None
     got = spec.get("info", {}).get("version", "")
     if expected_version and got != expected_version: problems.append("version %s != %s" % (got, expected_version))
     if contract:
@@ -295,6 +297,9 @@ def deploy(base=BASE, host=HOST, dst=DST, url=URL, skip_tests=False, force=False
     version = local_version(base)
     print("== preflight")
     live = _api(url)
+    if not live and not force:      # it could not verify the upload either: it would roll back blind (2026-11-17, twice)
+        raise SystemExit("keeper API not reachable at %s (last error: %s) - if the name does not resolve or a proxy is in the way, run "
+                         "with KEEPER_URL=http://192.168.6.250:7557; --force deploys to a keeper that is really down" % (url, LAST_ERR[0]))
     if live and not force:
         try:
             lt = _get(url, "/lock-tests")

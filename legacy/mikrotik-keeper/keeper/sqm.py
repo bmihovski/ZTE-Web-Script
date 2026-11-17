@@ -122,16 +122,43 @@ def deep_cut(k, old, new, cap, now):
         st["deep"][k] = []; want_test("%s: the shaper cut below %d %% of the ceiling %g %d times in 1 h" % (k, DEEP * 100, cap, DEEP_N), now)
 
 
-def reason(old, new, rate, delay, cap):
-    """Why the limit is what it is after this tick, in words (the panel and /status show it)."""
-    if not old: return "unshaped (outside SQM_DOWN_HOURS)"
+def reason(old, new, rate, delay, cap, was=None):
+    """Why the limit is what it is after this tick, in words (the panel and /status show it).
+    was = the previous tick's learned ceiling when it just changed (a new period / test): a limit that only follows it says so."""
+    if not (old and new): return "unshaped (outside SQM_DOWN_HOURS)"         # incl. the tick that turns it off
     load, dl = round(100 * rate / old), "latency +%s ms" % delay if delay is not None else "no latency data"
+    if was is not None and new != old and new == cap: return "new period ceiling %g (was %g)" % (cap, was)
     if new < old: return "cut %g -> %g: busy (%d %% of the limit) and %s > %g ms" % (old, new, load, dl, DELAY)
     if new > old: return ("idle and calm: back up toward the ceiling %g" % cap if load < 10 else
                           "busy (%d %%) and clean (%s): +5 %% -> %g" % (load, dl, new))
-    if old >= 0.98 * cap: return "at the ceiling %g (%d %% used, %s)" % (cap, load, dl)
+    if old >= 0.98 * cap: return ("idle, limit parked at the ceiling %g (%s)" % (cap, dl) if load < 10 else
+                                  "at the ceiling %g (%d %% used, %s)" % (cap, load, dl))
     if now_cooling(): return "holding: cuts paused - the last ones did not lower the latency (queue outside the router)"
     return "holding: %d %% used, %s" % (load, dl)
+
+
+def cpu_spy(cpu, now, own=None):
+    """A core at >= 90 %: which process? RouterOS /tool/profile for 2 s -> 'name usage %' of the top 3 (idle / total skipped), kept
+    in st["spikes"] (/status sqm.now.cpu_spikes, the weekly summary). At most every 10 min. The spikes came every ~8 min in hour-long
+    windows, mostly on an idle link (2026-11-13..17) - not the shaper's traffic, so the keeper alone cannot say whose they are."""
+    if not cpu or max(cpu) < 90 or now - st.get("spy_t", 0) < 600 or st.get("spy_off") or now - st.get("t0", 0) < 120: return None
+    st["spy_t"] = now; sp = st.setdefault("spikes", [])
+    try:
+        use = {}
+        r = rest("POST", "/tool/profile", {"duration": "2s"})
+        for x in r if isinstance(r, list) else []:          # anything else: shown raw below
+            n, u = x.get("name"), float(str(x.get("usage", 0)).rstrip("%") or 0)
+            if n not in ("idle", "total"): use[n] = max(use.get(n, 0), u)
+        txt = ", ".join("%s %g %%" % (n, u) for n, u in sorted(use.items(), key=lambda kv: -kv[1])[:3]) or "no profile data (raw: %s)" % json.dumps(r)[:300]
+    except Exception as e:
+        if "not enough permissions" in str(e):     # a policy, not a hiccup: asking again every 10 min only fills the log (2026-11-17 16:46)
+            st["spy_off"] = True
+            sp.append("profile off until restart: no permission - give the SQM_USER group the policy /tool/profile needs (%s)" % e)
+        else: sp.append("profile failed: %s: %s" % (type(e).__name__, e))
+        del sp[:-20]; return None
+    sp.append("%s core %d %%: %s%s" % (time.strftime("%m-%d %H:%M", time.localtime(now)), max(cpu), txt,
+                                       "; keeper %d %%" % own if own is not None else "")); del sp[:-20]    # own: % of one core
+    return txt
 
 
 def now_cooling(now=None):
@@ -215,7 +242,8 @@ def tick(lat_buf, now=None, path_change=0.0):
     rebase = bool(path_change) and path_change > st.get("path_seen", 0) and now - path_change < 180
     if rebase: st["path_seen"] = path_change
     d = delay_now(lat_buf, now, idle, rebase)
-    caps = {k: climb(k, CEILING[0](k, now), st["limit"], rate, d, TICK, now) for k in MAX}
+    learned = {k: CEILING[0](k, now) for k in MAX}; was = st.get("learned") or learned; st["learned"] = learned
+    caps = {k: climb(k, learned[k], st["limit"], rate, d, TICK, now) for k in MAX}
     new = earn_keep(st["limit"], step(st["limit"], rate, d, caps), d, now)
     for k in caps: deep_cut(k, st["limit"][k], new[k], caps[k], now)
     if rebase:                      # do not raise the limit on the rebase tick: let the next ticks see if the new path is calm
@@ -229,11 +257,15 @@ def tick(lat_buf, now=None, path_change=0.0):
     try: cpu = [int(c.get("load", 0)) for c in rest("GET", "/system/resource/cpu")]   # per core %, the price of CAKE
     except Exception: cpu = []
     if cpu: st["cpu_max"] = max(st.get("cpu_max", 0), max(cpu))
+    pt = time.process_time(); own = 100 * (pt - st["pt"][0]) / (now - st["pt"][1]) if st.get("pt") and now > st["pt"][1] else None
+    st["pt"] = (pt, now); cpu_spy(cpu, now, own)          # own = the keeper's CPU (all its threads) since the last tick
     _acc(new, rate, d, cpu)
+    move = any(new[k] != st["limit"][k] and (not new[k] or not st["limit"][k] or abs(new[k] - st["limit"][k]) >= 0.02 * st["limit"][k]) for k in new)
+    shown = new if move else st["limit"]                  # < 2 % is not applied: say why the limit in force is what it is
     st["last"] = {"time": time.strftime("%H:%M:%S"), "rate": rate, "ceiling": caps,
-                  "why": {k: reason(st["limit"][k], new[k], rate[k], d, caps[k]) for k in new}, "delay_ms": None if d is None else round(d, 1), "limit": new,
-                  "cpu": cpu, "cpu_max_since_start": st.get("cpu_max"), "useless_cut_streaks": st.get("useless", 0)}
-    if any(new[k] != st["limit"][k] and (not new[k] or not st["limit"][k] or abs(new[k] - st["limit"][k]) >= 0.02 * st["limit"][k]) for k in new):
+                  "why": {k: reason(st["limit"][k], shown[k], rate[k], d, caps[k], was[k] if was[k] != learned[k] else None) for k in new}, "delay_ms": None if d is None else round(d, 1), "limit": new,
+                  "cpu": cpu, "cpu_max_since_start": st.get("cpu_max"), "cpu_spikes": (st.get("spikes") or [])[-5:], "useless_cut_streaks": st.get("useless", 0)}
+    if move:
         fmt = lambda v: "%dk" % (v * 1000) if v else "0"    # 0 = unlimited
         rest("PATCH", "/queue/simple/%s" % st["id"], {"max-limit": "%s/%s" % (fmt(new["up"]), fmt(new["down"]))})
         st["limit"] = new; st["changes"] += 1
@@ -247,7 +279,9 @@ def loop(lat_buf, log, path_change=None):
     while True:
         time.sleep(TICK)
         try:
+            n = (st.get("spikes") or [None])[-1]       # the newest spike before (a capped list keeps its length)
             ch = tick(lat_buf, path_change=(path_change() if path_change else 0.0)); st["error"] = None
+            if (st.get("spikes") or [None])[-1] != n: log("router CPU spike: %s" % st["spikes"][-1])
             if ch and st["changes"] % 30 == 1: log("SQM limit now %s/%s Mbit/s up/down (delay %s ms)" % (ch["up"], ch["down"], st["last"]["delay_ms"]))
         except Exception as e:
             if st["error"] != str(e): log("SQM: %s - retry in %d s" % (e, ERROR_WAIT_S))
@@ -257,6 +291,7 @@ def loop(lat_buf, log, path_change=None):
 
 def start(lat_buf, log, path_change=None):
     """Start the SQM thread when SQM_URL is set. path_change() -> epoch of the last TR-069 cell/RAT/boot change."""
+    st["t0"] = time.time()                              # cpu_spy skips the keeper's own start
     if URL: threading.Thread(target=loop, args=(lat_buf, log, path_change), daemon=True).start()
 
 
@@ -309,6 +344,13 @@ if __name__ == "__main__":          # self-check of the decision rule
     assert not [b for m, b in calls if m == "PATCH"], calls
     tick(load, now)                               # next tick: normal behaviour, and the same event is not rebased twice
     assert [b for m, b in calls if m == "PATCH"] == [{"max-limit": "30000k/150000k"}], calls
+    CEILING[0] = lambda d, now: {"down": 150.0, "up": 30.0}[d]; st.pop("learned", None); tick([], now)   # idle, parked at the ceilings
+    CEILING[0] = lambda d, now: {"down": 143.5, "up": 30.0}[d]; tick([], now)                            # next period: lower ceiling
+    assert st["last"]["why"]["down"] == "new period ceiling 143.5 (was 150)", st["last"]["why"]
+    assert st["last"]["why"]["up"] == "idle, limit parked at the ceiling 30 (no latency data)", st["last"]["why"]
+    CEILING[0] = lambda d, now: {"down": 141.0, "up": 30.0}[d]; tick([], now)                            # -1.7 %: not applied
+    assert st["limit"]["down"] == 143.5 and st["last"]["why"]["down"] == "idle, limit parked at the ceiling 141 (no latency data)"
+    CEILING[0] = lambda d, now: MAX[d]
     # a cut must lower the delay: 3 cuts with the delay still high -> back to the limit before the streak + 10 min cool-down
     st.update(streak={}, useless=0); t = 5000.0; lim = {"up": 26.0, "down": 150.0}
     for i in range(3):
@@ -352,4 +394,32 @@ if __name__ == "__main__":          # self-check of the decision rule
     assert reason(150.0, 127.5, 140.0, 40, 150.0).startswith("cut 150 -> 127.5: busy (93 %") and reason(0, 0, 9, 1, 150.0).startswith("unshaped")
     assert reason(100.0, 150.0, 1.0, 2, 150.0).startswith("idle and calm") and reason(140.0, 147.0, 130.0, 2, 150.0) == "busy (93 %) and clean (latency +2 ms): +5 % -> 147"
     assert reason(150.0, 150.0, 140.0, 2, 150.0).startswith("at the ceiling 150 (93 %")
+    assert reason(146.7, 0, 0.1, 2, 146.7).startswith("unshaped")                                     # 00:00: off, not a cut
+    assert reason(150.0, 150.0, 0.4, 2, 150.0) == "idle, limit parked at the ceiling 150 (latency +2 ms)"
+    assert reason(150.0, 143.5, 1.0, 2, 143.5, 150.0) == "new period ceiling 143.5 (was 150)"
+    assert reason(143.5, 153.6, 1.0, 2, 153.6, 143.5) == "new period ceiling 153.6 (was 143.5)"
+    assert reason(150.0, 127.5, 140.0, 40, 143.5, 150.0).startswith("cut 150 -> 127.5")              # a real cut stays a cut
+    # a core >= 90 %: which process? /tool/profile for 2 s -> the top 3 (idle / total skipped), at most every 10 min
+    rest = lambda method, path, body=None: (calls.append((method, path, body)) or [{"name": "idle", "usage": "50"}, {"name": "networking", "usage": "30.5"},
+        {"name": "container", "usage": "12"}, {"name": "networking", "usage": "35"}, {"name": "total", "usage": "50"}, {"name": "ethernet", "usage": "1"}])
+    calls.clear(); st.pop("spy_t", None); st["spikes"] = []; st["t0"] = 1e6 - 60
+    assert cpu_spy([99], 1e6) is None and calls == []                          # the keeper's own start (2 min): its load, not news
+    st["t0"] = 0
+    assert cpu_spy([3, 95], 1e6) == "networking 35 %, container 12 %, ethernet 1 %" and calls == [("POST", "/tool/profile", {"duration": "2s"})]
+    assert cpu_spy([3, 95], 1e6 + 60) is None and cpu_spy([50, 60], 1e6 + 900) is None and len(calls) == 1   # 10-min gap; no spike: no call
+    rest = lambda method, path, body=None: (_ for _ in ()).throw(RuntimeError("not allowed"))
+    assert cpu_spy([99], 1e6 + 1200) is None and st["spikes"][-1].startswith("profile failed: RuntimeError")
+    # an answer with nothing to rank says what it was (2026-11-17 17:19: "no profile data" - the REST format was never seen)
+    rest = lambda method, path, body=None: [{"name": "idle", "usage": "99"}]
+    st["spy_t"] = 0; assert cpu_spy([99], 1e6 + 1290, own=87.4) and st["spikes"][-1].endswith("; keeper 87 %"), st["spikes"][-1:]  # its share
+    st["spy_t"] = 1e6 + 1200
+    assert cpu_spy([99], 1e6 + 1300 + 600) == "no profile data (raw: [{\"name\": \"idle\", \"usage\": \"99\"}])", st["spikes"][-1:]
+    rest = lambda method, path, body=None: {"name": "networking", "usage": "40"}                     # one object, not a list
+    st["spy_t"] = 0; assert cpu_spy([99], 1e6 + 1950) == "no profile data (raw: {\"name\": \"networking\", \"usage\": \"40\"})", st["spikes"][-1:]
+    st["spy_t"] = 1e6 + 1200
+    # the router user may not run /tool/profile (2026-11-17 16:46, HTTP 500 "not enough permissions (9)"): off until restart, said once
+    PERM = 'POST /tool/profile -> HTTP 500 {"detail":"not enough permissions (9)","error":500,"message":"Internal Server Error"}'
+    calls.clear(); rest = lambda method, path, body=None: (calls.append(path) or (_ for _ in ()).throw(RuntimeError(PERM)))
+    assert cpu_spy([99], 1e6 + 1900) is None and "no permission" in st["spikes"][-1] and calls == ["/tool/profile"], st["spikes"][-1:]
+    n = len(st["spikes"]); assert cpu_spy([99], 1e6 + 9e5) is None and calls == ["/tool/profile"] and len(st["spikes"]) == n   # no call, no log
     print("OK sqm")

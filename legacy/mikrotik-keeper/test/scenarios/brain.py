@@ -185,4 +185,14 @@ assert brain._lte_gain(dict(q, call_ok_pct="90", anchor_sinr_p50="15"), dict(q, 
 assert brain._lte_gain(dict(q, call_ok_pct="100", anchor_sinr_p50="3"), dict(q, call_ok_pct="90", anchor_sinr_p50="3")) is True    # +10pp call-ready -> gain
 assert brain._lte_gain(dict(q, call_ok_pct="100", anchor_sinr_p50="15"), dict(q, call_ok_pct="100", anchor_sinr_p50="3")) is True  # quality tied, +12dB -> signal breaks the tie
 print("OK _lte_gain")
+# the 24 h report once a minute at most (2026-11-17: /status computed it for its findings AND the ZTE panel asked /report?hours=24 -
+# 2.5 s of a router core each, twice a minute while the page is open: the CPU spikes + the panel's first-poll timeouts)
+calls = []; w0 = brain.window; brain.window = lambda h: (calls.append(h) or w0(h)); brain._rep.clear()
+r1 = brain.report_cached(24, now=5000.0); r2 = brain.report_cached(24, now=5059.0)
+assert r1 is r2 and calls == [24], calls                                         # the second within 60 s: the same result
+brain.report_cached(24, now=5061.0); brain.report_cached(2, now=5061.0); assert calls == [24, 24, 2], calls     # older / another window: new
+n = len(calls); brain.add(dict(list(brain.HIST)[-1], time="2099-01-01 00:00:00")); brain.report_cached(24, now=5062.0)
+assert len(calls) == n + 1                                                      # a new sample: new
+brain.window = w0
+
 print("OK test_brain")

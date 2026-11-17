@@ -14,7 +14,7 @@ store.add(DATA, "events", {"time": "2026-01-01 00:00:00", "event": "old"})
 RECENT = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 3600))       # an hour ago (not date-bound: /db/prune days=1 below)
 store.add(DATA, "events", {"time": RECENT, "event": "lte lock removed", "why": "no LTE service, 3 min"})
 p = subprocess.Popen([sys.executable, "-m", "keeper"], cwd=ROOT, env=dict(os.environ, NIGHT_SCREEN="off", CHECKIN_DAYS="0", PORT="18160", DATA=DATA, ZTE_HOST="127.0.0.1:9",
-                     LAT_TARGETS="127.0.0.1:9"), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                     LAT_TARGETS="127.0.0.1:9", SLOW_REQUEST_S="0"), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 time.sleep(1)
 def get(path):
     c = http.client.HTTPConnection("127.0.0.1", 18160); c.request("GET", path); r = c.getresponse(); return r.status, r.getheader("Content-Type"), r.read().decode()
@@ -45,7 +45,9 @@ try:
         c.request("POST", "/", b""); r = c.getresponse(); b2 = r.read().decode()
         assert (r.status == 204) if follow is None else (follow in b2), (maker, r.status, b2[:200])
 finally:
-    p.terminate(); print(p.communicate()[0])
+    p.terminate(); out = p.communicate()[0]; print(out)
+# every request over SLOW_REQUEST_S is logged with its time (0 here: all) - the router's CPU spikes vs the ZTE panel's 60-s polls
+assert re.search(r"slow request: GET /openapi\.json \d+\.\d+ s", out) and re.search(r"slow request: GET /docs \d+\.\d+ s", out), out[-2000:]
 o = subprocess.run([sys.executable, "-m", "keeper"], cwd=ROOT, env=dict(os.environ, NIGHT_SCREEN="off", PORT="18161", DATA=DATA, DEVICE="huawei"),
                    capture_output=True, text=True, timeout=20)
 assert o.returncode == 2 and "DEVICE=huawei unknown" in o.stdout, o

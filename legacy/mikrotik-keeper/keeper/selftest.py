@@ -6,7 +6,7 @@ Scenarios (ENUM): clock, link, sqm, lock, night; "all" runs them in order.
 Env: SELFTEST_AT ("09:45=all,21:00=link": run a scenario each day at that local time and push it; empty = none).
 API: GET /checks (scenarios + last result), POST /checks?name=all|clock|link|sqm|lock|night (comma-separated too).
 """
-import threading, time
+import email.utils, threading, time
 
 from keeper import alert, brain, common, guard, locktest, sqm, store
 from keeper.common import DATA, E, log, state
@@ -20,8 +20,15 @@ def _last_sample():
 
 
 def chk_clock(now):
-    if not common.clock_ok(): return "fail", "clock NOT verified (modem skew %s)" % common.clock.get("skew")
-    return "ok", "verified (skew %+.0f s)" % (common.clock.get("skew") or 0)
+    """Our clock vs the modem's (each Inform) and the internet's (one HEAD to CLOCK_URL now): the smoke test of the clock rules."""
+    d = common.fetch_date(); sk = None
+    try: sk = email.utils.parsedate_to_datetime(d).timestamp() - time.time() if d else None
+    except (TypeError, ValueError, IndexError): pass
+    net = "internet %+.0f s" % sk if sk is not None else "internet: no answer" if not d else "internet: unreadable Date %r" % d
+    modem = "modem %+.0f s" % common.clock["skew"] if common.clock.get("skew") is not None else "modem: no time yet"
+    if not common.clock_ok(): return "fail", "clock NOT verified (%s, %s)" % (modem, net)
+    off = sk is not None and abs(sk) > common.CLOCK_MAX_SKEW
+    return ("warn" if off else "ok"), "verified (%s, %s)" % (modem, net)
 
 
 def chk_link(now):

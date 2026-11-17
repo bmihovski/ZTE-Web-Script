@@ -59,8 +59,12 @@ ab = common.state()["quality_ab"]; assert ab["phase"] == "keep" and ab["arm"] ==
 assert evs()[-1]["to"] == "kept unlocked for 3 h" and "LTE 434@1550 (another site) 53.3%" in evs()[-1]["why"], evs()[-1]
 n = len(sets()); assert guard.quality_ab(row, T + 60 * 60) is None and len(sets()) == n   # keeping, nothing written
 assert guard.quality_ab(row, T + 21 * 60 + 3 * 3600) == "restored"
-w = common.state()["lte_lock"]; assert w["cell"] == "340@100" and w["state"] == "released" and w["retry_at"] <= T + 21 * 60 + 3 * 3600 and not w.get("ab"), w
+w = common.state()["lte_lock"]; assert w["cell"] == "340@100" and w["state"] == "pending" and not w.get("ab"), w
 assert common.state()["nr_lock"]["cell"] == "534@636576" and evs()[-1]["to"] == "back to your locks"
+# your locks back = both legs in ONE write + ONE reboot (2026-11-17: 534 at 17:23:53, 340@100 at 17:26:53 - two reboots, each leg on its own 'back' check)
+n = len(sets()); assert guard.lock_guard(row, T + 21 * 60 + 3 * 3600 + 60) == "set"; wait()
+new = sets()[n:]; assert [k for k, v in new].count("REBOOT_DEVICE") == 1 and ("LTE_LOCK_CELL_SET", "340@100") in new, new
+assert common.state()["lte_lock"]["state"] == "active" and common.state()["nr_lock"]["state"] == "active", (common.state()["lte_lock"], common.state()["nr_lock"])
 assert guard.quality_ab(row, T + 4 * 3600) is None                               # once a day
 # --- day 2: another site already >= 90 % -> kept, no second trial ---
 D2 = NOW + 86400; locked(D2)
@@ -81,7 +85,7 @@ D4 = D3 + 86400; locked(D4)
 assert guard.quality_ab(row, D4) == "trial"; wait(); fill(D4 + 6 * 60, 15, ok_every=2)
 assert guard.quality_ab(row, D4 + 21 * 60) == "trial"; wait(); T4 = D4 + 21 * 60; fill(T4 + 6 * 60, 15, ok_every=2)
 assert guard.quality_ab(row, T4 + 21 * 60) == "restored"
-assert common.state()["lte_lock"]["cell"] == "340@100" and common.state()["lte_lock"]["retry_at"] == T4 + 21 * 60
+assert common.state()["lte_lock"]["cell"] == "340@100" and common.state()["lte_lock"]["state"] == "pending"   # back at once, one reboot
 assert evs()[-1]["to"] == "locks restored" and "provider's side" in evs()[-1]["why"], evs()[-1]
 # --- day 5: you change the lock during the trial -> the A/B stops and leaves your choice alone ---
 D5 = D4 + 86400; locked(D5)
@@ -89,7 +93,7 @@ assert guard.quality_ab(row, D5) == "trial"; wait()
 guard.lock_request("500@1550")
 assert guard.quality_ab(row, D5 + 21 * 60) is None
 assert common.state()["quality_ab"]["phase"] == "done" and common.state()["lte_lock"]["cell"] == "500@1550" and common.state()["lte_lock"]["state"] == "pending"
-w = common.state()["nr_lock"]; assert w["cell"] == "534@636576" and w["state"] == "released" and w["retry_at"] == D5 + 21 * 60 and not w.get("ab"), w   # 5G back to yours
+w = common.state()["nr_lock"]; assert w["cell"] == "534@636576" and w["state"] == "pending" and not w.get("ab"), w   # 5G back to yours, in the same write as your new LTE lock
 # --- no other site known -> only the modem's own choice is tried ---
 D6 = D5 + 86400; locked(D6); brain.REG["lte"]["1550/434"]["last"] = 0
 assert guard.quality_ab(row, D6) == "trial" and common.state()["quality_ab"]["arms"] == ["free"]; wait()
