@@ -194,5 +194,13 @@ brain.report_cached(24, now=5061.0); brain.report_cached(2, now=5061.0); assert 
 n = len(calls); brain.add(dict(list(brain.HIST)[-1], time="2099-01-01 00:00:00")); brain.report_cached(24, now=5062.0)
 assert len(calls) == n + 1                                                      # a new sample: new
 brain.window = w0
+# a burst of identical requests shares ONE computation (2026-11-17 20:09: the ZTE app sent ~16 /status + /report in 6 s; each
+# computed the 2.5-s report at once - 14..51 s each on one core, the app gave up at 15 s)
+import threading
+n0 = []; r0 = brain.report; brain.report = lambda h: (n0.append(h), time.sleep(0.3), {"findings": []})[2]; brain._rep.clear()
+outs = []; th = [threading.Thread(target=lambda: outs.append(brain.report_cached(24, now=9000.0))) for _ in range(6)]
+[t.start() for t in th]; [t.join() for t in th]
+assert n0 == [24] and len(outs) == 6 and all(o is outs[0] for o in outs), (n0, len(outs))
+brain.report = r0
 
 print("OK test_brain")

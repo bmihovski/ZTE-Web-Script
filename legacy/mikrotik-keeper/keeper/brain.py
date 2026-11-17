@@ -922,15 +922,16 @@ def _mean_loss(rows):
 
 
 REPORT_CACHE_S = 60
-_rep = {}
+_rep, _rep_lock = {}, {}
 
 
 def report_cached(hours=24, now=None):
     """report(hours) for the HTTP readers, computed again only after REPORT_CACHE_S or a new sample: /status (its findings) and the
     ZTE panel's /report?hours=24 each cost ~2.5 s of a router core (2026-11-17) - twice a minute while the page was open."""
-    now = now or time.time(); h = list(HIST); key = (len(h), h[-1].get("time") if h else None); c = _rep.get(hours)
-    if c and c[1] == key and now - c[0] < REPORT_CACHE_S: return c[2]
-    out = report(hours); _rep[hours] = (now, key, out); return out
+    with _rep_lock.setdefault(hours, threading.Lock()):     # a burst waits for the one computation and shares it (2026-11-17 20:09:
+        now = now or time.time(); h = list(HIST); key = (len(h), h[-1].get("time") if h else None); c = _rep.get(hours)   # ~16 at once)
+        if c and c[1] == key and now - c[0] < REPORT_CACHE_S: return c[2]
+        out = report(hours); _rep[hours] = (now, key, out); return out
 
 
 def report(hours=24):

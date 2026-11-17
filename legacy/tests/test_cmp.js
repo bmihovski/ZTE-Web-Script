@@ -282,6 +282,19 @@ const loginRun = async (cookie, app, answer) => {
       assert.deepStrictEqual(r.saved, []);
       assert.deepStrictEqual(r.alerts, []); }],
   ];
+  // keeper_get: identical GETs in flight share one request (2026-11-17 20:09: the app start + the list sync asked ~16x /status at once)
+  cases.push(['keeper_get: a burst of the same GET is one request, a later one is new', async () => {
+    eval('global.keeper_get=' + grab('keeper_get').replace('function keeper_get', 'function'));
+    global.KEEPER_INFLIGHT = {}; let calls = [];
+    global.keeper_call = (m, p) => { calls.push(p); return new Promise(r => setTimeout(() => r({ status: 200, json: () => Promise.resolve({ p }) }), 10)); };
+    const a = await Promise.all([keeper_get('/status'), keeper_get('/status'), keeper_get('/report?hours=24'), keeper_get('/status')]);
+    assert.deepStrictEqual(calls, ['/status', '/report?hours=24']); assert.strictEqual(a[0], a[1]);
+    await keeper_get('/status'); assert.deepStrictEqual(calls, ['/status', '/report?hours=24', '/status']);      // done: not cached
+    global.keeper_call = () => Promise.resolve({ status: 500 });
+    await keeper_get('/x').then(() => { throw new Error('no error'); }, e => assert.ok(/HTTP 500/.test(e.message)));
+    global.keeper_call = () => Promise.resolve({ status: 200, json: () => Promise.resolve(1) });
+    assert.strictEqual(await keeper_get('/x'), 1);                                                          // a failure is not kept either
+  }]);
   for (const [name, fn] of antCases.concat(cases)) { try { await fn(); console.log('ok   ', name); } catch (e) { fails++; console.log('FAIL ', name, '-', e.message); } }
   console.log(fails ? fails + ' FAILED' : 'ALL PASSED');
   process.exit(fails ? 1 : 0);

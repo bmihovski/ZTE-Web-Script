@@ -7,7 +7,7 @@
  * 
  */
 
-console.log("Loading ZTE Script v" + "2026-11-01-#30");
+console.log("Loading ZTE Script v" + "2026-11-17-#31");
 
 siginfo =
     "wan_active_band,wan_active_channel,wan_lte_ca,wan_apn,wan_ipaddr," +
@@ -2082,9 +2082,16 @@ function keeper_sync_pull()
     });
 }
 
+var KEEPER_INFLIGHT = {};
 function keeper_get(path)
 {
-    return keeper_call("GET", path).then(function(r) { if (r.status != 200) throw new Error("HTTP " + r.status); return r.json(); });
+    // the same GET while one is in flight shares it (2026-11-17 20:09: the app start + the list sync asked ~16x /status at once - the
+    // keeper computed its 24 h report each time, 14..51 s on the router; the app gives up at 15 s). Not a cache: done = gone.
+    if (KEEPER_INFLIGHT[path]) return KEEPER_INFLIGHT[path];
+    var p = keeper_call("GET", path).then(function(r) { if (r.status != 200) throw new Error("HTTP " + r.status); return r.json(); });
+    var done = function() { delete KEEPER_INFLIGHT[path]; };
+    p.then(done, done);
+    return KEEPER_INFLIGHT[path] = p;
 }
 
 function keeper_table(rows, cols)

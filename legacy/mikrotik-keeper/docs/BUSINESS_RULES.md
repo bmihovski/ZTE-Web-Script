@@ -168,7 +168,9 @@ at `/docs`.
   each spike line ends `keeper N %` = the keeper's own CPU (all threads, % of one core) since the last tick. API requests taking
   `SLOW_REQUEST_S` (2) or more are logged `slow request: GET /report?hours=24 3.4 s` - the ZTE panel polls ~9 endpoints every 60 s.
   `/status` (its `findings_24h`) and `/report` share `brain.report_cached`: the 24 h analysis (~2.5 s of a router core) at most once
-  a minute or per new sample; the keeper's own logic keeps calling the fresh `brain.report`.
+  a minute or per new sample, and a burst of requests waits for the one computation in progress (2026-11-17 20:09: the ZTE app
+  start sent ~16 `/status` in 6 s - 14..51 s each); the keeper's own logic keeps calling the fresh `brain.report`. The userscript's
+  `keeper_get` shares an identical GET while it is in flight (v 2026-11-17-#31).
 - **Telegram:** only a moved ceiling (`capacity ceiling`, with "up stays N (measured M)" while the upload is not learned); single
   tests and climbs are events / `/captest` only.
 
