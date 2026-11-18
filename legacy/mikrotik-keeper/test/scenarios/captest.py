@@ -227,4 +227,12 @@ for part in ("2 tests (1 extra) - down 150-160 (median 155), up 25-27 (median 26
              "latency median idle 9.5 / busy 12 / at the ceiling 13 ms", "1 min with a cut", "router CPU >= 90 %: 1 min (1 idle); last spike: networking 35 %"):
     assert part in txt, (part, txt)
 assert c.weekly({}, W + 3600) is False                                                   # once a week
+# measure(): down + up by the modem now for a lock-test step - never a ceiling, never in the history; busy while it runs
+h0 = list(common.state().get("captest_hist") or []); seen = []
+c._iperf_once = lambda srv, secs, conn, rev: (seen.append((srv, conn, rev, c.st["running"])), (None, "x 10 s", []) if srv == "a:1" and rev else ((140.0 if rev else 24.0), "ok 10 s", []))[1]
+c.IPERFS = ["a:1", "b:2"]
+assert c.measure() == (140.0, 24.0, "down b:2, up a:1") and not c.st["running"], seen
+assert [x[:3] for x in seen] == [("a:1", c.CONN, True), ("b:2", c.CONN, True), ("a:1", c.UP_CONN, False)] and all(x[3] for x in seen), seen
+assert (common.state().get("captest_hist") or []) == h0
+c.st["running"] = True; assert c.measure() == (None, None, "a capacity test is running"); c.st["running"] = False
 print("OK test_captest")

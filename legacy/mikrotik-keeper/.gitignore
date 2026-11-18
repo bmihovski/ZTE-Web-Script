@@ -17,3 +17,6 @@ backups/
 
 # tools/powercut.py output (router logs + reports; may hold the WAN address)
 reports/
+
+# tools/test_docker.sh output
+test-logs/

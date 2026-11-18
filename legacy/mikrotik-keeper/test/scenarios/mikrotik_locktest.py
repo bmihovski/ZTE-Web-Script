@@ -5,6 +5,7 @@ here = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.abspath(os.pat
 DATA = "/tmp/zte-keeper-test-mtlt"; shutil.rmtree(DATA, ignore_errors=True); os.makedirs(DATA)
 os.environ.update(NIGHT_SCREEN="off", DEVICE="mikrotik", DATA=DATA, LAT_TARGETS="off", SCAN_MIN="0", MIN_SAMPLE_S="999",
                   LOCKTEST_SETTLE_S="0", LOCKTEST_MEASURE_MIN="0.03", LOCKTEST_BOOT_WAIT_S="3", LOCKTEST_CLEANUP_S="0.05")
+os.environ.setdefault("LOCKTEST_IPERF", "0")   # the mock ZTE runs no iperf3 (a step would wait 160 s for it)
 sys.path.insert(0, ROOT)
 from keeper import acs, api, brain, common, devices, locktest, store
 from keeper.devices import mikrotik as mk

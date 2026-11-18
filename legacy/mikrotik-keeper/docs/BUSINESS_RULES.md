@@ -95,6 +95,12 @@ at `/docs`.
 - **Ranking** (`GET /anchors?rat=lte|nr`): the latest result per candidate, only if it stayed on the cell (on-target ≥ 80 %) and is
   not unstable; the 5G ranking is quality-first, the LTE ranking keeps call-ready, no-5G, signal, capacity. `failed` = off-target /
   not seen; `unstable` = the unstable list.
+- **Lock-test rows** also carry `boot_s` (lock -> boot inform) and `down_mbps` / `up_mbps` (the modem's iperf3 after the measuring
+  window, still locked; `LOCKTEST_IPERF=0` off; never a ceiling). `POST /lock-test?...&night=1` = a hand-picked night screen (LTE). Night LTE steps free the 5G lock in the same write
+  (the anchor's own pairing shows; your 5G lock returns with the LTE lock at the end); daytime LTE tests keep your 5G lock.
+- **Band scan** (`POST /band-scan?bands=8,1,...`, `keeper/bandscan.py`): per band `LockLTEBand` = that band over TR-069 (no reboot),
+  `BANDSCAN_WAIT_S` (90) of samples (until one is on the band, at most 2x), a `band_scans` row (serving cell + median RSRP/RSRQ/SINR,
+  every neighbour's best RSRP) + an event; the full list back at the end. Only without an LTE cell lock; busy meanwhile (the guard waits).
 - **Night screen** (LTE only): only on a night **armed** from the ZTE helper (`POST /night-screen?arm=1`, persisted as `night_armed`
   = the night's morning date; you leave the router + modem on - they are off the other nights) or every night with `NIGHT_ALWAYS=1`
   (research). Weekly Telegram reminder: from `NIGHT_REMIND_DAY` (Fri) at `NIGHT_REMIND` (21:30) once each evening until Arm is

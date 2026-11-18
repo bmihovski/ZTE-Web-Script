@@ -28,6 +28,9 @@ try:
         c = http.client.HTTPConnection("127.0.0.1", 18160); c.request("POST", path, body.encode(), {"Content-Type": "text/plain"}); r = c.getresponse()
         return r.status, json.loads(r.read())
     assert post("/cell-ids", '{"lte:100:340": 318289, "nr:636576:534": 12345, "bad": 1}') == (200, {"added": 2, "ids": 2})
+    st, e = post("/lock-test?cells=534@636576&rat=nr&night=1", ""); assert st == 400 and "night=1" in e["error"], (st, e)   # night: LTE only
+    st, e = post("/band-scan?bands=8,x", ""); assert st == 400 and "bands=" in e["error"], (st, e)            # the band scan
+    s_, t_, b_ = get("/band-scans"); assert s_ == 200 and json.loads(b_) == {"running": None, "scans": []}, b_
     st, armed = post("/night-screen?arm=1", ""); assert st == 200 and re.fullmatch(r"\d{4}-\d\d-\d\d", armed["armed"] or ""), armed   # the panel's button
     cfg = json.loads(get("/status")[2])["config"]; assert cfg["night_armed"] == armed["armed"] and cfg["night_always"] is False, cfg
     assert post("/night-screen?arm=0", "") == (200, {"armed": None}) and json.loads(get("/status")[2])["config"]["night_armed"] is None

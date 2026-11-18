@@ -6,6 +6,7 @@ sys.argv = ["x", "18170"]; spec = importlib.util.spec_from_file_location("m", os
 DATA = "/tmp/zte-keeper-test-night"; shutil.rmtree(DATA, ignore_errors=True); os.makedirs(DATA)
 os.environ.update(LOCK_VIA="web", DATA=DATA, ZTE_HOST="127.0.0.1:18170", ZTE_PASS_HASH=m.S(m.PW), LOCKTEST_SETTLE_S="0", LOCKTEST_ONLINE_TIMEOUT_S="0",
                   LOCKTEST_MEASURE_MIN="0.03", LOCKTEST_BOOT_WAIT_S="3", NIGHT_SCREEN="02:00-05:00", NIGHT_ALWAYS="1")   # the screen itself: research mode (every night)
+os.environ.setdefault("LOCKTEST_IPERF", "0")   # the mock ZTE runs no iperf3 (a step would wait 160 s for it)
 sys.path.insert(0, ROOT); from keeper import store
 from keeper import acs, api, brain, common, guard, locktest, monitor, store; from keeper.devices import zte as zdev; from keeper.devices.zte import antennas, locks as zlocks
 brain.reg_st["dir"] = DATA
@@ -34,16 +35,34 @@ assert not locktest.maybe_night(idle, T230)                                     
 for i in range(30): brain.add(dict(idle, time=common.stamp()))
 assert not locktest.maybe_night(idle, T230 - 3 * 3600)                                                       # outside the window
 common.clock["ok"] = False; assert not locktest.maybe_night(idle, T230); common.clock["ok"] = True             # router clock not verified (power cut)
+from keeper import captest
+common.state({"nr_lock": {"cell": "534@636576", "state": "active"}})     # your 5G lock (n78) - it must not hide the anchors' own 5G
+locktest.LT_IPERF = True; meas = []; cm0 = captest.measure; captest.measure = lambda: (meas.append(locktest.lt.get("iperf")), (150.0, 25.5, "iperf3 a:1"))[1]
 assert locktest.maybe_night(idle, T230) and not locktest.maybe_night(idle, T230)                                    # once a night
 time.sleep(0.5)
 while locktest.lt["running"]: time.sleep(0.1)
+captest.measure = cm0; locktest.LT_IPERF = False
 rows = [r for r in store.rows(DATA, "lock_tests") if r.get("mode") == "night"]
+# each measured step also has the modem's throughput while locked + its boot time (2026-11-18: the score's biggest parts, and the
+# window budget - a B3 lock hung the ZTE 31 min); the run's own iperf is flagged so the traffic check does not stop the screen
+assert all(float(r["down_mbps"]) == 150.0 and float(r["up_mbps"]) == 25.5 for r in rows) and meas and all(meas), (rows, meas)   # the store keeps text
+assert all(0 <= float(r["boot_s"]) <= 3 for r in rows), [r.get("boot_s") for r in rows]
+assert "down_mbps" in locktest.LT_COLS and "boot_s" in locktest.LT_COLS
 assert [r["lock"] for r in rows] == ["340@100", "264@100", "434@100"] and len({r["run"] for r in rows}) == 1, rows
 locks = [s[3] for s in m.st["sets"] if s[1] == "LTE_LOCK_CELL_SET"]
 assert locks == ["340@100", "264@100", "434@100", "340@100"], locks                                   # the lock put straight back
+# 2026-11-18: the B20 night run kept the 5G lock on 534 (n78) - every B20 step showed "no5G", our lock, not the network. A night step
+# frees 5G in the same write (no extra reboot) so the anchor's own pairing (n28?) shows; your 5G lock comes back with the LTE lock
+nrs = [s[3] for s in m.st["sets"] if s[1] == "NR5G_LOCK_CELL_SET"]
+assert nrs[:-1] == ["0,0,0,0"] * 3 and "534" in nrs[-1] and len(nrs) == 4, nrs
+w5 = common.state()["nr_lock"]; assert w5["cell"] == "534@636576" and w5["state"] in ("active", "pending"), w5   # kept (the mock never reports a 5G lock -> the guard re-checks)
 assert common.state()["lte_lock"]["state"] == "active" and "264@100" not in [r["lock"] for r in brain.anchor_ranking()["ranked"]]
 f = brain.night_finding(); print(f)
 assert f[0].startswith("RECOMMEND: night screen") and "264@100 anchor SINR 34" in f[0] and "434@100" not in f[0].split(" beat ")[0], f
+# its own iperf is not "traffic": the screen is not stopped while lt["iperf"] is set
+locktest.lt.update(night=True, running="434@100", cut=None, iperf=True); locktest.maybe_night(dict(idle, down_bps="900000"))
+assert locktest.lt["cut"] is None, locktest.lt["cut"]
+locktest.lt.update(night=False, running=None, iperf=False)
 # traffic during the screen -> stopped, lock put back
 common.state({"night_last": None}); m.st["sets"].clear(); [e.update(last=T230 + 86400) for e in reg.values()]; store.db(DATA).execute("DELETE FROM rec WHERE kind = 'lock_tests'")
 prev = list(locktest.lt["plan"]); locktest.NIGHT_CELLS = ["66@1550"]                                     # NIGHT_CELLS: always re-check
@@ -140,6 +159,11 @@ assert not locktest.remind({}, fri21 + 14 * D)
 locktest.NIGHT_ALWAYS = True; assert not locktest.remind({}, fri21 + 21 * D); locktest.NIGHT_ALWAYS = False   # research: never
 assert len(reports) == n + 4 and not any("can go off" in r or "armed for tonight" in r or "research mode" in r for r in reports[n:]), reports[n:]
 locktest.NIGHT = "off"; assert locktest.morning(fri21) == "2026-11-21" and not locktest.maybe_night(idle, sat0230); locktest.NIGHT = "02:00-05:00"   # off: arming still answers
+# a hand-picked night run (POST /lock-test?cells=...&night=1, 2026-11-18): night mode - recommend only, never auto-apply
+got = []; lt0 = locktest.lock_test; locktest.lock_test = lambda plan, align=False, night=False, **k: got.append((plan, night))
+assert locktest.start(["112@6400", "394@6400"], night=True); time.sleep(0.2)
+assert got == [(["none", "112@6400", "394@6400"], True)], got
+locktest.lock_test = lt0
 assert locktest.remind in zdev.minute_jobs()
 
 print("OK test_night")

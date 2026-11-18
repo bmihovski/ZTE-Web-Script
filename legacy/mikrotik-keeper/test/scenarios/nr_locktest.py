@@ -8,6 +8,7 @@ DATA = "/tmp/zte-keeper-test-nrlt"; shutil.rmtree(DATA, ignore_errors=True); os.
 os.environ.update(NIGHT_SCREEN="off", LOCK_VIA="web", DATA=DATA, ZTE_HOST="127.0.0.1:18131", ZTE_PASS_HASH=m.S(m.PW),
                   LOCKTEST_SETTLE_S="0", LOCKTEST_ONLINE_TIMEOUT_S="0", LOCKTEST_MEASURE_MIN="0.03", LOCKTEST_BOOT_WAIT_S="3", LOCKTEST_CLEANUP_S="0.05",
                   SWEEP_SETTLE_S="0", SWEEP_READS="5", SWEEP_GAP_S="0.03", SWEEP_DAYS="0", INTTEST_S="0.2", WAKE_S="0", CPE_READY_TRIES="1", CPE_READY_GAP_S="0")
+os.environ.setdefault("LOCKTEST_IPERF", "0")   # the mock ZTE runs no iperf3 (a step would wait 160 s for it)
 sys.path.insert(0, ROOT)
 from keeper import acs, alert, api, brain, common, locktest, store
 from keeper.devices import zte as zdev
@@ -241,7 +242,7 @@ def get(path):
 def post(path):
     c = http.client.HTTPConnection("127.0.0.1", 18132); c.request("POST", path, b""); x = c.getresponse(); return x.status, json.loads(x.read())
 calls = []; real_start = locktest.start
-locktest.start = lambda cells, align=False, rat="lte", anchor=None, heading="": calls.append((cells, align, rat, anchor, heading)) or True
+locktest.start = lambda cells, align=False, rat="lte", anchor=None, heading="", night=False: calls.append((cells, align, rat, anchor, heading)) or True   # = start()'s signature
 try:
     assert post("/lock-test?rat=nr&cells=534@636576&anchor=340@1550&align=1") == (202, {"started": True, "rat": "nr", "anchor": "340@1550", "heading": "", "plan": ["none", "534@636576"]})
     assert calls[-1] == (["534@636576"], True, "nr", "340@1550", ""), calls

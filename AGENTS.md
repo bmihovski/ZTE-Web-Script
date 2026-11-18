@@ -76,6 +76,12 @@ Durable project memory. Read this first; the details live in the keeper docs.
 
 ## Workflow
 
+0. **Waiting:** no fixed `sleep N` for a result - poll the condition under a ceiling and return as soon as it holds:
+   `timeout 300 python3 test/scenarios/x.py` (the ceiling only), `timeout 120 bash -c 'until curl -sf http://keeper.lan:7557/openapi.json; do sleep 1; done'`,
+   `wait $pid`, `inotifywait`; independent scenarios in parallel (`ls test/scenarios/*.py | xargs -P4 -I{} timeout 300 python3 {}` -
+   only those with their own port + DATA dir). `watch` is interactive (never exits) - not for tool calls. In the browser, poll the API
+   instead of `setTimeout(N)`.
+
 1. Scenario/test first (fail it), then the code; keep the device isolation; update the docs and the skill with the change.
 2. Bump `VERSION`; run `tools/deploy.py check`; `tools/deploy.py deploy`; confirm the verify line; keep the backup name.
    Then validate the run, not just the deploy: `tools/deploy.py validate --rat lte|nr [--wait]` (read-only: verdict

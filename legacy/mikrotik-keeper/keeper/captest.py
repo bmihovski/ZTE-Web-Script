@@ -405,6 +405,21 @@ def _iperf_once(server, secs, conn, reverse):
     return sp, "%s (%s), %d streams %d s" % (why, ", ".join(notes), conn, secs), st["ip3_snaps"]     # ends in 'N s': valid()
 
 
+def measure(secs=None):
+    """A lock-test step's throughput, now and synchronous: the modem's iperf3 down (CONN streams) then up (UP_CONN), the first server
+    that answers. -> (down, up, which servers). Never a ceiling, not in captest_hist (2026-11-18: the night cells' score needs it)."""
+    if st["running"]: return None, None, "a capacity test is running"
+    st["running"] = True; out, how = {}, []
+    try:
+        for d, rev, conn in (("down", True, CONN), ("up", False, UP_CONN)):
+            for srv in IPERFS:
+                sp, why, _ = _iperf_once(srv, secs or ISECS, conn, rev)
+                if sp: out[d] = sp; how.append("%s %s" % (d, srv)); break
+        return out.get("down"), out.get("up"), ", ".join(how) or "no iperf3 result"
+    finally:
+        st.update(running=False, base=None)
+
+
 def run_iperf(now, servers, secs, conn, reverse, slot=None, diag=None):
     """Thread: the modem's iperf3 against the first server that answers (Sofia, then Athens - public servers take one client at
     a time); the result counts for the period's ceiling unless `diag` (a custom diagnostic run). Measured 2026-11-13 22:15: 144

@@ -17,7 +17,7 @@ SELF_CHECKS = ["keeper.store", "keeper.sqm", "keeper.alert", "keeper.captest"]  
 
 # never reach the real operator ACS from a test (a fresh data dir makes the ZTE check-in due): scenarios that test the relay
 # set their own fake YETTEL_URL / CHECKIN_DAYS
-SAFE_ENV = {"CHECKIN_DAYS": "0", "YETTEL_URL": "http://127.0.0.1:9/never"}
+SAFE_ENV = {"CHECKIN_DAYS": "0", "YETTEL_URL": "http://127.0.0.1:9/never", "LOCKTEST_IPERF": "0"}   # mock ZTEs run no iperf3
 
 
 def run(args, cwd):

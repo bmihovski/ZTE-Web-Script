@@ -46,7 +46,9 @@ LT_MIN_ANCHOR_PCT = float(E("LOCKTEST_MIN_ANCHOR_PCT", "80"))
 LT_MAX_GAP_MIN = float(E("LOCKTEST_MAX_GAP_MIN", "3"))
 LT_COLS = ["time", "rat", "lock", "minutes", "on_target_pct", "anchor", "site", "pin", "anchor_pct", "anchor_switches", "gap_min", "unstable",
            "anchor_sinr_p50", "anchor_sinr_p10", "anchor_rsrp_p50", "anchor_rsrq_p50", "ca", "nr_cells", "nr_arfcn", "nr_sinr_p50", "nr_rsrp_p50",
-           "nr_ca", "no5g_min", "call_ok_pct", "lat_p95", "jitter_ms", "loss_pct", "antennas", "ant5", "ant6", "note", "heading", "mode", "run"]
+           "nr_ca", "no5g_min", "call_ok_pct", "lat_p95", "jitter_ms", "loss_pct", "antennas", "ant5", "ant6", "note", "heading", "mode", "run",
+           "boot_s", "down_mbps", "up_mbps"]     # boot: lock -> boot inform (s); the modem's iperf3 while locked (2026-11-18)
+LT_IPERF = E("LOCKTEST_IPERF", "1") == "1"
 NIGHT = E("NIGHT_SCREEN", "02:00-05:00")
 NIGHT_ALWAYS = E("NIGHT_ALWAYS", "0") == "1"      # research: every night in the window; else only a night armed from the ZTE helper
 REMIND_AT, REMIND_DAY = E("NIGHT_REMIND", "21:30"), E("NIGHT_REMIND_DAY", "Fri")   # weekly reminder from this day + time until armed ('' = off)
@@ -202,6 +204,7 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
         try: fallback = anchor_for("nr")
         except ValueError: fallback = None
     pins = step_pins(plan, pin, base_pin, fallback) if rat == "nr" else {}
+    w5 = state().get("nr_lock") or {}; nr_mine = w5.get("cell") if w5.get("state") == "active" else None   # your 5G lock, if any
     lt.update(running="starting", plan=list(plan), done=[], align=align, waiting=False, heading="", fixed=heading, night=night, rat=rat,
               anchor=pin or base_pin or fallback, modes={}, run=stamp()); lt["go"].clear()
     brain.ctx["hold"] = "lock test"                  # no keeper reboots meanwhile
@@ -225,17 +228,20 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
             try:
                 try:
                     if rat == "nr": dev.locks_apply(step_pin, lock)   # ONE change: the pinned anchor + the 5G cell (one reboot on the ZTE)
-                    else: dev.locks_apply(lock, None)
+                    else: dev.locks_apply(lock, "none" if night and nr_mine else None)   # night: 5G free - the anchor's own pairing
+                    # (2026-11-18: the B20 night run kept the 5G lock on 534/n78 -> every step "no5G": our lock, not the network)
                 except RuntimeError as e:              # refused: record it, go on with the next one
                     res = lt_eval(lock, [], "lock not set: %s" % e, rat, pin=step_pin)
                     res.update(heading=heading, mode=step_mode(night, align, heading, rat), run=lt["run"])
                     record("lock_tests", LT_COLS, res); lt["done"].append(res)
                     event({"event": "lock test %s" % lock, "to": "not set", "why": str(e)}); log("lock test %s: %s" % (lock, e))
                     continue
+                boot_s = None
                 if dev.LOCKS_REBOOT:
                     t0 = time.monotonic()
                     while acs.st["boots"] == boots and time.monotonic() - t0 < LT_BOOT_WAIT_S and not lt["cut"]: time.sleep(2)
                     note = "" if acs.st["boots"] > boots else "no boot inform within %d s" % LT_BOOT_WAIT_S
+                    if not note: boot_s = round(time.monotonic() - t0)
                 else:
                     note = ""                          # the driver blocked until the lock was applied: no CPE reboot to wait for
                 if lt["cut"]: raise Cut()              # skip / stop during the boot wait: the cut branch records what there is
@@ -305,8 +311,15 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
                 if what == "stopped": break
                 continue
             rows = [r for r in list(brain.HIST) if brain.ts(r) >= start]
+            dn = up = None
+            if LT_IPERF and rows and not lt["cut"]:      # still locked: the modem's own throughput (its traffic is not "yours")
+                from keeper import captest
+                lt["iperf"] = True
+                try: dn, up, how = captest.measure(); log("lock test %s: iperf3 down %s / up %s Mbit/s (%s)" % (lock, dn, up, how))
+                except Exception as e: log("lock test %s: iperf3 failed: %r" % (lock, e))
+                finally: lt["iperf"] = False
             res = lt_eval(lock, rows, note or ("" if rows else "no samples (no service on this cell?)"), rat, ant, step_pin, a5, a6)
-            res.update(heading=heading, mode=step_mode(night, align, heading, rat), run=lt["run"])
+            res.update(heading=heading, mode=step_mode(night, align, heading, rat), run=lt["run"], boot_s=boot_s, down_mbps=dn, up_mbps=up)
             record("lock_tests", LT_COLS, res); lt["done"].append(res)
             if res["anchor"] and lock != "none" and not night and rat == "lte":          # night values (unloaded) don't go into the registry
                 try:                                     # bookkeeping only - never stops the test
@@ -324,11 +337,13 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
     finally:
         w = state().get("lte_lock") or {}
         back = w["cell"] if night and w.get("state") == "active" else None       # night: put the guard's lock straight back (one reboot)
+        nr_back = nr_mine if night and rat != "nr" else None                    # ... and your 5G lock with it (the steps freed 5G)
         try:
             if rat == "nr":
                 dev.locks_apply("none", "none"); log("lock test: LTE anchor and 5G lock removed%s" % (", rebooting" if dev.LOCKS_REBOOT else ""))
             else:
-                dev.locks_apply(back or "none", None); log("lock test: %s, rebooting" % ("LTE lock %s put back" % back if back else "LTE lock removed"))
+                dev.locks_apply(back or "none", nr_back); log("lock test: %s%s, rebooting" % ("LTE lock %s put back" % back if back else "LTE lock removed",
+                                                                            " + 5G lock %s" % nr_back if nr_back else ""))
         except Exception as e:
             log("lock test: REMOVING THE LOCKS FAILED %r - remove them in the modem's web page" % e); back = None
         state({"lock_test": None}); brain.ctx["hold"] = None
@@ -458,12 +473,13 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
             if w and w.get("state") == "active" and not (key == "lte_lock" and back): state({key: dict(w, state="pending")})   # guard re-locks when idle
 
 
-def start(cells, align=False, rat="lte", anchor=None, heading=""):
+def start(cells, align=False, rat="lte", anchor=None, heading="", night=False):
     """API: start a test of `cells` after an unlocked baseline (in a thread). `rat` lte | nr (nr pins `anchor`); `heading` is the
-    fixed antenna position to record (align=False). False if a test is already running or a job is busy."""
+    fixed antenna position to record (align=False). night=True: a hand-picked night screen (LTE) - recorded as night, reported and
+    recommended, never auto-applied (an unloaded night network). False if a test is already running or a job is busy."""
     if lt["running"] or common.busy(): return False
     threading.Thread(target=lock_test, args=(["none"] + cells, align),
-                     kwargs={"rat": rat, "anchor": anchor, "heading": heading}, daemon=True).start()
+                     kwargs=dict({"rat": rat, "anchor": anchor, "heading": heading}, **({"night": True} if night else {})), daemon=True).start()
     return True
 
 
@@ -591,7 +607,7 @@ def maybe_night(row, now=None):
     """With each sample: start the night screen once a night, in the window, after NIGHT_IDLE_MIN idle minutes;
     traffic during the screen stops it (the lock is put back). True when it started."""
     now = now or time.time()
-    if lt.get("night") and lt["running"] and not brain.idle(row) and not lt["cut"]:
+    if lt.get("night") and lt["running"] and not brain.idle(row) and not lt["cut"] and not lt.get("iperf"):   # its own iperf: not traffic
         log("night screen: traffic - stopping"); lt_cut("stop"); return False
     if NIGHT in ("", "off") or common.busy() or not common.clock_ok(): return False     # old clock after a power cut: not night yet
     day = time.strftime("%Y-%m-%d", time.localtime(now))

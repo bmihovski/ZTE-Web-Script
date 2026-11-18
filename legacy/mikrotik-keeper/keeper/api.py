@@ -6,7 +6,7 @@ path is missing there. A route with a capability (5th field) is refused with 409
 import json, re, time, urllib.parse
 from http.server import BaseHTTPRequestHandler
 
-from keeper import VERSION, acs, alert, brain, captest, common, devices, guard, locktest, selftest, sqm, store
+from keeper import VERSION, acs, alert, bandscan, brain, captest, common, devices, guard, locktest, selftest, sqm, store
 from keeper.common import DATA, log, state
 
 UI_NAMES = ("zte_positions", "zte_ant_results", "zte_exp_results", "zte_exp_pending")     # app lists kept in the keeper's database
@@ -25,6 +25,7 @@ ROUTES = [   # method, path, summary, [(param, example, description)], capabilit
     ("get", "/anchors", "Lock-test ranking (latest result per cell) and the unlocked baseline, per RAT", [("rat", "lte", "lte | nr (default lte)")], None),
     ("get", "/lock-tests", "Lock test now or last (step, phase, plan, RAT, pinned anchor) + the last 40 results", [("rat", "", "lte | nr (default: all results)")], None),
     ("get", "/antenna-sweeps", "The last 40 rows of keeper antenna sweeps", [], None),
+    ("get", "/band-scans", "Band scan now (the band being scanned) + the last 60 rows: serving cell, RSRP/RSRQ/SINR, neighbours per band", [], None),
     ("post", "/lte-lock", "Keep an LTE cell locked (guarded: released when lost, restored when back) or remove it", [("cell", "340@100", "PCI@EARFCN or none")], None),
     ("post", "/nr-lock", "Keep a 5G cell locked (guarded) or remove it", [("cell", "534@636576", "PCI@ARFCN or none")], None),
     ("post", "/antennas", "Antenna mode the keeper re-applies at every ZTE boot (overrides ANT_AUTO / ANT5 / ANT6)",
@@ -34,11 +35,14 @@ ROUTES = [   # method, path, summary, [(param, example, description)], capabilit
      [("cells", "340@100,434@100", "PCI@EARFCN (rat=nr: PCI@ARFCN), comma separated"), ("rat", "lte", "lte | nr (nr pins the LTE anchor)"),
       ("align", "0", "1 = on-go: wait for 'aligned' before each cell; 0 = fixed position (the antenna is where it is)"),
       ("anchor", "340@1550", "rat=nr: the LTE anchor to pin (default: the keeper's LTE lock, else the serving cell)"),
+      ("night", "0", "1 = a hand-picked night screen (LTE): recorded as night, recommended, never auto-applied"),
       ("heading", "108", "align=0 and rat=nr: the antenna heading to record with the results (degrees)")], "lock_test"),
     ("post", "/lock-test-continue", "Align mode: the antenna is aligned for the locked cell - measure now (the 5G test then sweeps the antennas)",
      [("heading", "108", "antenna heading, degrees")], "lock_test"),
     ("post", "/lock-test-skip", "Skip the current lock-test step (what was measured is kept)", [], "lock_test"),
     ("post", "/lock-test-stop", "Stop the lock test (the lock is removed)", [], "lock_test"),
+    ("post", "/band-scan", "Lock LTE to one band at a time over TR-069 (no reboot), record the serving cell + neighbours, then the full band "
+     "list back. Only without an LTE cell lock (LOCK_PAUSE / a test window)", [("bands", "8,1,3,7,20,28", "LTE band numbers, comma separated")], "lock_test"),
     ("post", "/night-screen", "Arm (1) or cancel (0) the night screen for the coming night - leave the router + modem on for it "
      "(NIGHT_ALWAYS=1: every night anyway)", [("arm", "1", "1 = arm the coming night, 0 = cancel")], "lock_test"),
     ("post", "/antenna-sweep", "Run the keeper's antenna sweep (close every ZTE web page first)", [], "sweep"),
@@ -191,6 +195,8 @@ class H(BaseHTTPRequestHandler):
                                   "rat": lt.get("rat"), "anchor": lt.get("anchor"), "waiting": lt["waiting"], "results": rows[-40:]}
             elif path == "/antenna-sweeps":
                 code, obj = 200, store.rows(DATA, "antenna_sweeps", last=40)
+            elif path == "/band-scans":
+                code, obj = 200, {"running": bandscan.st["running"], "scans": store.rows(DATA, "band_scans", last=60)}
             elif path == "/userdata":
                 if g("name") not in UI_NAMES: raise ValueError("name=" + "|".join(UI_NAMES))
                 last = store.rows(DATA, "ui:" + g("name"), last=1, device="app")     # the app's lists: not per modem
@@ -270,6 +276,9 @@ class H(BaseHTTPRequestHandler):
                 if not ("none" in q or (want["auto"] in ("0", "1") and want["ant5"] in ("1", "4") and want["ant6"] in ("1", "4"))):
                     raise ValueError("auto=0|1, ant5=1|4, ant6=1|4 (1 omni, 4 dir) or none")
                 res = {"antennas": dev.antennas.keep(None if "none" in q else want)}
+            elif path == "/band-scan":       # ?bands=8,1,3 - no reboot; refused (409) while an LTE cell lock is held / a job runs
+                ok, why = bandscan.start(g("bands").split(","))
+                code, res = 202 if ok else 409, {"started": ok, "bands" if ok else "why": why}
             elif path == "/night-screen":     # ?arm=1|0 - the ZTE helper's button (the router + modem stay on that night)
                 if g("arm") not in ("0", "1"): raise ValueError("arm=1|0")
                 res = locktest.night_arm(g("arm") == "1")
@@ -283,6 +292,7 @@ class H(BaseHTTPRequestHandler):
             elif path == "/lock-test":        # /lock-test?cells=434@1550,340@100[&rat=nr&anchor=340@1550&align=1] (a baseline "none" runs first)
                 rat = g("rat", "lte")
                 if rat not in ("lte", "nr"): raise ValueError("rat=lte|nr")
+                if g("night") == "1" and rat != "lte": raise ValueError("night=1 is LTE only (the night screen)")
                 raw = [c for c in g("cells").split(",") if c]
                 bad = [c for c in raw if not re.fullmatch(guard.SPEC_RE, c)]
                 if bad: raise ValueError("cells=PCI@EARFCN (rat=nr: PCI@ARFCN), comma separated, one cell per lock - bad: " + ", ".join(bad))
@@ -296,7 +306,7 @@ class H(BaseHTTPRequestHandler):
                 # only under some anchors) and the baseline the best anchor across the tested cells
                 anchor = locktest.anchor_for(rat, spec) if (cells and spec) else None
                 heading = (g("heading") or "")[:12]
-                ok = bool(cells) and locktest.start(cells, g("align") == "1", rat, anchor, heading)
+                ok = bool(cells) and locktest.start(cells, g("align") == "1", rat, anchor, heading, night=g("night") == "1")
                 code, res = 202 if ok else (400 if not cells else 429), {"started": ok, "rat": rat, "anchor": anchor if ok else None,
                                                                         "heading": heading if ok else "", "plan": ["none"] + cells if ok else []}
             elif path == "/antenna-sweep":
