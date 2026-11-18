@@ -25,7 +25,7 @@ reference); a 5G-free or switching baseline is measured (it is the reference). A
 Env: LOCKTEST_SETTLE_S (180), LOCKTEST_MEASURE_MIN (12), LOCKTEST_BOOT_WAIT_S (420), LOCKTEST_ALIGN_TIMEOUT_MIN (90),
 LOCKTEST_READY_TIMEOUT_S (180 - wait for the CPE web), LOCKTEST_ONLINE_TIMEOUT_S (180 - wait for stable probes),
 LOCKTEST_MAX_ANCHOR_SWITCHES (0), LOCKTEST_MIN_ANCHOR_PCT (80), LOCKTEST_MAX_GAP_MIN (3),
-NIGHT_SCREEN (02:00-05:00, off), NIGHT_MAX (3), NIGHT_IDLE_MIN (30), NIGHT_RETEST_DAYS (7), NIGHT_CELLS (always re-check, e.g. 340@3350).
+NIGHT_SCREEN ('[Day[-Day] ]02:00-05:00', off; 'Sat 02:00-05:00' = only Friday night), NIGHT_MAX (3), NIGHT_IDLE_MIN (30), NIGHT_RETEST_DAYS (7), NIGHT_CELLS (always re-check, e.g. 340@3350).
 NIGHT_NOINFORM_SKIP (2) / NIGHT_NOINFORM_DAYS (3): after N night no-informs skip the cell for D days (CETIN powers it down overnight).
 """
 import collections, re, threading, time
@@ -48,6 +48,8 @@ LT_COLS = ["time", "rat", "lock", "minutes", "on_target_pct", "anchor", "site", 
            "anchor_sinr_p50", "anchor_sinr_p10", "anchor_rsrp_p50", "anchor_rsrq_p50", "ca", "nr_cells", "nr_arfcn", "nr_sinr_p50", "nr_rsrp_p50",
            "nr_ca", "no5g_min", "call_ok_pct", "lat_p95", "jitter_ms", "loss_pct", "antennas", "ant5", "ant6", "note", "heading", "mode", "run"]
 NIGHT = E("NIGHT_SCREEN", "02:00-05:00")
+NIGHT_ALWAYS = E("NIGHT_ALWAYS", "0") == "1"      # research: every night in the window; else only a night armed from the ZTE helper
+REMIND_AT, REMIND_DAY = E("NIGHT_REMIND", "21:30"), E("NIGHT_REMIND_DAY", "Fri")   # weekly reminder from this day + time until armed ('' = off)
 NIGHT_MAX, NIGHT_IDLE_MIN = int(E("NIGHT_MAX", "3")), int(E("NIGHT_IDLE_MIN", "30"))
 NIGHT_RETEST_DAYS = float(E("NIGHT_RETEST_DAYS", "7"))
 NIGHT_NOINFORM_SKIP = int(E("NIGHT_NOINFORM_SKIP", "2"))    # skip a cell at night after this many recent night no-informs ...
@@ -530,6 +532,61 @@ def night_candidates(now):
     return [x for _, x in sorted(out, reverse=True)][:NIGHT_MAX]
 
 
+DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def in_night(now):
+    """NIGHT_SCREEN '[Day[-Day] ]HH:MM-HH:MM' (no day = every night). The day is the date of the night's morning ('Sat 02:00-05:00' =
+    Friday night); a window past midnight counts its small hours to the evening's day. A misconfigured value: never (logged by nobody,
+    shown in /lock-tests as no night run) - one test night a week, the router + modem powered off the others (2026-11-17)."""
+    try:
+        parts = NIGHT.split(); a, b = parts[-1].split("-"); lt_ = time.localtime(now); t = time.strftime("%H:%M", lt_); wrap = a > b
+        if not ((t >= a or t < b) if wrap else a <= t < b): return False
+        if len(parts) == 1: return True
+        wd = (lt_.tm_wday - (1 if wrap and t < b else 0)) % 7
+        d = parts[0].split("-"); i1, i2 = DAYS.index(d[0]), DAYS.index(d[-1])
+        return i1 <= wd <= i2 if i1 <= i2 else (wd >= i1 or wd <= i2)
+    except (ValueError, IndexError): return False
+
+
+def morning(now):
+    """The date of the coming night's morning: today while before the window's end, else tomorrow."""
+    w = NIGHT.split()[-1] if NIGHT.split() else ""; end = w.split("-")[1] if "-" in w else "05:00"; lt_ = time.localtime(now)   # off: 05:00
+    return time.strftime("%Y-%m-%d", lt_ if time.strftime("%H:%M", lt_) < end else time.localtime(now + 86400))
+
+
+def armed(now):
+    """Does the night screen run this night? NIGHT_ALWAYS, or this night armed (state night_armed = its morning's date)."""
+    return NIGHT_ALWAYS or state().get("night_armed") == morning(now)
+
+
+def night_arm(on, now=None):
+    """POST /night-screen?arm=1|0 (the ZTE helper's button): arm / cancel the coming night (persisted - you leave the router + modem
+    on for it; the other nights they are off, 2026-11-17)."""
+    now = now or time.time(); d = morning(now) if on else None
+    state({"night_armed": d, "night_armed_at": time.strftime("%Y-%m-%d", time.localtime(now)) if on else None})   # the reminder's week
+    event({"event": "night screen armed" if on else "night screen cancelled", "to": d or ""})
+    return {"armed": d}
+
+
+def remind(row, now=None):
+    """Minute job: the weekly cell-test reminder (Telegram). From NIGHT_REMIND_DAY (Fri) at NIGHT_REMIND (21:30) once each evening until
+    a night is armed in the ZTE helper (pressing Arm ends the week, even if that night's run fails; cancelling brings it back); then
+    quiet until the next Friday. Research (NIGHT_ALWAYS=1): never - it runs every night anyway. An arm before Friday is last week's."""
+    now = now or time.time(); lt_ = time.localtime(now); today = time.strftime("%Y-%m-%d", lt_)
+    if NIGHT_ALWAYS or not REMIND_AT or not common.clock_ok() or time.strftime("%H:%M", lt_) < REMIND_AT: return False
+    if state().get("night_remind_last") == today: return False
+    try: back = (lt_.tm_wday - DAYS.index(REMIND_DAY)) % 7
+    except ValueError: return False                                            # misconfigured NIGHT_REMIND_DAY: off
+    week = time.strftime("%Y-%m-%d", time.localtime(now - back * 86400))     # this cycle's Friday
+    if (state().get("night_armed_at") or "") >= week: return False            # armed this week: quiet
+    state({"night_remind_last": today}); name = common.device_name()
+    alert.report("%s: Friday - arm tonight's cell tests in the ZTE helper (Night screen: Arm the coming night) and leave the router + modem on; "
+                 "results for the weekend" % name if back == 0 else
+                 "%s: the cell tests are not scheduled since %s - arm a night in the ZTE helper and leave the router + modem on that night" % (name, week))
+    return True
+
+
 def maybe_night(row, now=None):
     """With each sample: start the night screen once a night, in the window, after NIGHT_IDLE_MIN idle minutes;
     traffic during the screen stops it (the lock is put back). True when it started."""
@@ -537,8 +594,8 @@ def maybe_night(row, now=None):
     if lt.get("night") and lt["running"] and not brain.idle(row) and not lt["cut"]:
         log("night screen: traffic - stopping"); lt_cut("stop"); return False
     if NIGHT in ("", "off") or common.busy() or not common.clock_ok(): return False     # old clock after a power cut: not night yet
-    a, b = NIGHT.split("-"); t = time.strftime("%H:%M", time.localtime(now)); day = time.strftime("%Y-%m-%d", time.localtime(now))
-    if not (a <= t < b) or state().get("night_last") == day: return False
+    day = time.strftime("%Y-%m-%d", time.localtime(now))
+    if not in_night(now) or state().get("night_last") == day or not armed(now): return False
     last = list(brain.HIST)[-NIGHT_IDLE_MIN:]
     if len(last) < NIGHT_IDLE_MIN or not all(brain.idle(r) for r in last): return False
     state({"night_last": day}); cands = night_candidates(now)

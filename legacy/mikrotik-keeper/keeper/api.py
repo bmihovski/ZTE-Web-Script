@@ -39,6 +39,8 @@ ROUTES = [   # method, path, summary, [(param, example, description)], capabilit
      [("heading", "108", "antenna heading, degrees")], "lock_test"),
     ("post", "/lock-test-skip", "Skip the current lock-test step (what was measured is kept)", [], "lock_test"),
     ("post", "/lock-test-stop", "Stop the lock test (the lock is removed)", [], "lock_test"),
+    ("post", "/night-screen", "Arm (1) or cancel (0) the night screen for the coming night - leave the router + modem on for it "
+     "(NIGHT_ALWAYS=1: every night anyway)", [("arm", "1", "1 = arm the coming night, 0 = cancel")], "lock_test"),
     ("post", "/antenna-sweep", "Run the keeper's antenna sweep (close every ZTE web page first)", [], "sweep"),
     ("post", "/cells/forget", "Drop cells from this device's registry (e.g. the other device's cells that got in)",
      [("cells", "500/341,3150/341", "EARFCN/PCI (5G: ARFCN/PCI), comma separated")], None),
@@ -113,7 +115,7 @@ def config():
     """/status -> config: what the keeper is set to and doing now (core + the driver's part)."""
     dev = devices.current()
     return dict({"device": common.DEVICE, "lock_test": locktest.lt["running"], "lock_test_rat": locktest.lt.get("rat"),
-                 "lock_test_anchor": locktest.lt.get("anchor"), "lte_lock": state().get("lte_lock"), "nr_lock": state().get("nr_lock"),
+                 "lock_test_anchor": locktest.lt.get("anchor"), "night_armed": state().get("night_armed"), "night_always": locktest.NIGHT_ALWAYS, "lte_lock": state().get("lte_lock"), "nr_lock": state().get("nr_lock"),
                  "fast_mode": acs.fast(), "busy": common.busy(), "inform_s": acs.INTERVAL,
                  "clock": {"verified": common.clock_ok(), "modem_skew_s": common.clock["skew"], "unverified_since": common.clock["bad_since"]},
                  "manages": common.E("CPE", "") or state().get("cpe") or dev.MAKER,
@@ -268,6 +270,9 @@ class H(BaseHTTPRequestHandler):
                 if not ("none" in q or (want["auto"] in ("0", "1") and want["ant5"] in ("1", "4") and want["ant6"] in ("1", "4"))):
                     raise ValueError("auto=0|1, ant5=1|4, ant6=1|4 (1 omni, 4 dir) or none")
                 res = {"antennas": dev.antennas.keep(None if "none" in q else want)}
+            elif path == "/night-screen":     # ?arm=1|0 - the ZTE helper's button (the router + modem stay on that night)
+                if g("arm") not in ("0", "1"): raise ValueError("arm=1|0")
+                res = locktest.night_arm(g("arm") == "1")
             elif path in ("/lock-test-skip", "/lock-test-stop"):
                 what = "skip" if path.endswith("skip") else "stop"; ok = locktest.lt_cut(what)
                 code, res = 200 if ok else 409, {what: ok, "cell": locktest.lt["running"]}

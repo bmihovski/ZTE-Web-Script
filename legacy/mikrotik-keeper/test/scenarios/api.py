@@ -28,6 +28,9 @@ try:
         c = http.client.HTTPConnection("127.0.0.1", 18160); c.request("POST", path, body.encode(), {"Content-Type": "text/plain"}); r = c.getresponse()
         return r.status, json.loads(r.read())
     assert post("/cell-ids", '{"lte:100:340": 318289, "nr:636576:534": 12345, "bad": 1}') == (200, {"added": 2, "ids": 2})
+    st, armed = post("/night-screen?arm=1", ""); assert st == 200 and re.fullmatch(r"\d{4}-\d\d-\d\d", armed["armed"] or ""), armed   # the panel's button
+    cfg = json.loads(get("/status")[2])["config"]; assert cfg["night_armed"] == armed["armed"] and cfg["night_always"] is False, cfg
+    assert post("/night-screen?arm=0", "") == (200, {"armed": None}) and json.loads(get("/status")[2])["config"]["night_armed"] is None
     assert post("/cell-ids", '{"lte:100:340": 1}')[1]["added"] == 0 and json.loads(get("/cell-ids")[2])["lte:100:340"] == 318289   # known ids kept
     assert post("/userdata?name=zte_positions", '[{"label": "window 108", "heading": 108}]') == (200, {"saved": "zte_positions"})
     assert json.loads(get("/userdata?name=zte_positions")[2])["data"][0]["heading"] == 108

@@ -295,6 +295,16 @@ const loginRun = async (cookie, app, answer) => {
     global.keeper_call = () => Promise.resolve({ status: 200, json: () => Promise.resolve(1) });
     assert.strictEqual(await keeper_get('/x'), 1);                                                          // a failure is not kept either
   }]);
+  // the night-screen button (2026-11-17): arm / cancel the coming night; NIGHT_ALWAYS = research, every night
+  cases.push(['keeper_night: the button and its line', async () => {
+    for (const f of ['keeper_night', 'keeper_night_html']) eval('global.' + f + '=' + grab(f).replace('function ' + f, 'function'));
+    let calls = []; global.keeper_call = (m, p) => { calls.push(m + ' ' + p); return Promise.resolve({ status: 200 }); }; global.keeper_poll = () => {};
+    global.window = Object.assign(global.window || {}, { setTimeout: f => f() });
+    await keeper_night(1); await keeper_night(0); assert.deepStrictEqual(calls, ['POST /night-screen?arm=1', 'POST /night-screen?arm=0']);
+    assert.ok(/not armed/.test(keeper_night_html({})) && /keeper_night\(1\)/.test(keeper_night_html({})));
+    const a = keeper_night_html({ night_armed: '2026-11-21' }); assert.ok(/armed/.test(a) && /2026-11-21/.test(a) && /keeper_night\(0\)/.test(a) && /leave the router/.test(a));
+    assert.ok(/every night/.test(keeper_night_html({ night_always: true })) && !/keeper_night\(/.test(keeper_night_html({ night_always: true })));
+  }]);
   for (const [name, fn] of antCases.concat(cases)) { try { await fn(); console.log('ok   ', name); } catch (e) { fails++; console.log('FAIL ', name, '-', e.message); } }
   console.log(fails ? fails + ' FAILED' : 'ALL PASSED');
   process.exit(fails ? 1 : 0);

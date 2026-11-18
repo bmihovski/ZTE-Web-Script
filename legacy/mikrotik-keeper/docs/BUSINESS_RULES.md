@@ -95,7 +95,10 @@ at `/docs`.
 - **Ranking** (`GET /anchors?rat=lte|nr`): the latest result per candidate, only if it stayed on the cell (on-target ≥ 80 %) and is
   not unstable; the 5G ranking is quality-first, the LTE ranking keeps call-ready, no-5G, signal, capacity. `failed` = off-target /
   not seen; `unstable` = the unstable list.
-- **Night screen** (LTE only): in `NIGHT_SCREEN` (02:00-05:00), after `NIGHT_IDLE_MIN` (30) idle minutes with a verified clock, once a
+- **Night screen** (LTE only): only on a night **armed** from the ZTE helper (`POST /night-screen?arm=1`, persisted as `night_armed`
+  = the night's morning date; you leave the router + modem on - they are off the other nights) or every night with `NIGHT_ALWAYS=1`
+  (research). Weekly Telegram reminder: from `NIGHT_REMIND_DAY` (Fri) at `NIGHT_REMIND` (21:30) once each evening until Arm is
+  pressed (that ends the week even if the run fails; cancelling brings it back), then quiet until the next Friday; never in research. In `NIGHT_SCREEN` (02:00-05:00; an optional weekday narrows it further), after `NIGHT_IDLE_MIN` (30) idle minutes with a verified clock, once a
   night: re-tests the current lock (or the unlocked baseline) + `NIGHT_CELLS` + up to `NIGHT_MAX` strong untested cells (registry, main
   bands, not tested in `NIGHT_RETEST_DAYS`, not "dead"), then puts the lock straight back. Traffic stops it. Night rows (`mode` night) are
   an unloaded network: kept for the finding, never in the daytime ranking, never auto-applied. The finding is RECOMMEND when a cell beats
@@ -168,7 +171,7 @@ at `/docs`.
   each spike line ends `keeper N %` = the keeper's own CPU (all threads, % of one core) since the last tick. API requests taking
   `SLOW_REQUEST_S` (2) or more are logged `slow request: GET /report?hours=24 3.4 s` - the ZTE panel polls ~9 endpoints every 60 s.
   `/status` (its `findings_24h`) and `/report` share `brain.report_cached`: the 24 h analysis (~2.5 s of a router core) at most once
-  a minute or per new sample, and a burst of requests waits for the one computation in progress (2026-11-17 20:09: the ZTE app
+  per 5 min (it feeds no automatic decision - display only), and a burst of requests waits for the one computation in progress (2026-11-17 20:09: the ZTE app
   start sent ~16 `/status` in 6 s - 14..51 s each); the keeper's own logic keeps calling the fresh `brain.report`. The userscript's
   `keeper_get` shares an identical GET while it is in flight (v 2026-11-17-#31).
 - **Telegram:** only a moved ceiling (`capacity ceiling`, with "up stays N (measured M)" while the upload is not learned); single

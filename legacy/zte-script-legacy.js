@@ -7,7 +7,7 @@
  * 
  */
 
-console.log("Loading ZTE Script v" + "2026-11-17-#31");
+console.log("Loading ZTE Script v" + "2026-11-17-#32");
 
 siginfo =
     "wan_active_band,wan_active_channel,wan_lte_ca,wan_apn,wan_ipaddr," +
@@ -2119,6 +2119,7 @@ function keeper_poll()
                 s.capacity.carriers.map(function(c) { return esc_html(c.carrier) + " " + esc_html(c.bw_mhz) + " MHz SINR " + esc_html(c.sinr) + " = " +
                     (c.mbps_layer == null ? "?" : esc_html(c.mbps_layer) + "x" + c.layers); }).join(", ") + "</span>" : ""));
         keeper_cap_render(res[8]);
+        $("#keeper_night").html(keeper_night_html((res[0] || {}).config || {}));
         $("#keeper_findings").html((r.findings || []).map(function(f) {
             var c = /^RECOMMEND/.test(f) ? "#06c" : /^WARN/.test(f) ? "#c22" : /^OK/.test(f) ? "#2a2" : "inherit";
             return "<li style='color:" + c + "'>" + esc_html(f) + "</li>"; }).join(""));
@@ -2167,6 +2168,19 @@ function keeper_poll()
 
 /* ---- capacity & shaper: the limit now and why, the learned ceilings, the tests; manual tests to check the line ---- */
 var keeper_cap_note = "", keeper_cap_last_time = null;     // the manual test's progress / result line; the newest test's time
+// the night screen runs only on a night armed here (the router + modem are off the other nights); NIGHT_ALWAYS=1 = research, every night
+function keeper_night_html(cfg)
+{
+    if (cfg.night_always) return "Night screen: every night (research mode, NIGHT_ALWAYS=1)";
+    if (cfg.night_armed) return "Night screen: <b>armed</b> for the night to " + esc_html(cfg.night_armed) +
+        " - leave the router + modem on. <a onclick='keeper_night(0)'>cancel</a>";
+    return "Night screen: not armed. <a onclick='keeper_night(1)'>Arm the coming night</a> (then leave the router + modem on)";
+}
+function keeper_night(on)
+{
+    return keeper_call("POST", "/night-screen?arm=" + (on ? 1 : 0)).then(function() { window.setTimeout(keeper_poll, 1000); });
+}
+
 function keeper_cap_render(c)
 {
     if (!c) { $("#keeper_cap_sum").text("capacity test not available (keeper too old, this device has no capacity test, or the app does not pass /captest yet - restart it)"); return; }
@@ -3750,6 +3764,7 @@ function inject_html()
                 <div style="font-size:11px">Capacity &amp; shaper (SQM): the limit now, why, and where its ceiling comes from -
                     <a onclick="keeper_captest('count')">Test now (counts)</a> | <a onclick="keeper_captest('down')">Download check</a> |
                     <a onclick="keeper_captest('up')">Upload check</a> (checks never change a ceiling):</div>
+                <div id="keeper_night" style="margin:4px 0"></div>
                 <div id="keeper_cap_note" style="margin:4px 0"></div>
                 <div id="keeper_cap_sum" style="margin:4px 0"></div>
                 <div style="font-size:11px">Ceilings per period (0.92 x the median of the last 5 counted tests, 2 needed; env = SQM_MAX_*; the shaper may climb above while the latency stays clean):</div>

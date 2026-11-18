@@ -5,7 +5,7 @@ here = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.abspath(os.pat
 sys.argv = ["x", "18170"]; spec = importlib.util.spec_from_file_location("m", os.path.join(here, "..", "fixtures", "mock_zte.py")); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 DATA = "/tmp/zte-keeper-test-night"; shutil.rmtree(DATA, ignore_errors=True); os.makedirs(DATA)
 os.environ.update(LOCK_VIA="web", DATA=DATA, ZTE_HOST="127.0.0.1:18170", ZTE_PASS_HASH=m.S(m.PW), LOCKTEST_SETTLE_S="0", LOCKTEST_ONLINE_TIMEOUT_S="0",
-                  LOCKTEST_MEASURE_MIN="0.03", LOCKTEST_BOOT_WAIT_S="3", NIGHT_SCREEN="02:00-05:00")
+                  LOCKTEST_MEASURE_MIN="0.03", LOCKTEST_BOOT_WAIT_S="3", NIGHT_SCREEN="02:00-05:00", NIGHT_ALWAYS="1")   # the screen itself: research mode (every night)
 sys.path.insert(0, ROOT); from keeper import store
 from keeper import acs, api, brain, common, guard, locktest, monitor, store; from keeper.devices import zte as zdev; from keeper.devices.zte import antennas, locks as zlocks
 brain.reg_st["dir"] = DATA
@@ -95,5 +95,51 @@ assert "900@1550" not in locktest._night_unreachable(NX)                        
 common.state({"lte_lock": {"cell": "340@100", "state": "active"}}); reg["1550/434"].update(last=NX, seen_min=500, rsrp=-86)
 assert "434@1550" not in locktest.night_candidates(NX), locktest.night_candidates(NX)                                                  # the only B3, but skipped
 print("OK test_night_noinform_skip")
+
+# a weekday in NIGHT_SCREEN: one test night a week (2026-11-17: router + modem powered off the other nights). The day is the date of
+# the night's morning: "Sat 02:00-05:00" = Friday night; "Fri-Sat" = two nights; no day = every night (as before)
+sat = time.mktime((2026, 11, 21, 2, 30, 0, 0, 0, -1)); fri = sat - 86400; sun = sat + 86400                    # 2026-11-21 is a Saturday
+NW = locktest.NIGHT
+for spec, yes, no in (("Sat 02:00-05:00", [sat], [fri, sun, sat + 3 * 3600]), ("Fri-Sat 02:00-05:00", [fri, sat], [sun]),
+                      ("Sun-Mon 02:00-05:00", [sun, sun + 86400], [sat]), ("02:00-05:00", [fri, sat, sun], [sat - 3600]),
+                      ("Sat 23:00-01:00", [sat - 3.5 * 3600 + 86400], [sat - 3.5 * 3600])):     # a window past midnight: the evening's day
+    locktest.NIGHT = spec
+    assert all(locktest.in_night(t) for t in yes) and not any(locktest.in_night(t) for t in no), spec
+locktest.NIGHT = "Sun 02:00-05:00"; assert not locktest.maybe_night(idle, sat)                     # wired into the night job
+locktest.NIGHT = NW
+
+# --- the normal setup (2026-11-17): the night screen runs only on a night armed from the ZTE helper (persisted), the router + modem
+# are powered off the other nights; NIGHT_ALWAYS=1 is the research override (every night). An evening Telegram reminds.
+from keeper import alert
+evs = lambda: store.rows(DATA, "events")
+locktest.NIGHT_ALWAYS = False; locktest.NIGHT = "02:00-05:00"
+fri21 = time.mktime((2026, 11, 20, 21, 30, 0, 0, 0, -1)); sat0230 = fri21 + 5 * 3600; sat0130 = sat0230 - 3600   # Fri 20 Nov 21:30
+common.state({"night_last": None, "night_armed": None, "night_remind_last": None})
+assert not locktest.armed(sat0230) and not locktest.maybe_night(idle, sat0230)                       # not armed: no screen
+assert locktest.night_arm(True, fri21) == {"armed": "2026-11-21"} and locktest.armed(sat0230)            # armed in the evening -> that night
+assert evs()[-1]["event"] == "night screen armed" and evs()[-1]["to"] == "2026-11-21", evs()[-1]
+assert locktest.night_arm(True, sat0130) == {"armed": "2026-11-21"}                                       # after midnight: this night
+assert locktest.night_arm(True, sat0230 + 4 * 3600) == {"armed": "2026-11-22"}                            # after the window: the next one
+assert locktest.night_arm(False, fri21) == {"armed": None} and not locktest.armed(sat0230)                # cancelled
+locktest.NIGHT_ALWAYS = True; assert locktest.armed(sat0230); locktest.NIGHT_ALWAYS = False              # research: every night
+# the weekly reminder (2026-11-17): from Friday NIGHT_REMIND (21:30) each evening until Arm is pressed, then quiet until next Friday;
+# cancelling the arm brings it back; research mode (NIGHT_ALWAYS=1) never reminds
+D = 86400; common.state({"night_armed": None, "night_armed_at": None, "night_remind_last": None}); n = len(reports)
+assert not locktest.remind({}, fri21 - 60)                                                              # Fri 21:29: not yet
+assert locktest.remind({}, fri21) and "Friday" in reports[-1] and "arm" in reports[-1], reports[-1:]
+assert not locktest.remind({}, fri21 + 600)                                                             # once a day
+assert locktest.remind({}, fri21 + D) and "not scheduled" in reports[-1] and "2026-11-20" in reports[-1], reports[-1:]   # Sat: still due
+locktest.night_arm(True, fri21 + D + 3600)                                                              # armed Sat 22:30
+assert not locktest.remind({}, fri21 + 2 * D) and not locktest.remind({}, fri21 + 5 * D)               # Sun..Wed: quiet (even if it failed)
+locktest.night_arm(False, fri21 + 5 * D + 3600)                                                         # cancelled Wed 22:30
+assert locktest.remind({}, fri21 + 6 * D) and "not scheduled" in reports[-1], reports[-1:]             # Thu: due again
+locktest.night_arm(True, fri21 + 6 * D + 600)                                                           # armed Thu (last week's cycle)
+assert locktest.remind({}, fri21 + 7 * D) and "Friday" in reports[-1], reports[-1:]                    # next Friday: a new week
+locktest.night_arm(True, fri21 + 14 * D - 3600)                                                         # armed Fri 20:30 before the time
+assert not locktest.remind({}, fri21 + 14 * D)
+locktest.NIGHT_ALWAYS = True; assert not locktest.remind({}, fri21 + 21 * D); locktest.NIGHT_ALWAYS = False   # research: never
+assert len(reports) == n + 4 and not any("can go off" in r or "armed for tonight" in r or "research mode" in r for r in reports[n:]), reports[n:]
+locktest.NIGHT = "off"; assert locktest.morning(fri21) == "2026-11-21" and not locktest.maybe_night(idle, sat0230); locktest.NIGHT = "02:00-05:00"   # off: arming still answers
+assert locktest.remind in zdev.minute_jobs()
 
 print("OK test_night")

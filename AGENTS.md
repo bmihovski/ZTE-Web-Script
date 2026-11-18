@@ -62,6 +62,10 @@ Durable project memory. Read this first; the details live in the keeper docs.
   is not a router reboot).
   After a power cut run `legacy/mikrotik-keeper/tools/powercut.py --wait --follow 15` (router log -> real time -> PASS/FAIL;
   reports/ is git-ignored); the fixture `test/fixtures/routeros-powercut-2026-11-17.log` is the real 3rd cut of that day.
+- **Nights (from 2026-11-17, after the tests):** router + modem powered off at night except one weekly test night
+  armed from the ZTE helper's button (`POST /night-screen?arm=1`, persisted); `NIGHT_ALWAYS=1` = research, every night; a weekly
+  Telegram from Friday 21:30, each evening until Arm is pressed (none in research); every morning is a cold boot (clock rules + `tools/powercut.py` cover it). The 24 h
+  analysis is display only (cached 5 min) - no automatic decision may depend on it without revisiting that.
 - **One lock change = one reboot** on the ZTE (both legs in one SetParameterValues); the ATL uses one script, no CPE reboot.
   The quality A/B's end puts your locks back as `pending` (both legs, one write) - not `released`, which restored each leg on its
   own 'back' check with its own reboot (2026-11-17). A ZTE reports other-frequency neighbours only ~2-3 min after a boot.
