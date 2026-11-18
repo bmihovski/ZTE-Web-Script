@@ -84,7 +84,7 @@ def row(vals):
 
 def minute_jobs():
     """Sample jobs in order: scheduled sweep, lock guard, quality A/B, capacity test, night screen."""
-    return [antennas.maybe_sweep, guard.lock_guard, guard.quality_ab, captest.maybe_test, captest.weekly, locktest.maybe_night, locktest.remind]
+    return [antennas.maybe_sweep, guard.lock_guard, guard.quality_ab, captest.maybe_test, captest.weekly, locktest.maybe_night, locktest.maybe_day, locktest.remind]
 
 
 MODEM_FAULT = ("sim_undetected", "sim_destroy", "waitpin", "waitpuk", "waitnck", "undetected")   # modem_main_state = SIM / modem fault

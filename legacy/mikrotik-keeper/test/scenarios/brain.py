@@ -203,4 +203,19 @@ outs = []; th = [threading.Thread(target=lambda: outs.append(brain.report_cached
 assert n0 == [24] and len(outs) == 6 and all(o is outs[0] for o in outs), (n0, len(outs))
 brain.report = r0
 
+# the weighted score of a lock-test row (docs/NIGHTLY-PLAN.md, 2026-11-18): download 25 (0-200), upload 10 (0-30), call-ready 20,
+# loss 15 (0-5 %), p95 10 (20-200 ms), jitter 10 (0-50 ms), 5G 10 (n78 10, n28 5, none 0); gates on-target >= 80 %, stable anchor.
+# The 2026-11-18 night rows (store values are text):
+base = {"lock": "none", "on_target_pct": "", "unstable": "", "down_mbps": "156.0", "up_mbps": "27.9", "call_ok_pct": "100.0", "loss_pct": "0.0",
+        "lat_p95": "53.2", "jitter_ms": "11.2", "nr_cells": "534:12", "nr_arfcn": "636576", "nr_iperf": ""}
+b20 = dict(base, lock="434@6400", on_target_pct="100.0", down_mbps="6.5", up_mbps="25.1", call_ok_pct="83.3", lat_p95="119.3", jitter_ms="19.0",
+           nr_cells="no5G:12", nr_arfcn="")
+sc = brain.lt_score(base); assert sc["score"] == 89.7 and sc["parts"]["5g"] == 10 and sc["parts"]["down"] == 19.5 and not sc["partial"], sc
+assert brain.lt_score(b20)["score"] == 51.5 and brain.lt_score(b20)["parts"]["5g"] == 0
+assert brain.lt_score(dict(b20, nr_iperf="151600/77:1 no5G:1"))["parts"]["5g"] == 5                  # n28 seen under traffic
+assert brain.lt_score(dict(b20, nr_iperf="636576/534:2"))["parts"]["5g"] == 10
+g = brain.lt_score(dict(b20, on_target_pct="50.0")); assert g["score"] is None and "on the locked cell 50" in g["gate"], g
+assert brain.lt_score(dict(b20, unstable="1"))["score"] is None
+old = brain.lt_score(dict(base, down_mbps="", up_mbps="")); assert old["partial"] == ["down", "up"] and old["score"] == 60.9, old   # before 18b: no iperf
+
 print("OK test_brain")

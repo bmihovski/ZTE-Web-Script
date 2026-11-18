@@ -179,9 +179,16 @@ def _site(r):
 def ab_alt(cur, row, now):
     """The best lock-tested LTE anchor on ANOTHER site (eNB) that the modem saw in the last 6 h, or None. When a site's backhaul is
     the trouble (rain on its microwave link, a power cut), every cell of that site has it - the modem's own choice (strongest)
-    would stay there, so the A/B tries another site first. Quality decides, signal only breaks a tie (anchor_ranking order)."""
+    would stay there, so the A/B tries another site first. B cell (docs/NIGHTLY-PLAN.md item 6): daytime results only (anchor_ranking
+    drops night rows - an empty network), 5G paired in its test, the weighted score as the share of the points it measured (older
+    rows have no iperf: down/up missing) when it measured >= 60 % of the weight; sparser rows after, in anchor_ranking order."""
     rk = brain.anchor_ranking()["ranked"]
     here = next((_site(r) for r in rk if r["lock"] == cur), None) or _site({"site": row.get("lte_site")})
+    sc = {r["lock"]: brain.lt_score(r) for r in rk}
+    def share(x):
+        got = 100 - sum(brain.SCORE_W[k][0] for k in x["partial"])
+        return (x["score"] or 0) / got if got >= 60 else -1
+    rk = sorted((r for r in rk if sc[r["lock"]]["parts"].get("5g")), key=lambda r: share(sc[r["lock"]]), reverse=True)
     for r in rk:
         e = brain.REG["lte"].get(r.get("anchor") or "") or {}
         if r["lock"] != cur and _site(r) and _site(r) != here and now - e.get("last", 0) <= 6 * 3600: return r["lock"]

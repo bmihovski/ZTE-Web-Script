@@ -96,11 +96,28 @@ at `/docs`.
   not unstable; the 5G ranking is quality-first, the LTE ranking keeps call-ready, no-5G, signal, capacity. `failed` = off-target /
   not seen; `unstable` = the unstable list.
 - **Lock-test rows** also carry `boot_s` (lock -> boot inform) and `down_mbps` / `up_mbps` (the modem's iperf3 after the measuring
-  window, still locked; `LOCKTEST_IPERF=0` off; never a ceiling). `POST /lock-test?...&night=1` = a hand-picked night screen (LTE). Night LTE steps free the 5G lock in the same write
+  window, still locked; `LOCKTEST_IPERF=0` off; never a ceiling). `POST /lock-test?...&night=1` = a hand-picked night screen (LTE). Traffic stops a night run only after `NIGHT_BOOT_QUIET_S` (300) of modem uptime - before that it is the
+  modem's own reconnect (2026-11-18 08:56: a B8 step was stopped 3 s after its boot). Night LTE steps free the 5G lock in the same write
   (the anchor's own pairing shows; your 5G lock returns with the LTE lock at the end); daytime LTE tests keep your 5G lock.
+- **Lock-test score** (`brain.lt_score`, `/lock-tests` rows: `score`, `score_parts`, `score_partial`, `score_gate`): download 25 (0-200),
+  upload 10 (0-30), call-ready 20, loss 15 (0-5 %), p95 10 (20-200 ms), jitter 10 (0-50 ms), 5G 10 (n78 10 / n28 5 / none; from `nr_arfcn` +
+  `nr_iperf` = the 5G cells while the step's iperf ran); gates: on the locked cell >= 80 %, a stable anchor. Computed when read.
 - **Band scan** (`POST /band-scan?bands=8,1,...`, `keeper/bandscan.py`): per band `LockLTEBand` = that band over TR-069 (no reboot),
   `BANDSCAN_WAIT_S` (90) of samples (until one is on the band, at most 2x), a `band_scans` row (serving cell + median RSRP/RSRQ/SINR,
   every neighbour's best RSRP) + an event; the full list back at the end. Only without an LTE cell lock; busy meanwhile (the guard waits).
+- **Night planner** (`keeper/nightplan.py`, 2026-11-18): the night screen's cells = present at NIGHT (>= 50 % of the night
+  samples for the ARFCN and the cell, or a night band scan), best night RSRP first, < ARFCN best - `NIGHT_WEAK_DB` (10) out, a FULL
+  test (iperf + nr_iperf) in `NIGHT_RETEST_DAYS` (30) skips unless +6 dB since, unseen 3 days out; as many as fit before the night
+  window (LOCK_PAUSE) ends - `NIGHT_MAX` 0 = no cap - and a step that would end after it is not started. Each test night starts
+  with a band scan (`BANDSCAN_NIGHT`). `NIGHT_BANDS` ('' = all) filters bands. The plan: `/lock-tests` -> `night_plan`.
+- Band scan bandwidth watch: each band's serving carrier bandwidth (`bw_mhz`, as logged '@N') is compared with its last scan; a change
+  -> one Telegram note (the refarm signal: B8 5 -> 10 MHz after the 3G release). Unknown bandwidth or a first scan: no note.
+- Saturday day test (`DAY_TEST` "Sat 08:30-11:30", '' = off; not before 08:00 - the night-off cells are back ~08:00-08:10): once a
+  window after `DAY_IDLE_MIN` (10) idle minutes - the day lock, the planner's day-only cells, the last night run's cells within 5
+  score points of its baseline (daytime confirmation). Normal day test (5G lock kept), as many as fit, hard stop at the window end.
+- Quality A/B (`guard.quality_ab`, bad call-ready with good signal on an idle link, once a day): trial 1 = the B cell
+  (`guard.ab_alt`): a daytime lock-test result (night rows never count), 5G paired in that test, ANOTHER site (eNB) than the lock,
+  seen in the last 6 h; best score as the share of the points measured (rows measuring >= 60 % of the weight), sparser rows after. Trial 2 = everything unlocked (the modem's choice).
 - **Night screen** (LTE only): only on a night **armed** from the ZTE helper (`POST /night-screen?arm=1`, persisted as `night_armed`
   = the night's morning date; you leave the router + modem on - they are off the other nights) or every night with `NIGHT_ALWAYS=1`
   (research). Weekly Telegram reminder: from `NIGHT_REMIND_DAY` (Fri) at `NIGHT_REMIND` (21:30) once each evening until Arm is

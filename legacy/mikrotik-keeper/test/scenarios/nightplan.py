@@ -1,0 +1,39 @@
+# the night planner (docs/NIGHTLY-PLAN.md items 1-3, 2026-11-18): candidates from the stored samples (+ band scans), only cells whose
+# ARFCN and the cell itself are present at NIGHT (2026-11-18: 493/202/236@1550 were picked by daytime RSRP, 1-12 % present at night,
+# each lock hung the ZTE up to 31 min), best night RSRP per ARFCN first, a full test (iperf + nr_iperf) counts as tested
+import os, sys, tempfile, time
+here = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.abspath(os.path.join(here, "..", ".."))
+os.environ.update(DATA=tempfile.mkdtemp())
+sys.path.insert(0, ROOT)
+from keeper import nightplan as npl
+D = lambda s: time.mktime(time.strptime(s, "%Y-%m-%d %H:%M"))
+NOW = D("2026-11-19 01:30"); WIN = ("00:50", "08:00")
+S = []
+def add(t, serving, nb):
+    S.append({"time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t)), "lte_cell": serving, "lte_rsrp": "-89", "lte_neighbours": nb})
+for night in (D("2026-11-17 01:00"), D("2026-11-18 01:00")):          # two nights, 60 min each: B3 + B7 + B20, no B1 (100 off at night)
+    for m in range(60):
+        nb = "1550/340:-87 1550/434:-87 3350/340:-89 6400/112:-78 6400/121:-85 6400/52:-95" + (" 6400/394:-81" if m % 20 else "") + (" 1550/493:-93" if m == 7 else "")
+        add(night + 60 * m, "3350/340", nb)
+for m in range(120):                                                   # the day: B1 + B3 only (locked to 340@100)
+    add(D("2026-11-18 12:00") + 60 * m, "100/340", "100/340:-81 100/264:-87 1550/340:-90 1550/493:-90")
+tests = [{"time": "2026-11-18 05:16:36", "lock": "112@6400", "minutes": "12", "down_mbps": "28.5", "nr_iperf": "", "anchor_rsrp_p50": "-79"},       # 5G locked then: no nr_iperf -> retest
+         {"time": "2026-11-18 05:34:06", "lock": "121@6400", "minutes": "12", "down_mbps": "32.6", "nr_iperf": "no5G:1", "anchor_rsrp_p50": "-89"},  # full; now -85: +4 dB -> skip
+         {"time": "2026-11-14 02:00:00", "lock": "434@1550", "minutes": "12", "down_mbps": "150", "nr_iperf": "636576/747:1", "anchor_rsrp_p50": "-87"}]
+scans = [{"time": "2026-11-18 01:10:00", "band": "8", "serving": "3774/112", "rsrp": "-79", "neighbours": "3774/112:-79 3774/36:-99"}]
+p = npl.plan(S, tests, scans, NOW, WIN, lock="340@100", dead=set())
+assert p["cells"][:4] == ["112@6400", "112@3774", "394@6400", "340@1550"], p["cells"]      # night RSRP order; B8 from the night band scan
+assert "493@1550" not in p["cells"] and "121@6400" not in p["cells"] and "434@1550" not in p["cells"], p["cells"]   # 2 % at night / full test / full test
+assert "52@6400" not in p["cells"]                                                                  # 17 dB under 6400's best: not worth a step
+assert "264@100" not in p["cells"] and p["day_only"][:1] == ["264@100"] and "100" in p["night_off"], p             # ARFCN 100: not at night
+assert "340@100" not in p["cells"] + p["day_only"]                                                                  # the lock itself
+assert p["why"]["394@6400"].startswith("night -81 dBm, 95 %") and p["why"]["112@3774"].startswith("night -79 dBm, band scan"), p["why"]
+p2 = npl.plan(S, tests[1:2] + [dict(tests[1], lock="434@1550", anchor_rsrp_p50="-95", time="2026-11-18 03:00:00")], [], NOW, WIN, lock=None, dead={"394@6400"})
+assert "434@1550" in p2["cells"] and "394@6400" not in p2["cells"], p2["cells"]          # +8 dB since its test -> retest; dead -> out
+old = [dict(r, time=r["time"].replace("2026-11-1", "2026-11-0")) for r in S if r["time"] < "2026-11-17"]           # only seen 10+ days ago
+assert npl.plan(old, [], [], NOW, WIN, lock=None, dead=set())["cells"] == []                                       # unseen > 3 days: gone
+# how many fit: (window end - now - 15 min margin) // step, the baseline first
+assert npl.budget(D("2026-11-19 02:00"), D("2026-11-19 08:00"), step_s=18 * 60) == 18     # 345 min // 18 = 19 steps - 1 baseline
+assert npl.budget(D("2026-11-19 07:30"), D("2026-11-19 08:00"), step_s=18 * 60) == 0
+assert npl.window_end(D("2026-11-19 02:00"), "00:50-08:00") == D("2026-11-19 08:00") and npl.window_end(D("2026-11-19 09:00"), "00:50-08:00") is None
+print("OK nightplan")

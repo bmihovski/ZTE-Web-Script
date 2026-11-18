@@ -221,7 +221,7 @@ The keeper measures, analyses and decides; the userscript only shows the results
   cell missing for > 24 h -> re-run the lock test. `POST /cells/forget?cells=500/341,3150/341` drops cells that don't belong to this device's registry. Your own `data/sites.json` (optional, reference only) adds site name, distance
   and bearing from the ZTE to the cells whose site the ZTE reported.
 - **Night screen** (only on a night armed from the ZTE helper - `POST /night-screen?arm=1|0` - or every night with `NIGHT_ALWAYS=1`;
-  weekly Telegram from `NIGHT_REMIND_DAY` Fri `NIGHT_REMIND` 21:30, each evening until armed; `NIGHT_SCREEN` 02:00-05:00, `off` disables; `NIGHT_MAX` 3, `NIGHT_IDLE_MIN` 30, `NIGHT_RETEST_DAYS` 7,
+  weekly Telegram from `NIGHT_REMIND_DAY` Fri `NIGHT_REMIND` 21:30, each evening until armed; `DAY_TEST` Sat 08:30-11:30 ('' off), `DAY_IDLE_MIN` 10; `NIGHT_BANDS` (lock-test only these bands, e.g. 1,3,7; empty = all), `BANDSCAN_NIGHT` 1,3,7,8,20 (a bandwidth change -> Telegram); `NIGHT_SCREEN` 02:00-05:00, `off` disables; `NIGHT_MAX` 3, `NIGHT_IDLE_MIN` 30, `NIGHT_RETEST_DAYS` 7,
   `NIGHT_CELLS` always-re-check list e.g. `340@3350`): once a night, after 30 idle minutes, the keeper lock-tests the current lock (baseline)
   plus `NIGHT_CELLS` (home set, same weekly throttle) plus up to 3 strong B1/B3/B7 cells from the registry not tested in 7 days, then puts the
   lock back. Traffic stops it. Night rows (`mode` night) are an unloaded network: they never enter the daytime ranking. It pushes the full

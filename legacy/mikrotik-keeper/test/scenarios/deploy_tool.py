@@ -102,4 +102,9 @@ except SystemExit as e: assert "not reachable" in str(e) and "KEEPER_URL" in str
 os.environ["KEEPER_URL"] = "http://192.168.6.250:7557"; d2 = importlib.util.module_from_spec(spec); spec.loader.exec_module(d2)
 assert d2.URL == "http://192.168.6.250:7557"                                      # the name can fail to resolve on the Mac: override it
 
+# the gate's suite: the parallel docker runner when docker answers (~2 min), else the sequential pytest
+assert d.test_cmd(ROOT, True)[1:] == [os.path.join(ROOT, "tools", "test_parallel.py"), "--docker"], d.test_cmd(ROOT, True)
+assert d.test_cmd(ROOT, False)[1:] == ["-m", "pytest", "-q"]
+import shutil as _sh; w0 = _sh.which; _sh.which = lambda x: None; assert d.docker_ok() is False; _sh.which = w0     # no docker: pytest
+
 print("OK test_deploy_tool")

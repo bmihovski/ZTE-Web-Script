@@ -183,14 +183,28 @@ def review(base=BASE):
     return hits
 
 
+def docker_ok():
+    """Does a docker daemon answer here (OrbStack on the Mac)?"""
+    if not shutil.which("docker"): return False
+    try: return subprocess.run(["docker", "info"], capture_output=True, timeout=15).returncode == 0
+    except (subprocess.TimeoutExpired, OSError): return False
+
+
+def test_cmd(base=BASE, have_docker=None):
+    """The scenario suite: tools/test_parallel.py --docker (one container each, ~2 min) when docker answers, else pytest (sequential)."""
+    if have_docker is None: have_docker = docker_ok()
+    return [sys.executable, os.path.join(base, "tools", "test_parallel.py"), "--docker"] if have_docker else [sys.executable, "-m", "pytest", "-q"]
+
+
 def check(base=BASE, skip_tests=False):
     """Local gate: compile, the scenario suite (unless skipped), the userscript syntax, the review scan."""
     print("== check")
     p = subprocess.run([sys.executable, "-m", "compileall", "-q", "keeper"], cwd=base)
     if p.returncode: raise SystemExit("compileall failed")
     if not skip_tests:
-        p = subprocess.run([sys.executable, "-m", "pytest", "-q"], cwd=base)
-        if p.returncode: raise SystemExit("pytest failed - fix it or pass --skip-tests")
+        cmd = test_cmd(base); print("   " + " ".join(os.path.basename(x) for x in cmd[1:]))
+        p = subprocess.run(cmd, cwd=base)
+        if p.returncode: raise SystemExit("the scenario suite failed (see test-logs/ with --docker) - fix it or pass --skip-tests")
     js = os.path.join(os.path.dirname(base), "zte-script-legacy.js")
     if os.path.isfile(js) and shutil.which("node"):
         p = subprocess.run(["node", "--check", js], capture_output=True, text=True)

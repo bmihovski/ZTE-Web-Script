@@ -56,10 +56,10 @@ def rows():
 
 stop = threading.Event(); ANCHOR_FLIP = {"on": False}
 def zte():                                      # reboot request -> boot inform; one sample every 0.2 s for the current lock
-    seen = 0; k = 0
+    seen = None; k = 0       # the last reboot entry itself, not a count: sets.clear() + one new reboot gave the same count (flaky, 2026-11-18)
     while not stop.is_set():
-        n = sum(1 for s in m.st["sets"] if s[1] == "REBOOT_DEVICE")
-        if n != seen: seen = n; time.sleep(0.3); acs.st["boots"] = acs.st.get("boots", 0) + 1
+        last = next((s for s in reversed(m.st["sets"]) if s[1] == "REBOOT_DEVICE"), None)
+        if last is not None and last is not seen: seen = last; time.sleep(0.3); acs.st["boots"] = acs.st.get("boots", 0) + 1
         cur = locktest.lt["running"]
         if cur in CELLS:
             lte, nr, sinr, site, lat, jit, loss, ok = CELLS[cur]; k += 1

@@ -70,6 +70,34 @@ def ts(row):
     return datetime.datetime.strptime(row["time"], "%Y-%m-%d %H:%M:%S").timestamp()
 
 
+# the weighted score of a lock-test row (docs/NIGHTLY-PLAN.md, agreed 2026-11-18): (weight, low, high, +1 higher is better / -1 lower)
+SCORE_W = {"down": (25, 0, 200, 1), "up": (10, 0, 30, 1), "call": (20, 0, 100, 1), "loss": (15, 0, 5, -1), "p95": (10, 20, 200, -1), "jitter": (10, 0, 50, -1)}
+SCORE_COL = {"down": "down_mbps", "up": "up_mbps", "call": "call_ok_pct", "loss": "loss_pct", "p95": "lat_p95", "jitter": "jitter_ms"}
+
+
+def nr_band_of(arfcn):
+    """5G ARFCN -> 'n78' | 'n28' | None (Yettel BG: n78 3300-3800 MHz, n28 700 MHz)."""
+    a = f(arfcn)
+    return None if a is None else "n78" if 620000 <= a <= 653333 else "n28" if 151600 <= a <= 160600 else None
+
+
+def lt_score(r):
+    """{score 0-100 | None, parts, partial (metrics missing - e.g. rows before 2026-11-18b have no iperf), gate}. Computed when read,
+    so new weights re-score old rows. Gates: on the locked cell >= 80 %, a stable anchor. 5G: n78 10, n28 5, none 0 - from the
+    idle window (nr_arfcn) and the iperf (nr_iperf: NSA adds the leg on traffic)."""
+    on = f(r.get("on_target_pct"))
+    if on is not None and on < 80: return {"score": None, "parts": {}, "partial": [], "gate": "on the locked cell %g %% (< 80)" % on}
+    if str(r.get("unstable") or "") not in ("", "0", "0.0", "False"): return {"score": None, "parts": {}, "partial": [], "gate": "unstable anchor"}
+    parts, partial = {}, []
+    for k, (w, lo, hi, d) in SCORE_W.items():
+        v = f(r.get(SCORE_COL[k]))
+        if v is None: partial.append(k); continue
+        x = max(0.0, min(1.0, (v - lo) / (hi - lo))); parts[k] = w * (x if d > 0 else 1 - x)
+    bands = {nr_band_of(a) for a in re.findall(r"\d{5,6}", "%s %s" % (r.get("nr_arfcn") or "", r.get("nr_iperf") or ""))}
+    parts["5g"] = 10 if "n78" in bands else 5 if "n28" in bands else 0
+    return {"score": round(sum(parts.values()), 1), "parts": {k: round(v, 1) for k, v in parts.items()}, "partial": partial, "gate": ""}
+
+
 def band_of(earfcn):
     """LTE downlink EARFCN -> band (the bands Yettel BG uses)"""
     e = f(earfcn)

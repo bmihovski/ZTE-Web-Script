@@ -19,7 +19,8 @@ Durable project memory. Read this first; the details live in the keeper docs.
   Use `--skip-tests` only right after a fresh suite. The deploy refuses while a lock test runs.
   It also refuses when it cannot reach the API (it could not verify, so it would roll back blind): `KEEPER_URL=http://192.168.6.250:7557`
   when `keeper.lan` does not resolve / a proxy is in the way on the Mac (2026-11-17); verify names the last error; `--force` for a keeper that is down.
-- Tests: `.venv/bin/python -m pytest -q` (each `test/scenarios/*.py` runs in its own process). A scenario that patches a function
+- Tests: `.venv/bin/python -m pytest -q` (each `test/scenarios/*.py` runs in its own process); in parallel: `tools/test_parallel.py --docker`
+  (Mac, OrbStack: one container per scenario, ~2 min; the deploy gate uses it when docker answers) or `tools/test_parallel.py --jobs 4`. A scenario that patches a function
   must be paired with a real-body test — the `INTEST_MB` typo shipped because every test patched `brain.internet_test`.
 - Version: bump `VERSION` in `keeper/__init__.py` (`YYYY-MM-DD<letter>`) on every keeper change; the deploy verify compares it
   with the live `/openapi.json`.

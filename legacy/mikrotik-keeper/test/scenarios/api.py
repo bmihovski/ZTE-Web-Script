@@ -13,6 +13,8 @@ assert not missing, missing                                     # a new endpoint
 store.add(DATA, "events", {"time": "2026-01-01 00:00:00", "event": "old"})
 RECENT = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 3600))       # an hour ago (not date-bound: /db/prune days=1 below)
 store.add(DATA, "events", {"time": RECENT, "event": "lte lock removed", "why": "no LTE service, 3 min"})
+store.add(DATA, "lock_tests", {"time": RECENT, "lock": "394@6400", "on_target_pct": "100.0", "down_mbps": "74.4", "up_mbps": "21.6",
+                               "call_ok_pct": "100.0", "loss_pct": "0.0", "lat_p95": "34.6", "jitter_ms": "3.2", "nr_cells": "no5G:12"})
 p = subprocess.Popen([sys.executable, "-m", "keeper"], cwd=ROOT, env=dict(os.environ, NIGHT_SCREEN="off", CHECKIN_DAYS="0", PORT="18160", DATA=DATA, ZTE_HOST="127.0.0.1:9",
                      LAT_TARGETS="127.0.0.1:9", SLOW_REQUEST_S="0"), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 time.sleep(1)
@@ -31,6 +33,8 @@ try:
     st, e = post("/lock-test?cells=534@636576&rat=nr&night=1", ""); assert st == 400 and "night=1" in e["error"], (st, e)   # night: LTE only
     st, e = post("/band-scan?bands=8,x", ""); assert st == 400 and "bands=" in e["error"], (st, e)            # the band scan
     s_, t_, b_ = get("/band-scans"); assert s_ == 200 and json.loads(b_) == {"running": None, "scans": []}, b_
+    assert "night_plan" in json.loads(get("/lock-tests")[2])                          # the planner's last decision (cells, why, day_only)
+    r = json.loads(get("/lock-tests")[2])["results"][-1]; assert r["score"] == 70.0 and r["score_parts"]["down"] == 9.3 and r["score_gate"] == "", r
     st, armed = post("/night-screen?arm=1", ""); assert st == 200 and re.fullmatch(r"\d{4}-\d\d-\d\d", armed["armed"] or ""), armed   # the panel's button
     cfg = json.loads(get("/status")[2])["config"]; assert cfg["night_armed"] == armed["armed"] and cfg["night_always"] is False, cfg
     assert post("/night-screen?arm=0", "") == (200, {"armed": None}) and json.loads(get("/status")[2])["config"]["night_armed"] is None

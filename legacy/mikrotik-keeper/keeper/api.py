@@ -191,8 +191,11 @@ class H(BaseHTTPRequestHandler):
                 if rat not in ("", "lte", "nr"): raise ValueError("rat=lte|nr")
                 rows = store.rows(DATA, "lock_tests")
                 if rat: rows = [r for r in rows if r.get("rat", "lte") == rat]
+                sc = lambda r: (lambda x: dict(r, score=x["score"], score_parts=x["parts"], score_partial=x["partial"], score_gate=x["gate"]))(brain.lt_score(r))
+                rows = [sc(r) for r in rows[-40:]]                          # the weighted score, computed when read (new weights re-score)
                 code, obj = 200, {"running": lt["running"], "phase": lt.get("phase", ""), "plan": lt["plan"], "align": lt["align"],
-                                  "rat": lt.get("rat"), "anchor": lt.get("anchor"), "waiting": lt["waiting"], "results": rows[-40:]}
+                                  "rat": lt.get("rat"), "anchor": lt.get("anchor"), "waiting": lt["waiting"], "results": rows,
+                                  "night_plan": state().get("night_plan")}
             elif path == "/antenna-sweeps":
                 code, obj = 200, store.rows(DATA, "antenna_sweeps", last=40)
             elif path == "/band-scans":

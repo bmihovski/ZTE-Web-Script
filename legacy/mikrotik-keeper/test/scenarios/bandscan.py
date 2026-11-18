@@ -16,6 +16,14 @@ s = bs.summarize("8", rows)
 assert s["serving"] == "3774/112" and s["serving_band"] == "B8" and (s["rsrp"], s["rsrq"], s["sinr"]) == (-94.0, -10.5, 5.0), s
 assert s["neighbours"] == "3774/112:-95 3774/36:-99 1550/340:-90" and s["samples"] == 2 and s["note"] == "", s
 assert bs.summarize("28", rows)["note"] == "no service on B28 (no sample on the band)" and bs.summarize("28", rows)["serving"] == ""
+assert s["bw_mhz"] is None, s                                           # no '@bw' logged: unknown, never the band's usual value
+rows[0]["lte_ca"] = "B8/3774/112:-95/4@5"; rows[1]["lte_ca"] = "B8/3774/112:-93/6@5 B3/1550/340:-88/8@20"
+assert bs.summarize("8", rows)["bw_mhz"] == 5, bs.summarize("8", rows)  # the serving carrier's bandwidth (B8 5 MHz, 2026-11-18)
+# the refarm signal (3G spectrum released): a band's serving bandwidth differs from its last scan -> one Telegram note
+assert bs.bw_change("8", 5, [{"band": "8", "bw_mhz": "5"}]) is None
+assert bs.bw_change("8", 10, [{"band": "8", "bw_mhz": "5"}, {"band": "20", "bw_mhz": "10"}]) == "band scan: B8 bandwidth 5 -> 10 MHz - worth a lock test again"
+assert bs.bw_change("8", 10, [{"band": "8", "bw_mhz": ""}]) is None and bs.bw_change("8", None, [{"band": "8", "bw_mhz": "5"}]) is None
+assert bs.bw_change("8", 10, []) is None                                  # first scan: nothing to compare
 
 # scan(): one write per band (no reboot), the samples of its window, then ONE write of the full list back; busy meanwhile
 writes = []; seen_busy = []
@@ -24,15 +32,18 @@ def fake_set(pairs, reboot=False, timeout=180):
     b = pairs[0][2]
     if b in ("8", "28"):                                   # the modem's next sample on that band (28: no service -> no LTE cell)
         brain.HIST.append({"time": st(time.time()), "lte_cell": "3774/112" if b == "8" else "", "lte_rsrp": "-94", "lte_rsrq": "-10",
-                           "lte_sinr": "5", "lte_neighbours": "3774/36:-99"})
+                           "lte_sinr": "5", "lte_neighbours": "3774/36:-99", "lte_ca": "B8/3774/112:-94/5@10" if b == "8" else ""})
     return b != "99"                                       # 99: refused by the modem
 acs.tr069_set = fake_set
 common.state({"lte_lock": {"cell": "340@100", "state": "released"}})
+store.add(common.DATA, "band_scans", {"time": st(0), "band": "8", "serving": "3774/112", "bw_mhz": "5", "run": "old"})   # the last scan: 5 MHz
+from keeper import alert; tg = []; alert.report = lambda text: tg.append(text)
 bs.scan(["8", "28", "99"])
+assert tg == ["band scan: B8 bandwidth 5 -> 10 MHz - worth a lock test again"], tg
 assert [w[0][0][2] for w in writes] == ["8", "28", "99", bs.ALL] and not any(r for p, r in writes) and all(p[0][0] == P for p, r in writes), writes
 assert seen_busy[:3] == ["band scan"] * 3 and not common.busy() and bs.st["running"] is None, seen_busy
-got = {r["band"]: r for r in store.rows(common.DATA, "band_scans")}
-assert got["8"]["serving"] == "3774/112" and got["28"]["note"].startswith("no service") and "not accepted" in got["99"]["note"], got
+got = {r["band"]: r for r in store.rows(common.DATA, "band_scans") if r["run"] != "old"}
+assert got["8"]["serving"] == "3774/112" and got["8"]["bw_mhz"] == "10" and got["28"]["note"].startswith("no service") and "not accepted" in got["99"]["note"], got
 assert len({r["run"] for r in got.values()}) == 1
 
 # start(): refused while an LTE cell lock is held (a B8 band lock on top of 340@100 = no service) or another job runs; bands validated
