@@ -15,7 +15,7 @@ capped at the plan (SQM_PLAN_DOWN / SQM_PLAN_UP) - the shaper must sit just belo
 Night slots (01:30, 04:30) learn their own ceilings (night cells / LOCK_PAUSE anchor) - they never touch the daytime ones.
 Env: CAPTEST (1), CAPTEST_SLOTS (01:30,04:30,07:30,12:30,18:30,21:30), CAPTEST_CONN (4), CAPTEST_UP_BYTES (25000000), CAPTEST_SERVER_ID (69006),
 CAPTEST_SPONSOR (Yettel), CAPTEST_CC (BG), CAPTEST_HOST (speedtest1.yettel.bg:8080), CAPTEST_IDLE_MIN (10), CAPTEST_SHARE (0.92),
-CAPTEST_KEEP (5), CAPTEST_WEEKLY (Mon 09:05: weekly summary to Telegram, empty = off), SQM_PLAN_DOWN (200), SQM_PLAN_UP (30), CAPTEST_UP (0: no upload test, the upload ceiling is SQM_MAX_UP).
+CAPTEST_KEEP (5), CAPTEST_FRESH_H (3: a fresher lower test wins), CAPTEST_WEEKLY (Mon 09:05: weekly summary to Telegram, empty = off), SQM_PLAN_DOWN (200), SQM_PLAN_UP (30), CAPTEST_UP (0: no upload test, the upload ceiling is SQM_MAX_UP).
 Upload: TR-143 specifies HTTP PUT; tools/tr143_sim.py showed 2026-11-13 that Ookla drops PUT (POST works). The modem's upload is
 tried; an Error_* turns it off for good (state captest_up, one message) - the upload ceiling then stays SQM_MAX_UP.
 """
@@ -41,6 +41,7 @@ METHOD = E("CAPTEST_METHOD", "iperf3")              # iperf3 (works) | tr143 (th
 ISECS = int(E("CAPTEST_SECS", "10"))
 IPERF_DONE = ("complete", "completed", "finish", "finished", "done", "success", "succeeded", "fail", "failed", "error", "stop", "stopped")
 IDLE_MIN, SHARE, KEEP = int(E("CAPTEST_IDLE_MIN", "10")), float(E("CAPTEST_SHARE", "0.92")), int(E("CAPTEST_KEEP", "5"))
+FRESH_H = float(E("CAPTEST_FRESH_H", "3"))   # a test this fresh that is LOWER than the period's ceiling wins (rain, a busy cell)
 PLAN = sqm.PLAN                    # SQM_PLAN_DOWN / SQM_PLAN_UP (200 / 30)
 TRIG_MAX, TRIG_GAP_S = int(E("CAPTEST_TRIGGER_MAX", "6")), 3600       # extra tests a day when the line changed; >= 1 h after the last test
 SETUP_STABLE_S = 900                                                   # a new anchor / 5G cell must hold 15 min before it is worth a test
@@ -184,12 +185,26 @@ def counted_results(hist, slot, d):
             and not (str(r.get("server", "")).startswith("iperf3") and not r.get("v"))][-KEEP:]
 
 
-def ceilings(hist, slot):
-    """{"down": Mbit/s, "up": Mbit/s} for `slot` from its last KEEP results: SHARE x median, capped at the plan; {} without data."""
+def fresh(hist, d, now):
+    """The newest counted result of any slot within FRESH_H of `now` (Mbit/s), else None."""
+    for r in reversed(hist):
+        try: t = time.mktime(time.strptime(r["time"][:19], "%Y-%m-%d %H:%M:%S"))
+        except (KeyError, TypeError, ValueError): continue
+        if now - t > FRESH_H * 3600: return None
+        if counted_results([r], r.get("slot"), d): return r[d]
+    return None
+
+
+def ceilings(hist, slot, now=None):
+    """{"down": Mbit/s, "up": Mbit/s} for `slot` from its last KEEP results: SHARE x median, capped at the plan; {} without data.
+    With `now`: a result from the last FRESH_H hours (any slot) that is LOWER wins - one rainy-day test is 1 of 5 in the median,
+    the ceiling would stay at the clear-weather value (2026-11-18). A higher one only joins the median (the climb raises it live)."""
     out = {}
     for d in ("down", "up"):
         xs = counted_results(hist, slot, d)
         if len(xs) >= MIN_TESTS: out[d] = round(min(PLAN[d], SHARE * statistics.median(xs)), 1)
+        f = fresh(hist, d, now) if now and d in out else None
+        if f is not None and SHARE * f < out[d]: out[d] = round(SHARE * f, 1)
     return out
 
 
@@ -198,8 +213,10 @@ def explain(now=None):
     now = now or time.time(); hist = state().get("captest_hist") or []; slot = slot_of(now); last = sqm.st.get("last") or {}
     out = {}
     for d in ("down", "up"):
-        xs = counted_results(hist, slot, d); learned = ceilings(hist, slot).get(d)
+        xs = counted_results(hist, slot, d); learned = ceilings(hist, slot).get(d); low = ceilings(hist, slot, now).get(d)
         if d == "up" and not UP: src = "upload learning off (CAPTEST_UP=0): SQM_MAX_UP %g" % sqm.MAX["up"]
+        elif learned and low is not None and low < learned:
+            src = "a fresh test (< %g h) measured less: %g x %g = %g, below the %s period's %g" % (FRESH_H, SHARE, fresh(hist, d, now), low, slot, learned)
         elif learned: src = "learned for the %s period: %g x the median %g of %d tests %s" % (slot, SHARE, statistics.median(xs), len(xs), xs)
         else: src = "not learned yet for the %s period (%d of %d tests): SQM_MAX_%s %g" % (slot, len(xs), MIN_TESTS, d.upper(), sqm.MAX[d])
         c = (sqm.st.get("climb") or {}).get(d) or {}
@@ -215,7 +232,7 @@ def explain(now=None):
 def ceiling(d, now):
     """The SQM ceiling for direction `d` now: learned for this period of the day, else the env SQM_MAX_* (sqm.MAX)."""
     if d == "up" and not UP: return sqm.MAX["up"]                                    # upload: your SQM_MAX_UP
-    c = ceilings(state().get("captest_hist") or [], slot_of(now)).get(d)
+    c = ceilings(state().get("captest_hist") or [], slot_of(now), now).get(d)
     return max(sqm.MIN[d], c) if c else sqm.MAX[d]
 
 

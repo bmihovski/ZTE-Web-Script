@@ -69,6 +69,18 @@ INVALID for 5G: the 5G lock on 534 (n78) stayed active (LOCK_PAUSE frees only LT
 per step comes with item 4).
 
 ## Log
+- 2026-11-18 `2026-11-18n` SQM fully automatic (Boyan: decide in a week, safeguards if needed): useless cuts ask for a capacity
+  test, a fresh LOWER test (< 3 h, any period) is the ceiling. Env: `SQM_DOWN_HOURS=` (always shaped), `SQM_MIN_DOWN=35` (UHD IPTV 25
+  + a call + margin). The module self-checks (store, sqm, alert, captest) now run in the parallel runner too (`self_checks.py`).
+  Judge after a week: busy p95 <= idle + 15 ms, call-ready under load >= 95 %, the lowest down limit, router CPU by day.
+- 2026-11-18 13:04-13:58 daytime full scores for the A/B B cells (day mode, your 5G lock 534 kept): baseline 88.7 (172/28.3 Mbit/s,
+  call-ready 83 %, p95 54); 66@1550 (site 1554) 89.7 = 159/26.0, 100 %, p95 58, CA B3/66 + B7/66, SINR -1; 434@1550 (site 1072)
+  89.9 = 167/26.3, 100 %, p95 65, B3 only, SINR -2. Both on par with the baseline, n78 534 on both -> real B cells (the throughput
+  comes from n78). `guard.ab_alt` now picks 434@1550 (89.9), 66@1550 next.
+- 2026-11-18: test split - `nr_locktest` -> nr_locktest / _b / _c (shared setup `test/fixtures/nr_locktest_env.py`), `locktest` ->
+  locktest / _b (`test/fixtures/locktest_env.py`); own ports (182xx) + temp DATA per part. Every mock modem now detects a reboot by
+  the last REBOOT entry itself, not a count (the night + locktest mocks had the same flake). 34 scenarios: 69 s with 10 jobs
+  (was 125-138 s); the slowest part is now ~60 s.
 - 2026-11-18 10:57-12:17 daytime test (keeper `2026-11-18j`, LTE + 5G locks removed). BAND SCAN live proof: TR-069 LockLTEBand
   applies WITHOUT a reboot (uptime kept), ~90 s per band, full list written back. B1 100/340 -83; B3 1550/434 -88; B7 3350/340
   -90; B8 3774: 394 -79, 112 -79, 374 -81, 309 -85, 196 -90 (never in the CA); B20 6400: 112 -78, 394 -80; B28: NO service (3 min

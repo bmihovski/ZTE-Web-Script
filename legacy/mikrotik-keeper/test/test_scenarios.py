@@ -1,4 +1,4 @@
-"""pytest entry: every scenario script and module self-check runs in its own Python process.
+"""pytest entry: every scenario script runs in its own Python process (the modules' self-checks: scenarios/self_checks.py).
 
 Why processes: the keeper reads its env once at import and keeps module state (history, locks, threads, fake modem servers),
 so each scenario needs a fresh interpreter - the same way the container starts it. A scenario passes when it exits 0
@@ -12,7 +12,6 @@ import pytest
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SCENARIOS = sorted(glob.glob(os.path.join(HERE, "scenarios", "*.py")))
-SELF_CHECKS = ["keeper.store", "keeper.sqm", "keeper.alert", "keeper.captest"]           # modules with an `if __name__ == "__main__"` self-check
 
 
 # never reach the real operator ACS from a test (a fresh data dir makes the ZTE check-in due): scenarios that test the relay
@@ -34,7 +33,3 @@ def run(args, cwd):
 def test_scenario(path):
     run([os.path.basename(path)], os.path.dirname(path))
 
-
-@pytest.mark.parametrize("module", SELF_CHECKS)
-def test_self_check(module):
-    run(["-m", module], ROOT)

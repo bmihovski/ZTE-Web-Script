@@ -24,10 +24,10 @@ assert locktest.night_candidates(T230) == ["264@100", "434@100"], locktest.night
 CELLS = {"340@100": ("100/340", "B1/100/340:-82/30@20", "8"), "264@100": ("100/264", "B1/100/264:-86/34@20", "11"), "434@100": ("100/434", "B1/100/434:-91/20@20", "7")}
 stop = threading.Event()
 def zte():
-    seen = 0
+    seen = None              # the last reboot entry itself, not a count: sets.clear() + one new reboot gave the same count (flaky, 2026-11-18)
     while not stop.is_set():
-        n = sum(1 for s in m.st["sets"] if s[1] == "REBOOT_DEVICE")
-        if n != seen: seen = n; time.sleep(0.05); acs.st["boots"] = acs.st.get("boots", 0) + 1   # n may drop when a test clears sets
+        last = next((s for s in reversed(m.st["sets"]) if s[1] == "REBOOT_DEVICE"), None)
+        if last is not None and last is not seen: seen = last; time.sleep(0.05); acs.st["boots"] = acs.st.get("boots", 0) + 1
         if locktest.lt["running"] in CELLS:
             lte, ca, sinr = CELLS[locktest.lt["running"]]
             brain.add({"time": common.stamp(), "lte_cell": lte, "lte_ca": ca, "nr_cell": "636576/534", "nr_sinr": sinr, "call_ok": "1",
@@ -56,7 +56,7 @@ assert all(float(r["down_mbps"]) == 150.0 and float(r["up_mbps"]) == 25.5 for r 
 assert all(0 <= float(r["boot_s"]) <= 3 for r in rows), [r.get("boot_s") for r in rows]
 assert "down_mbps" in locktest.LT_COLS and "boot_s" in locktest.LT_COLS
 # the 5G cell while the iperf ran (2026-11-18: the idle window alone said "no5G"; NSA adds the leg on traffic)
-assert all(r["nr_iperf"] == "151600/77:1" for r in rows), [r.get("nr_iperf") for r in rows]
+assert all("151600/77:1" in r["nr_iperf"].split() for r in rows), [r.get("nr_iperf") for r in rows]   # the mock adds a sample every 0.2 s: one may follow the iperf
 assert [r["lock"] for r in rows] == ["340@100", "264@100", "434@100"] and len({r["run"] for r in rows}) == 1, rows
 locks = [s[3] for s in m.st["sets"] if s[1] == "LTE_LOCK_CELL_SET"]
 assert locks == ["340@100", "264@100", "434@100", "340@100"], locks                                   # the lock put straight back

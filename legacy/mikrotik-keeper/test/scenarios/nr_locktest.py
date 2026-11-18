@@ -1,86 +1,12 @@
 # NR (5G) lock test: the LTE anchor is pinned for every step, the baseline has the 5G leg unlocked, each 5G cell is measured;
 # the antenna mode and the final cell are chosen by INTERNET QUALITY first (call-ready, loss, latency p95, jitter) - signal only
 # breaks a tie; the sweep runs after "Aligned - measure now" (for the baseline too) and only the NR test sweeps
-import datetime, importlib.util, json, os, shutil, sys, threading, time
-here = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.abspath(os.path.join(here, "..", ".."))
-sys.argv = ["x", "18131"]; spec = importlib.util.spec_from_file_location("m", os.path.join(here, "..", "fixtures", "mock_zte.py")); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-DATA = "/tmp/zte-keeper-test-nrlt"; shutil.rmtree(DATA, ignore_errors=True); os.makedirs(DATA)
-os.environ.update(NIGHT_SCREEN="off", LOCK_VIA="web", DATA=DATA, ZTE_HOST="127.0.0.1:18131", ZTE_PASS_HASH=m.S(m.PW),
-                  LOCKTEST_SETTLE_S="0", LOCKTEST_ONLINE_TIMEOUT_S="0", LOCKTEST_MEASURE_MIN="0.03", LOCKTEST_BOOT_WAIT_S="3", LOCKTEST_CLEANUP_S="0.05",
-                  SWEEP_SETTLE_S="0", SWEEP_READS="5", SWEEP_GAP_S="0.03", SWEEP_DAYS="0", INTTEST_S="0.2", WAKE_S="0", CPE_READY_TRIES="1", CPE_READY_GAP_S="0")
-os.environ.setdefault("LOCKTEST_IPERF", "0")   # the mock ZTE runs no iperf3 (a step would wait 160 s for it)
-sys.path.insert(0, ROOT)
-from keeper import acs, alert, api, brain, common, locktest, store
-from keeper.devices import zte as zdev
-from keeper.devices.zte import antennas
-brain.load_registry(DATA)                        # the ranking (/anchors, auto-apply) needs the registry dir
-
-ANCHOR = "340@1550"
-# lock -> (lte_cell, nr_cell, 5G SINR, site, latency p95, jitter, loss %, call-ready)   injected samples = the measurement window
-CELLS = {"none": ("1550/340", "629988/747", "6.0", "1072/3", "55", "6", "0", "1"),
-         "534@636576": ("1550/340", "636576/534", "9.0", "1072/3", "80", "20", "2", "1"),      # best signal, worse internet
-         "804@636576": ("100/340", "636576/804", "9.0", "1243/81", "40", "4", "0", "1"),      # a cell its own anchor serves (100/340)
-         "747@629988": ("1550/340", "629988/747", "6.0", "1072/3", "40", "4", "0", "1")}      # worse signal, best internet
-# web page: 5G SINR per antenna mode - dir/dir has the best signal ...
-SINR = {("1", "1"): "4.0", ("4", "1"): "6.0", ("1", "4"): "8.0", ("4", "4"): "9.5"}
-# ... and the internet test per mode: dir/omni is the best quality, dir/dir the worst (signal must not win)
-NET = {("1", "1"): {"call_ok": 1, "loss_pct": 0.0, "lat_p95": 40.0, "jitter_ms": 4.0, "down_mbps": 90.0},
-       ("4", "1"): {"call_ok": 1, "loss_pct": 0.0, "lat_p95": 25.0, "jitter_ms": 4.0, "down_mbps": 95.0},
-       ("1", "4"): {"call_ok": 1, "loss_pct": 0.0, "lat_p95": 42.0, "jitter_ms": 5.0, "down_mbps": 92.0},
-       ("4", "4"): {"call_ok": 1, "loss_pct": 8.0, "lat_p95": 120.0, "jitter_ms": 30.0, "down_mbps": 20.0}}
-base_fields = m.fields
-def mode():
-    a = {"5": "1", "6": "1"}
-    for t, gid, name, state in m.st["sets"]:
-        if gid == "BSP_ANTENNA_STATE_SET": a[name] = state
-    return a["5"], a["6"]
-CELL_OF = {"none": ("2eb", "629988"), "534@636576": ("216", "636576"), "804@636576": ("324", "636576"), "747@629988": ("2eb", "629988")}   # hex PCI, ARFCN
-def fields():                                   # the fake ZTE page: the serving 5G cell follows the lock, the SINR the antenna mode
-    f = base_fields(); f["Z5g_SINR"] = SINR[mode()]
-    pci, ch = CELL_OF.get(locktest.lt["running"] or "none", ("216", "636576"))
-    f["nr5g_pci"], f["nr5g_action_channel"] = pci, ch
-    return f
-m.fields = fields
-real_net = brain.internet_test
-def fake_net(seconds=30, url=None, mb=None, stop=None):     # the per-mode internet test (no real download in a test)
-    return dict({"lat_p50": 30.0, "tested_mb": 2.0, "error": ""}, **NET[mode()])
-brain.internet_test = fake_net
-reports = []
-alert.report = lambda text: reports.append(text) or True
-def sets(gid=None):
-    return [(s[1], s[3]) for s in m.st["sets"] if gid in (None, s[1])]
-def bsp():
-    return [(s[2], s[3]) for s in m.st["sets"] if s[1] == "BSP_ANTENNA_STATE_SET"]
-def rows():
-    return {r["lock"]: r for r in store.rows(DATA, "lock_tests")}
-
-stop = threading.Event(); ANCHOR_FLIP = {"on": False}
-def zte():                                      # reboot request -> boot inform; one sample every 0.2 s for the current lock
-    seen = None; k = 0       # the last reboot entry itself, not a count: sets.clear() + one new reboot gave the same count (flaky, 2026-11-18)
-    while not stop.is_set():
-        last = next((s for s in reversed(m.st["sets"]) if s[1] == "REBOOT_DEVICE"), None)
-        if last is not None and last is not seen: seen = last; time.sleep(0.3); acs.st["boots"] = acs.st.get("boots", 0) + 1
-        cur = locktest.lt["running"]
-        if cur in CELLS:
-            lte, nr, sinr, site, lat, jit, loss, ok = CELLS[cur]; k += 1
-            if ANCHOR_FLIP["on"] and k % 2: lte = "1550/341"          # an unstable anchor: the serving cell alternates
-            brain.add({"time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "lte_cell": lte, "lte_site": site,
-                       "lte_ca": "B3/1550/340:-90/10@20", "lte_rsrq": "-12", "nr_cell": nr, "nr_sinr": sinr, "nr_rsrp": "-85",
-                       "call_ok": ok, "lat_p95": lat, "jitter_ms": jit, "loss_pct": loss, "down_bps": "0", "up_bps": "0", "uptime_s": "600"})
-        time.sleep(0.2)
-threading.Thread(target=zte, daemon=True).start()
-phases = []                                      # every phase the test sets, in order (a phase can last milliseconds)
-real_phase = locktest.phase
-locktest.phase = lambda text, log_it=False: phases.append(text) or real_phase(text, log_it)
-def align(headings):                             # answer "Aligned - measure now" for each step that waits
-    def run():
-        for h in headings:
-            while not locktest.lt["waiting"] and not stop.is_set(): time.sleep(0.02)
-            if stop.is_set(): return
-            locktest.lt["heading"] = h; locktest.lt["go"].set()
-            while locktest.lt["waiting"] and not stop.is_set(): time.sleep(0.02)
-    th = threading.Thread(target=run, daemon=True); th.start(); return th
-
+# part A: sections 1-3, 4-6 (B: 3b-3c, C: 6b-7)
+import os, sys
+os.environ["NRLT_PORT"] = "18131"
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fixtures"))
+from nr_locktest_env import *  # noqa: F401,F403 - the shared setup (mock ZTE, cells, helpers)
+import http.client  # noqa
 # 1) fixed position (align=0): the anchor is pinned, the baseline has 5G unlocked; every step still internet-tests the modes
 locktest.lock_test(["none", "534@636576"], rat="nr", anchor=ANCHOR, heading="108")
 r = rows()
@@ -154,51 +80,6 @@ assert int(r["none"]["minutes"]) >= 1 and r["none"]["antennas"] == "" and "sweep
 assert not common.state().get("nr_lock")
 assert reports and "534@636576" in reports[-1] and "not seen / off target" in reports[-1], reports[-1]
 
-# 3b) a refused antenna set in every mode is `antenna control failed`, not `cell not reachable`; a web failure skips the BASELINE
-#     too (a skipped baseline is then not a baseline: no auto-apply against it), and a cell is measured once the web is back
-common.state({"nr_lock": None}); brain.AUTO = "on"; m.st["sets"].clear(); reports.clear()
-m.st["refuse"] = {"WAN_ANT_SWITCH_SET", "BSP_ANTENNA_STATE_SET"}
-locktest.lock_test(["none", "534@636576"], rat="nr", anchor=ANCHOR, heading="108")
-m.st["refuse"] = set()
-r = rows()
-assert r["none"]["minutes"] == "0" and r["none"]["note"].startswith("not measured: antenna control failed"), r["none"]
-assert r["534@636576"]["minutes"] == "0" and r["534@636576"]["note"].startswith("antenna control failed"), r["534@636576"]
-assert not r["534@636576"]["note"].startswith("cell not reachable") and r["534@636576"]["loss_pct"] == "", r["534@636576"]
-assert brain.anchor_ranking("nr")["baseline"] is None and not common.state().get("nr_lock"), brain.anchor_ranking("nr")
-m.st["refuse"] = {"WAN_ANT_SWITCH_SET", "BSP_ANTENNA_STATE_SET"}
-n0 = sum(1 for x in store.rows(DATA, "lock_tests") if x["lock"] == "none" and x["minutes"] == "0")
-def clear_refuse():
-    for _ in range(1200):
-        if sum(1 for x in store.rows(DATA, "lock_tests") if x["lock"] == "none" and x["minutes"] == "0") > n0: m.st["refuse"] = set(); return
-        time.sleep(0.02)
-threading.Thread(target=clear_refuse, daemon=True).start()
-locktest.lock_test(["none", "534@636576"], rat="nr", anchor=ANCHOR, heading="108")
-m.st["refuse"] = set()
-r = rows()
-assert r["none"]["minutes"] == "0" and r["none"]["note"].startswith("not measured: antenna control failed"), r["none"]
-assert int(r["534@636576"]["minutes"]) >= 1 and r["534@636576"]["on_target_pct"] == "100.0", r["534@636576"]
-rk = brain.anchor_ranking("nr")
-assert rk["baseline"] is None, rk["baseline"]                       # a "not measured" baseline is not a baseline
-assert "534@636576" in [x["lock"] for x in rk["ranked"]], rk["ranked"]
-assert brain.anchor_best("nr")[2] is False and not common.state().get("nr_lock"), (brain.anchor_best("nr"), common.state())
-assert "AUTO-APPLIED" not in reports[-1] and "baseline (5G unlocked)" not in reports[-1], reports[-1]
-
-# 3c) a 5G cell that switches in every mode is skipped with its own reason (`5G cell switching`), never "cell not reachable";
-#     a 5G-free/switching baseline is still measured (it is the reference)
-common.state({"nr_lock": None}); brain.AUTO = "dryrun"; m.st["sets"].clear(); reports.clear()
-good2 = m.fields; seen_n = {"n": 0}
-def switching():
-    f = good2(); seen_n["n"] += 1
-    f["nr5g_pci"] = "2eb" if seen_n["n"] % 2 else "216"                # the other PCI on the same ARFCN: the cell keeps changing
-    return f
-m.fields = switching
-locktest.lock_test(["none", "534@636576"], rat="nr", anchor=ANCHOR)
-m.fields = good2
-r = rows()
-assert r["none"]["minutes"] != "0" and "5G cell switching" in r["none"]["note"], r["none"]
-assert r["534@636576"]["minutes"] == "0" and r["534@636576"]["note"].startswith("5G cell switching"), r["534@636576"]
-assert "cell not reachable" not in r["534@636576"]["note"] and r["534@636576"]["loss_pct"] == "" and r["534@636576"]["anchor_switches"] == "", r["534@636576"]
-
 # 4) a 5G ARFCN with no known band: the step is recorded as not set, the test still ends unlocked
 m.st["sets"].clear()
 locktest.lock_test(["none", "534@700000"], rat="nr", anchor=ANCHOR)
@@ -235,12 +116,12 @@ brain.HIST.extend(hist)
 
 # 6) API: rat/anchor on POST /lock-test, rat filters on the reads, the OpenAPI document describes them
 from http.server import ThreadingHTTPServer
-srv = ThreadingHTTPServer(("127.0.0.1", 18132), api.H); threading.Thread(target=srv.serve_forever, daemon=True).start()
+srv = ThreadingHTTPServer(("127.0.0.1", PORT + 1), api.H); threading.Thread(target=srv.serve_forever, daemon=True).start()
 import http.client
 def get(path):
-    c = http.client.HTTPConnection("127.0.0.1", 18132); c.request("GET", path); x = c.getresponse(); return x.status, json.loads(x.read())
+    c = http.client.HTTPConnection("127.0.0.1", PORT + 1); c.request("GET", path); x = c.getresponse(); return x.status, json.loads(x.read())
 def post(path):
-    c = http.client.HTTPConnection("127.0.0.1", 18132); c.request("POST", path, b""); x = c.getresponse(); return x.status, json.loads(x.read())
+    c = http.client.HTTPConnection("127.0.0.1", PORT + 1); c.request("POST", path, b""); x = c.getresponse(); return x.status, json.loads(x.read())
 calls = []; real_start = locktest.start
 locktest.start = lambda cells, align=False, rat="lte", anchor=None, heading="", night=False: calls.append((cells, align, rat, anchor, heading)) or True   # = start()'s signature
 try:
@@ -270,58 +151,5 @@ assert {x["name"] for x in spec["paths"]["/lock-tests"]["get"]["parameters"]} ==
 assert {x["name"] for x in spec["paths"]["/lock-test-continue"]["post"]["parameters"]} == {"heading"}   # cut/continue stay shared
 srv.shutdown()
 
-# 6b) unstable LTE anchor: the 5G row is kept (with the reason) but never ranked or auto-applied
-common.state({"nr_lock": None}); brain.AUTO = "dryrun"; reports.clear(); m.st["sets"].clear()
-ANCHOR_FLIP["on"] = True
-locktest.lock_test(["none", "534@636576"], rat="nr", anchor=ANCHOR, heading="108")
-ANCHOR_FLIP["on"] = False
-r = rows(); u = r["534@636576"]
-assert u["unstable"] == "1" and int(u["anchor_switches"]) >= 1 and float(u["anchor_pct"]) < 80, u
-assert "unstable anchor" in u["note"] and r["none"]["unstable"] == "1", r["none"]
-rk = brain.anchor_ranking("nr")
-assert "534@636576" in rk["unstable"] and "534@636576" not in [x["lock"] for x in rk["ranked"]], rk
-assert rk["baseline"] is None and not common.state().get("nr_lock") and brain.anchor_best("nr")[2] is False
 
-# 6c) the failed-cell hint: a 5G cell that was served under another LTE anchor says so (747 needs 1550/434, not 340@100)
-brain.REG["nr"]["636576/747"] = {"first": 1, "served_min": 12,
-                                 "anchors": {"1550/434": {"min": 12, "ok": 12, "p95": 51, "jitter": 11, "sinr": 8, "rsrp": -80}}}
-assert locktest.anchor_hint("747@636576", "340@100") == " (known under 1550/434, 12 min)", locktest.anchor_hint("747@636576", "340@100")
-assert locktest.anchor_hint("747@636576", "434@1550") == "" and locktest.anchor_hint("534@636576", ANCHOR) == ""
-assert locktest.anchor_hint("127@636576", ANCHOR) == ""
-assert locktest.anchor_hint("747@636576", "") == " (known under 1550/434, 12 min)"
-
-# 6d) per-cell anchor + the pair auto-apply: the mapping says 804@636576 is served by the anchor 100/340 (the keeper's lock is
-# 434@1550). Without an explicit anchor the test pins the cell's best known anchor; the baseline pins the best anchor across the
-# tested cells; a clear winning pair auto-applies the 5G cell AND its anchor (the pair is what reproduces the result).
-CELLS["none"] = ("100/340", "629988/747", "6.0", "1243/81", "55", "6", "0", "1")      # the baseline must serve the pinned anchor
-brain.REG["nr"]["636576/804"] = {"first": 1, "served_min": 12,
-                                 "anchors": {"100/340": {"min": 12, "ok": 12, "p95": 40, "jitter": 4, "sinr": 9, "rsrp": -80}}}
-assert brain.anchor_spec_for("636576/804") == "340@100" and brain.anchor_for_cells(["804@636576"]) == "340@100"
-# the anchors are resolved ONCE before the run (the run's own samples update the pairs; a mid-run flip would make the steps and the
-# baseline cross-anchor - seen 2026-11-02)
-assert locktest.step_pins(["none", "804@636576"], None, "340@100", "434@1550") == {"none": "340@100", "804@636576": "340@100"}
-assert locktest.step_pins(["none", "747@636576"], None, "434@1550", "340@100") == {"none": "434@1550", "747@636576": "434@1550"}
-# the pair auto-apply may move the LTE lock: give the gate two ranked LTE anchors (340@100 good, 434@1550 good but weaker)
-for _t, _a, _s in (("11:00:00", "340@100", "6.0"), ("11:10:00", "434@1550", "5.0")):
-    store.add(DATA, "lock_tests", {"time": "2026-11-02 " + _t, "rat": "lte", "lock": _a, "minutes": "12", "on_target_pct": "100",
-                                   "anchor": "100/340" if _a == "340@100" else "1550/434", "call_ok_pct": "100.0",
-                                   "anchor_sinr_p50": _s, "lat_p95": "50", "jitter_ms": "8", "nr_cells": "534:6", "no5g_min": "0",
-                                   "mode": "as is"})
-assert brain.anchor_move_ok("340@100", "434@1550") == (True, "")       # 6.0 vs 5.0 dB: a fair move, allowed
-m.st["sets"].clear(); brain.AUTO = "on"; common.state({"lte_lock": {"cell": "434@1550", "state": "active"}, "nr_lock": None})
-reports.clear(); stop.clear(); threading.Thread(target=zte, daemon=True).start()
-locktest.lock_test(["none", "804@636576"], rat="nr"); stop.set()
-r = rows()
-assert r["none"]["pin"] == "340@100" and r["804@636576"]["pin"] == "340@100", (r["none"]["pin"], r["804@636576"]["pin"])
-assert r["804@636576"]["anchor"] == "100/340" and r["804@636576"]["anchor_pct"] == "100.0" and r["804@636576"]["unstable"] == "0", r["804@636576"]
-assert common.state()["nr_lock"]["cell"] == "804@636576" and common.state()["lte_lock"]["cell"] == "340@100", common.state()
-assert "with LTE anchor 340@100" in reports[-1] and "804@636576 (anchor 340@100)" in reports[-1], reports[-1]
-CELLS["none"] = ("1550/340", "629988/747", "6.0", "1072/3", "55", "6", "0", "1")
-
-# 7) keeper died mid-test: the next start clears BOTH legs (the pinned anchor and the 5G lock), whatever the test held
-m.st["sets"].clear(); common.state({"lock_test": {"cell": "534@636576", "rat": "nr", "anchor": ANCHOR}})
-zdev.on_start(); time.sleep(0.4)
-assert common.state().get("lock_test") is None
-assert [x for x in sets() if x[0] in ("LTE_LOCK_CELL_SET", "NR5G_LOCK_CELL_SET")] == [
-    ("LTE_LOCK_CELL_SET", "0@0"), ("NR5G_LOCK_CELL_SET", "0,0,0,0")], sets()
 stop.set(); print("OK test_nr_locktest")

@@ -1,28 +1,9 @@
 # LTE lock test: baseline + each candidate locked (lock + reboot each), measured, ranked; the lock is always removed at the end
-import csv, importlib.util, os, shutil, sys, threading, time, datetime
-here = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.abspath(os.path.join(here, "..", ".."))
-sys.argv = ["x", "18130"]; spec = importlib.util.spec_from_file_location("m", os.path.join(here, "..", "fixtures", "mock_zte.py")); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-DATA = "/tmp/zte-keeper-test-lt"; shutil.rmtree(DATA, ignore_errors=True); os.makedirs(DATA)
-os.environ.update(NIGHT_SCREEN="off", LOCK_VIA="web", DATA=DATA, ZTE_HOST="127.0.0.1:18130", ZTE_PASS_HASH=m.S(m.PW), LOCKTEST_SETTLE_S="0", LOCKTEST_ONLINE_TIMEOUT_S="0", LOCKTEST_MEASURE_MIN="0.03", LOCKTEST_BOOT_WAIT_S="3")
-os.environ.setdefault("LOCKTEST_IPERF", "0")   # the mock ZTE runs no iperf3 (a step would wait 160 s for it)
-sys.path.insert(0, ROOT)
-from keeper import store
-from keeper import acs, api, brain, common, guard, locktest, monitor, store; from keeper.devices import zte as zdev; from keeper.devices.zte import antennas, locks as zlocks
-CELLS = {"none": ("3350/340", "B7/3350/340:-92/3@20 B3/1550/340:-93/8@20", "636576/786", "-1", "1243/61"),
-         "434@1550": ("1550/434", "B3/1550/434:-90/10@20 B1/100/340:-96/8@20", "636576/534", "8", "1072/3"),
-         "340@1550": ("1550/340", "B3/1550/340:-91/8@20 B7/3350/340:-92/3@20", "636576/534", "7", "1243/1")}
-stop = threading.Event()
-def zte():                     # fake ZTE: a reboot request -> boot inform; then one sample every 0.2 s for the current lock
-    seen = 0
-    while not stop.is_set():
-        n = sum(1 for s in m.st["sets"] if s[1] == "REBOOT_DEVICE")
-        if n != seen: seen = n; time.sleep(0.05); acs.st["boots"] = acs.st.get("boots", 0) + 1   # n may drop when a test clears sets
-        cur = locktest.lt["running"]
-        if cur in CELLS:
-            lte, ca, nr, sinr, site = CELLS[cur]
-            brain.add({"time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "lte_cell": lte, "lte_site": site, "lte_ca": ca, "lte_rsrq": "-12",
-                         "nr_cell": nr, "nr_sinr": sinr, "call_ok": "1", "lat_p95": "50", "jitter_ms": "5", "loss_pct": "0"})
-        time.sleep(0.2)
+# part A: up to 'nobody continues' (B: skip / stop, AUTO-apply, winner kept, no result, never booted)
+import os, sys
+os.environ["LT_PORT"] = "18130"
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "fixtures"))
+from locktest_env import *  # noqa: F401,F403 - the shared setup (mock ZTE, cells, zte loop)
 threading.Thread(target=zte, daemon=True).start()
 phases = []; threading.Thread(target=lambda: [phases.append(locktest.lt.get("phase")) or time.sleep(0.05) for _ in range(60)], daemon=True).start()
 locktest.lock_test(["none", "434@1550", "340@1550", "370@1550"])
@@ -62,59 +43,4 @@ locktest.lock_test(["none", "434@1550", "340@1550"], align=True); stop.set()
 assert [s[3] for s in m.st["sets"] if s[1] == "LTE_LOCK_CELL_SET"] == ["0@0", "434@1550", "0@0"] and locktest.lt["running"] is None and not locktest.lt["waiting"], \
     [s[3] for s in m.st["sets"] if s[1] == "LTE_LOCK_CELL_SET"]
 assert any("measuring until" in (x or "") for x in phases) and any("rebooting" in (x or "") for x in phases) and locktest.lt["phase"] == "", set(phases)
-# skip a step while it waits for alignment, stop the test while measuring: rows recorded, lock removed, keeper free again
-m.st["sets"].clear(); locktest.LT_ALIGN_TIMEOUT_MIN = 5; locktest.LT_MEASURE_MIN = 0.2; stop.clear(); threading.Thread(target=zte, daemon=True).start()
-assert not locktest.lt_cut("skip")                                                   # nothing running -> refused
-def cutter():
-    while not locktest.lt["waiting"]: time.sleep(0.05)
-    assert locktest.lt["running"] == "434@1550"; locktest.lt_cut("skip")
-    while locktest.lt["running"] != "340@1550" or not locktest.lt["waiting"]: time.sleep(0.05)
-    locktest.lt["heading"] = "301"; locktest.lt["go"].set()
-    while "measuring" not in (locktest.lt.get("phase") or ""): time.sleep(0.05)
-    time.sleep(0.5); locktest.lt_cut("stop")
-threading.Thread(target=cutter, daemon=True).start(); t0 = time.time()
-locktest.lock_test(["none", "434@1550", "340@1550", "66@1550"], align=True); stop.set()
-assert time.time() - t0 < 60 and locktest.lt["running"] is None and not locktest.lt["waiting"]
-rows = store.rows(DATA, "lock_tests")[-3:]
-assert [r["lock"] for r in rows] == ["none", "434@1550", "340@1550"] and rows[1]["note"].startswith("skipped by you") and rows[1]["mode"] == "cut", rows
-assert rows[2]["note"].startswith("stopped by you after") and rows[2]["heading"] == "301", rows[2]
-assert [s[3] for s in m.st["sets"] if s[1] == "LTE_LOCK_CELL_SET"] == ["0@0", "434@1550", "340@1550", "0@0"]   # 66 never locked, unlocked at the end
-
-# daytime LTE test with AUTO=on: the winner clearly beats the unlocked baseline -> the summary AUTO-APPLIES it (lock state
-# pending, no device write here) and the tested anchor's row goes into the cell registry (bookkeeping only)
-from keeper import alert
-brain.reg_st["dir"] = DATA; reports = []
-alert.report = lambda text: reports.append(text) or True
-m.st["sets"].clear(); brain.AUTO = "on"; common.state({"lte_lock": None, "nr_lock": None})
-locktest.LT_MEASURE_MIN = 0.03; stop.clear(); threading.Thread(target=zte, daemon=True).start()
-locktest.lock_test(["none", "434@1550"]); stop.set()
-r = {x["lock"]: x for x in store.rows(DATA, "lock_tests")}
-assert r["434@1550"]["anchor"] == "1550/434" and r["434@1550"]["call_ok_pct"] == "100.0", r["434@1550"]
-assert r["none"]["call_ok_pct"] == "100.0" and r["434@1550"]["anchor_sinr_p50"] == "10.0", (r["none"], r["434@1550"])
-assert common.state()["lte_lock"]["cell"] == "434@1550" and common.state()["lte_lock"]["state"] == "pending", common.state().get("lte_lock")
-assert reports and "AUTO-APPLIED 434@1550" in reports[-1] and "unlocked baseline" in reports[-1], reports[-1]
-assert brain.REG["lte"]["1550/434"]["lock_test"]["time"] == r["434@1550"]["time"], brain.REG["lte"].get("1550/434")
-
-# the winner is the lock already kept -> the summary says so and does not lock it again (no extra reboot)
-common.state({"lte_lock": {"cell": "434@1550", "state": "active"}}); reports.clear()
-m.st["sets"].clear(); stop.clear(); threading.Thread(target=zte, daemon=True).start()
-locktest.lock_test(["none", "434@1550"]); stop.set()
-assert reports and "best is already your lock 434@1550" in reports[-1], reports[-1]
-
-# no candidate result at all (nothing stayed on the tested cell) -> the summary names the cells, no "best"
-store.db(DATA).execute("DELETE FROM rec WHERE kind = 'lock_tests'"); reports.clear()
-locktest.lock_test(["none", "370@1550"]); stop.set()
-rows = {x["lock"]: x for x in store.rows(DATA, "lock_tests")}
-assert rows["370@1550"]["minutes"] == "0" and not rows["370@1550"]["anchor"], rows["370@1550"]
-assert reports and "no candidate result" in reports[-1] and "370@1550" in reports[-1], reports[-1]
-
-# a lock that never booted is not measured: the ZTE applies a lock only at boot, so the step was never locked - do not settle,
-# wait for the link and measure 12 min of nothing (2026-11-02 night: a 56-min CPE outage burned two 25-min night steps)
-m.st["sets"].clear(); common.state({"lte_lock": None}); brain.AUTO = "dryrun"
-locktest.LT_BOOT_WAIT_S = 0; stop.clear(); threading.Thread(target=zte, daemon=True).start()
-locktest.lock_test(["none", "434@1550"]); stop.set(); locktest.LT_BOOT_WAIT_S = 3
-rows = store.rows(DATA, "lock_tests")[-2:]
-assert [r["lock"] for r in rows] == ["none", "434@1550"], rows
-assert all(r["minutes"] == "0" and r["note"].startswith("not measured: no boot inform") for r in rows), rows
-assert all(r["rat"] == "lte" and r["mode"] == "as is" and r.get("run") for r in rows), rows
 print("OK test_locktest")

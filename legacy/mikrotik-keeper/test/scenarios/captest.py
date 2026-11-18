@@ -68,6 +68,15 @@ _G = {"slot": "18:30", "down": 150.0, "down_how": "full load 5.0 s"}
 assert c.ceilings([_G, _G, dict(_G, diag={"conn": 1}, down=5.0)], "18:30")["down"] == 138.0   # diagnostics don't count
 G = {"slot": "18:30", "down": 150.0, "down_how": "full load 5.0 s"}
 assert c.ceilings([G, dict(G, url="http://x/y", down=10.0)], "18:30") == {} and c.ceilings([G, G], "18:30")["down"] == 138.0   # diagnostics don't count
+# a FRESH lower result wins for CAPTEST_FRESH_H (3 h), any slot (2026-11-18: one rainy-day test is 1 of 5 in the median - the ceiling
+# stayed at the clear-weather value); a higher one only joins the median (speed on demand: the climb + its test raise it)
+T = time.mktime(time.strptime("2026-11-18 19:00", "%Y-%m-%d %H:%M")); at = lambda h: time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(T - h * 3600))
+H = [dict(G, time=at(30)), dict(G, time=at(29)), dict(G, slot="12:30", down=60.0, time=at(1))]
+assert c.ceilings(H, "18:30", T)["down"] == 55.2 and c.ceilings(H, "18:30")["down"] == 138.0, c.ceilings(H, "18:30", T)   # 0.92 x 60, 1 h old
+assert c.ceilings(H, "18:30", T + 2.5 * 3600)["down"] == 138.0                       # 3.5 h old: the median again
+assert c.ceilings([dict(G, time=at(30)), dict(G, time=at(29)), dict(G, down=190.0, time=at(1))], "18:30", T)["down"] == 138.0   # higher: median
+assert c.ceilings([dict(G, slot="12:30", down=60.0, time=at(1))], "18:30", T) == {}    # nothing learned for the slot: the env max stays
+assert c.ceilings([dict(G, time=at(30)), dict(G, time=at(29)), dict(G, slot="12:30", down=60.0, time=at(1), diag={"conn": 1})], "18:30", T)["down"] == 138.0   # a diagnostic never
 c.st["running"] = True; assert not c.force(); c.st["running"] = False; c.run = real
 common.state({"captest_last": {"rec": {"down": 180.0}, "raw": {"down": {"DiagnosticsState": "Completed"}, "up": None}}})
 i = c.info(); assert i["last"]["raw"]["down"]["DiagnosticsState"] == "Completed" and i["ceiling_now"]["up"] == sqm.MAX["up"] and "18:30" in i["ceilings_by_period"], i
@@ -206,7 +215,7 @@ assert c.info(D)["trigger"]["today"] == 1                                       
 sqm.st.update(last={"limit": {"down": 150.0, "up": 28.0}, "rate": {"down": 140.0, "up": 1.0}, "ceiling": {"down": 150.0, "up": 28.0},
                     "why": {"down": "at the ceiling 150", "up": "holding"}, "delay_ms": 2.0, "time": "10:00:00"}, climb={"down": {"x": 1.1025, "clean": 300}})
 x = c.info(D)["explain"]                                                                  # the panel's 'why' for each direction
-assert x["down"]["ceiling_from"].startswith("learned for the 07:30 period: 0.92 x the median") and x["down"]["why"] == "at the ceiling 150", x
+assert x["down"]["ceiling_from"].startswith("a fresh test (< 3 h) measured less: 0.92 x 150 = 138") and x["down"]["why"] == "at the ceiling 150", x   # the 150 just measured
 assert "+10 %" in x["down"]["climb"] and "after 5 more clean busy min" in x["down"]["climb"] and x["delay_limit_ms"] == sqm.DELAY, x
 assert x["up"]["ceiling_from"].startswith("upload learning off") if not c.UP else "learned" in x["up"]["ceiling_from"] or "not learned" in x["up"]["ceiling_from"]
 # weekly summary (Telegram): tests, ceilings, the shaper's busy vs idle latency - the evidence that keeps phases 3 / 4 closed

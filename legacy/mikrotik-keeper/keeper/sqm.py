@@ -179,6 +179,8 @@ def earn_keep(limit, new, delay, now):
         s["n"] += 1
         if s["n"] > CUT_PROOF and delay is not None and s.get("d0") is not None and delay > 0.8 * s["d0"]:
             new[k] = s["lim0"]; s.update(n=0, cool=now + CUT_COOL); st["useless"] = st.get("useless", 0) + 1
+            want_test("%s: %d cuts did not lower the latency (+%g ms) - the line may have lost capacity (rain, a busy cell)"
+                      % (k, CUT_PROOF + 1, delay), now)     # a fresh lower result becomes the ceiling for 3 h (captest.ceilings)
     return new
 
 
@@ -352,12 +354,13 @@ if __name__ == "__main__":          # self-check of the decision rule
     assert st["limit"]["down"] == 143.5 and st["last"]["why"]["down"] == "idle, limit parked at the ceiling 141 (no latency data)"
     CEILING[0] = lambda d, now: MAX[d]
     # a cut must lower the delay: 3 cuts with the delay still high -> back to the limit before the streak + 10 min cool-down
-    st.update(streak={}, useless=0); t = 5000.0; lim = {"up": 26.0, "down": 150.0}
+    st.update(streak={}, useless=0, want_test=None); t = 5000.0; lim = {"up": 26.0, "down": 150.0}
     for i in range(3):
         n = earn_keep(lim, step(lim, {"up": 1, "down": lim["down"]}, 60), 60, t + i * 10)
         assert n["down"] < lim["down"], (i, n); lim = n
     n = earn_keep(lim, step(lim, {"up": 1, "down": lim["down"]}, 58), 58, t + 30)
     assert n["down"] == 150.0 and st["useless"] == 1, n                                  # 4th cut, delay 58 vs 60: useless -> back
+    assert "did not lower the latency" in (st["want_test"] or {}).get("why", ""), st["want_test"]   # rain / a busy cell: measure the line (2026-11-18)
     assert earn_keep(n, step(n, {"up": 1, "down": 150}, 60), 60, t + 40)["down"] == 150.0   # cooling: no cut
     assert earn_keep(n, step(n, {"up": 1, "down": 150}, 60), 60, t + 700)["down"] == 127.5  # cool-down over: cuts again
     st.update(streak={}); lim = {"up": 26.0, "down": 150.0}
