@@ -69,6 +69,11 @@ INVALID for 5G: the 5G lock on 534 (n78) stayed active (LOCK_PAUSE frees only LT
 per step comes with item 4).
 
 ## Log
+- 2026-11-19 `2026-11-18p` live: `GET /night-plan` on the real data - tonight 7 cells (B3/B7): 340@1550 99 %, 340@3350 87 %, 112@1550
+  71 % of night samples, + band scan 493@1550, 202/201/36@3350 (-91..-99 dBm); day_only = 202@100, 434@100 (was 206); night_off 100.
+  Day-only test 11:5x-12:42 (5G free): baseline 92.2 (171/26.8, 100 %, p95 51); 202@100 (site 1265) 90.6 = 160/27.8, 100 %, p95 55,
+  CA B1/B3/B7 on 202, anchor SINR -7 (weak), n78 534 - a B candidate on a 3rd site; 434@100: NO boot inform within 420 s (the modem
+  did not come back on it - like 121@100 / 264@100: not usable here). Locks back 12:42.
 - 2026-11-19 night (keeper `2026-11-18n`, NIGHT_BANDS=1,3,7): POWER CUT 00:57 -> ~02:15 (samples gap 00:56:51-02:16:51, modem
   uptime 120 s at 02:16:51); the keeper verified the clock at 02:16:49 (the clock rules worked), still LOCK_PAUSE -> no lock
   restore, the band scan ran at once (02:18-02:24, live, no boot; bandwidth references: B1/B3/B7 20, B8 5, B20 10 MHz), a
