@@ -16,6 +16,7 @@ ARFCN_PCT, CELL_PCT = float(E("NIGHT_ARFCN_PCT", "50")), float(E("NIGHT_CELL_PCT
 RETEST_DAYS, RETEST_DB, GONE_DAYS = float(E("NIGHT_RETEST_DAYS", "30")), 6.0, 3.0
 WEAK_DB = float(E("NIGHT_WEAK_DB", "10"))      # a cell this far under its ARFCN's best night RSRP is not worth a ~17-min step
 MARGIN_S = 15 * 60
+SCAN_MIN_DBM = -115.0   # a band-scan reading below this is noise, not a cell (2026-11-19: B1 "served" 100/393 at -127 with ARFCN 100 off)
 
 
 def _f(v):
@@ -64,12 +65,14 @@ def plan(samples, tests, scans, now, win, lock=None, dead=()):
         if not _in(s["time"][11:16], win): continue
         for t in ("%s:%s" % (s.get("serving"), s.get("rsrp")) + " " + (s.get("neighbours") or "")).split():
             k, _, v = t.partition(":"); v = _f(v)
-            if "/" in k and v is not None: scan_n[k] = max(scan_n.get(k, -999), v); last[k] = max(last.get(k, 0), _ts(s))
+            if "/" in k and v is not None and v >= SCAN_MIN_DBM: scan_n[k] = max(scan_n.get(k, -999), v); last[k] = max(last.get(k, 0), _ts(s))
     on = {a for a, n in arfcn_n.items() if night and 100.0 * n / len(night) >= ARFCN_PCT} | {k.split("/")[0] for k in scan_n}
     best = {}
     for k in set(rsrp_n) | set(scan_n):
         v = statistics.median(rsrp_n[k]) if rsrp_n[k] else scan_n.get(k)
         if v is not None: a = k.split("/")[0]; best[a] = max(best.get(a, -999), v)
+    best_d = {}
+    for k, xs in rsrp_d.items(): a = k.split("/")[0]; best_d[a] = max(best_d.get(a, -999), statistics.median(xs))
     full = {}
     for t in tests:                                   # the newest FULL test per cell (iperf + 5G under traffic)
         if (_f(t.get("minutes")) or 0) > 0 and t.get("down_mbps") not in (None, "") and t.get("nr_iperf") not in (None, "") \
@@ -87,8 +90,9 @@ def plan(samples, tests, scans, now, win, lock=None, dead=()):
             if t and not (r_n is not None and _f(t.get("anchor_rsrp_p50")) is not None and r_n >= _f(t["anchor_rsrp_p50"]) + RETEST_DB): continue
             cand.append((r_n if r_n is not None else -999, sp))
             why[sp] = "night %g dBm, %s" % (r_n, "%.0f %% of night samples" % pct if pct >= CELL_PCT else "band scan (ARFCN %s)" % k.split("/")[0])
-        elif seen_d[k] and sp not in full:
-            day_only.append((statistics.median(rsrp_d[k]) if rsrp_d[k] else -999, sp))
+        elif (k.split("/")[0] not in on and sp not in full and day and 100.0 * seen_d[k] / len(day) >= CELL_PCT and rsrp_d[k]
+              and statistics.median(rsrp_d[k]) >= best_d[k.split("/")[0]] - WEAK_DB):    # day-only: its ARFCN is off at night (2026-11-19: 206 cells)
+            day_only.append((statistics.median(rsrp_d[k]), sp))
     return {"cells": [s for _, s in sorted(cand, key=lambda x: (-x[0], x[1]))], "day_only": [s for _, s in sorted(day_only, key=lambda x: (-x[0], x[1]))],
             "night_off": sorted({k.split("/")[0] for k in seen_d} - on), "why": why}
 

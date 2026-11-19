@@ -21,6 +21,9 @@ for mm in range(30):      # the 30 night minutes before 02:30 (keeper/nightplan.
     store.add(DATA, "samples", {"time": ts_(T230 - 1800 + 60 * mm), "lte_cell": "100/340", "lte_rsrp": "-82",
                                 "lte_neighbours": "100/340:-82 100/264:-86 100/434:-87 100/66:-95" + (" 6400/112:-74" if mm == 3 else "")})
 assert locktest.night_candidates(T230) == ["264@100", "434@100"], locktest.night_candidates(T230)                 # at night, strong, not the lock
+locktest.NIGHT_BANDS = ["1", "3", "7"]                                                                     # the env form (2026-11-19: "B1" != "1" dropped every cell)
+assert locktest.night_candidates(T230) == ["264@100", "434@100"], locktest.night_candidates(T230)
+locktest.NIGHT_BANDS = ["3"]; assert locktest.night_candidates(T230) == []; locktest.NIGHT_BANDS = []
 CELLS = {"340@100": ("100/340", "B1/100/340:-82/30@20", "8"), "264@100": ("100/264", "B1/100/264:-86/34@20", "11"), "434@100": ("100/434", "B1/100/434:-91/20@20", "7")}
 stop = threading.Event()
 def zte():

@@ -34,6 +34,8 @@ try:
     st, e = post("/band-scan?bands=8,x", ""); assert st == 400 and "bands=" in e["error"], (st, e)            # the band scan
     s_, t_, b_ = get("/band-scans"); assert s_ == 200 and json.loads(b_) == {"running": None, "scans": []}, b_
     assert "night_plan" in json.loads(get("/lock-tests")[2])                          # the planner's last decision (cells, why, day_only)
+    from keeper import common; np0 = common.state().get("night_plan"); s_, t_, b_ = get("/night-plan"); x = json.loads(b_)         # preview: what a night would test now
+    assert s_ == 200 and set(x) >= {"cells", "day_only", "night_off", "why", "night_bands"} and common.state().get("night_plan") == np0, x
     r = json.loads(get("/lock-tests")[2])["results"][-1]; assert r["score"] == 70.0 and r["score_parts"]["down"] == 9.3 and r["score_gate"] == "", r
     st, armed = post("/night-screen?arm=1", ""); assert st == 200 and re.fullmatch(r"\d{4}-\d\d-\d\d", armed["armed"] or ""), armed   # the panel's button
     cfg = json.loads(get("/status")[2])["config"]; assert cfg["night_armed"] == armed["armed"] and cfg["night_always"] is False, cfg

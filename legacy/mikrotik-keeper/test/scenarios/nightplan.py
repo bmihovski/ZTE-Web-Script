@@ -27,6 +27,17 @@ assert "493@1550" not in p["cells"] and "121@6400" not in p["cells"] and "434@15
 assert "52@6400" not in p["cells"]                                                                  # 17 dB under 6400's best: not worth a step
 assert "264@100" not in p["cells"] and p["day_only"][:1] == ["264@100"] and "100" in p["night_off"], p             # ARFCN 100: not at night
 assert "340@100" not in p["cells"] + p["day_only"]                                                                  # the lock itself
+# 2026-11-19 live: day_only held 206 cells (every neighbour ever seen by day) -> only cells on an ARFCN OFF at night, seen in >=
+# CELL_PCT of the day samples, within WEAK_DB of that ARFCN's best day RSRP (the Saturday day test takes them in order)
+assert p["day_only"] == ["264@100"], p["day_only"]                  # 493@1550: its ARFCN is on at night (and it is a night non-starter)
+S2 = S + [{"time": "2026-11-18 14:00:00", "lte_cell": "100/340", "lte_rsrp": "-80", "lte_neighbours": "100/340:-81 100/77:-90 100/41:-99"}]   # once by day
+assert "77@100" not in npl.plan(S2, tests, scans, NOW, WIN, lock="340@100")["day_only"]                                                # 1 of 121 day samples
+S3 = S + [dict(r, lte_neighbours=r["lte_neighbours"] + " 100/41:-99") for r in S if r["time"][11:13] in ("12", "13")]                     # always there, 18 dB under
+assert "41@100" not in npl.plan(S3, tests, scans, NOW, WIN, lock="340@100")["day_only"]
+# 2026-11-19 live: the night band scan locked B1 while ARFCN 100 is off - "served" 100/393 at -127 dBm (noise): no night presence
+noise = scans + [{"time": "2026-11-18 01:12:00", "band": "1", "serving": "100/393", "rsrp": "-127", "neighbours": ""}]
+pn = npl.plan(S, tests, noise, NOW, WIN, lock="340@100")
+assert "100" in pn["night_off"] and "393@100" not in pn["cells"] and pn["day_only"] == ["264@100"], pn
 assert p["why"]["394@6400"].startswith("night -81 dBm, 95 %") and p["why"]["112@3774"].startswith("night -79 dBm, band scan"), p["why"]
 p2 = npl.plan(S, tests[1:2] + [dict(tests[1], lock="434@1550", anchor_rsrp_p50="-95", time="2026-11-18 03:00:00")], [], NOW, WIN, lock=None, dead={"394@6400"})
 assert "434@1550" in p2["cells"] and "394@6400" not in p2["cells"], p2["cells"]          # +8 dB since its test -> retest; dead -> out

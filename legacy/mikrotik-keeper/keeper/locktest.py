@@ -556,7 +556,12 @@ def night_window():
     return tuple(w.split("-")) if "-" in w else ("02:00", "05:00")
 
 
-def night_candidates(now):
+def in_bands(cell):
+    """Is `cell` (PCI@EARFCN) on one of NIGHT_BANDS ('1,3,7' or 'B1,B3')? 2026-11-19: 'B3' was compared with '3' - every cell dropped."""
+    return brain.band_of(cell.split("@")[1]).lstrip("B") in {b.upper().lstrip("B") for b in NIGHT_BANDS}
+
+
+def night_candidates(now, preview=False):
     """The night planner's cells (keeper/nightplan.py): present at NIGHT (samples + band scans), not the lock, not fully tested lately,
     not dead / night-unreachable - best night RSRP first. The plan is kept in state night_plan (cells, day_only, night_off, why)."""
     from keeper import nightplan
@@ -564,7 +569,8 @@ def night_candidates(now):
     frm_t = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - nightplan.RETEST_DAYS * 86400))
     p = nightplan.plan(store.rows(DATA, "samples", frm), store.rows(DATA, "lock_tests", frm_t), store.rows(DATA, "band_scans", frm), now,
                        night_window(), lock=(state().get("lte_lock") or {}).get("cell"), dead=_dead_cells(now) | _night_unreachable(now))
-    if NIGHT_BANDS: p["cells"] = [c for c in p["cells"] if brain.band_of(c.split("@")[1]) in NIGHT_BANDS]
+    if NIGHT_BANDS: p["cells"] = [c for c in p["cells"] if in_bands(c)]
+    if preview: return dict(p, night_bands=NIGHT_BANDS)                    # GET /night-plan: what a night would test now, nothing stored
     state({"night_plan": dict(p, time=stamp())})
     return p["cells"]
 

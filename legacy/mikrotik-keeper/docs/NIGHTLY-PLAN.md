@@ -69,6 +69,15 @@ INVALID for 5G: the 5G lock on 534 (n78) stayed active (LOCK_PAUSE frees only LT
 per step comes with item 4).
 
 ## Log
+- 2026-11-19 night (keeper `2026-11-18n`, NIGHT_BANDS=1,3,7): POWER CUT 00:57 -> ~02:15 (samples gap 00:56:51-02:16:51, modem
+  uptime 120 s at 02:16:51); the keeper verified the clock at 02:16:49 (the clock rules worked), still LOCK_PAUSE -> no lock
+  restore, the band scan ran at once (02:18-02:24, live, no boot; bandwidth references: B1/B3/B7 20, B8 5, B20 10 MHz), a
+  triggered capacity test 02:45 (168/27.4). NO lock tests: 3 bugs, fixed in `2026-11-18o` (test first):
+  1. `NIGHT_BANDS` compared band_of() "B3" with "3" -> every candidate dropped (340@3350 84 %, 340@1550 99 %, 112@1550 70 % were in
+     the plan); 2. the B1 scan "served" 100/393 at -127 dBm with ARFCN 100 off -> counted as night presence (`SCAN_MIN_DBM` -115);
+  3. `day_only` held 206 cells (every neighbour seen by day) -> now only cells on an ARFCN OFF at night, >= 50 % of day samples,
+     within 10 dB of the ARFCN's best (the Saturday day test would have tested B8/B20 noise). 08:00 restore: one reboot, 340@100 +
+     534 active by 08:03.
 - 2026-11-18 `2026-11-18n` SQM fully automatic (Boyan: decide in a week, safeguards if needed): useless cuts ask for a capacity
   test, a fresh LOWER test (< 3 h, any period) is the ceiling. Env: `SQM_DOWN_HOURS=` (always shaped), `SQM_MIN_DOWN=35` (UHD IPTV 25
   + a call + margin). The module self-checks (store, sqm, alert, captest) now run in the parallel runner too (`self_checks.py`).

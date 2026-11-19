@@ -109,7 +109,7 @@ at `/docs`.
   samples for the ARFCN and the cell, or a night band scan), best night RSRP first, < ARFCN best - `NIGHT_WEAK_DB` (10) out, a FULL
   test (iperf + nr_iperf) in `NIGHT_RETEST_DAYS` (30) skips unless +6 dB since, unseen 3 days out; as many as fit before the night
   window (LOCK_PAUSE) ends - `NIGHT_MAX` 0 = no cap - and a step that would end after it is not started. Each test night starts
-  with a band scan (`BANDSCAN_NIGHT`). `NIGHT_BANDS` ('' = all) filters bands. The plan: `/lock-tests` -> `night_plan`.
+  with a band scan (`BANDSCAN_NIGHT`). `NIGHT_BANDS` ('' = all, "1,3,7" or "B1,B3") filters bands. The plan: `/lock-tests` -> `night_plan`; `GET /night-plan` = a preview now (nothing stored).
 - Band scan bandwidth watch: each band's serving carrier bandwidth (`bw_mhz`, as logged '@N') is compared with its last scan; a change
   -> one Telegram note (the refarm signal: B8 5 -> 10 MHz after the 3G release). Unknown bandwidth or a first scan: no note.
 - Saturday day test (`DAY_TEST` "Sat 08:30-11:30", '' = off; not before 08:00 - the night-off cells are back ~08:00-08:10): once a

@@ -25,6 +25,7 @@ ROUTES = [   # method, path, summary, [(param, example, description)], capabilit
     ("get", "/anchors", "Lock-test ranking (latest result per cell) and the unlocked baseline, per RAT", [("rat", "lte", "lte | nr (default lte)")], None),
     ("get", "/lock-tests", "Lock test now or last (step, phase, plan, RAT, pinned anchor) + the last 40 results", [("rat", "", "lte | nr (default: all results)")], None),
     ("get", "/antenna-sweeps", "The last 40 rows of keeper antenna sweeps", [], None),
+    ("get", "/night-plan", "Preview: the night planner on the stored data now (cells a night would test, day-only cells, ARFCNs off at night, why) - nothing stored", [], None),
     ("get", "/band-scans", "Band scan now (the band being scanned) + the last 60 rows: serving cell, RSRP/RSRQ/SINR, neighbours per band", [], None),
     ("post", "/lte-lock", "Keep an LTE cell locked (guarded: released when lost, restored when back) or remove it", [("cell", "340@100", "PCI@EARFCN or none")], None),
     ("post", "/nr-lock", "Keep a 5G cell locked (guarded) or remove it", [("cell", "534@636576", "PCI@ARFCN or none")], None),
@@ -198,6 +199,8 @@ class H(BaseHTTPRequestHandler):
                                   "night_plan": state().get("night_plan")}
             elif path == "/antenna-sweeps":
                 code, obj = 200, store.rows(DATA, "antenna_sweeps", last=40)
+            elif path == "/night-plan":
+                code, obj = 200, locktest.night_candidates(time.time(), preview=True)
             elif path == "/band-scans":
                 code, obj = 200, {"running": bandscan.st["running"], "scans": store.rows(DATA, "band_scans", last=60)}
             elif path == "/userdata":
