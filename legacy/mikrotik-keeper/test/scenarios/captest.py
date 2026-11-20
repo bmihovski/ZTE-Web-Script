@@ -68,6 +68,14 @@ _G = {"slot": "18:30", "down": 150.0, "down_how": "full load 5.0 s"}
 assert c.ceilings([_G, _G, dict(_G, diag={"conn": 1}, down=5.0)], "18:30")["down"] == 138.0   # diagnostics don't count
 G = {"slot": "18:30", "down": 150.0, "down_how": "full load 5.0 s"}
 assert c.ceilings([G, dict(G, url="http://x/y", down=10.0)], "18:30") == {} and c.ceilings([G, G], "18:30")["down"] == 138.0   # diagnostics don't count
+# the modem's CPU while its iperf3 runs (2026-11-20: the modem reads ~76 % of the line down - is its CPU the limit?): read with the
+# test's values, the max goes into the result's 'how'
+c.st.update(running=True, base=c.IP3, cpu=[])
+assert c.CPU_PARAM in c.extra_read() and c.IP3 in c.extra_read()
+c.on_values({c.CPU_PARAM: "64"}); c.on_values({c.CPU_PARAM: "97"}); c.on_values({c.CPU_PARAM: "x"})
+assert c.st["cpu"] == [64, 97] and c.cpu_note() == "; modem CPU max 97 % (2 reads)", (c.st["cpu"], c.cpu_note())
+c.st.update(cpu=[]); assert c.cpu_note() == ""
+c.st.update(running=False, base=None); assert c.extra_read() == []
 # per direction (2026-11-20, unshaped Ookla 205/28.8 vs the modem's iperf3 medians 156 (4 streams) / 27.5 (1 stream)): the download
 # test reads ~76 % of the line, the upload ~95 % -> CAPTEST_SHARE_DOWN calibrates the download alone; both default to CAPTEST_SHARE
 U = {"slot": "18:30", "down": 156.0, "up": 27.5, "down_how": "full load 10.0 s", "up_how": "full load 10.0 s"}
@@ -79,8 +87,13 @@ c.SHARE_D = {"down": c.SHARE, "up": c.SHARE}
 # stayed at the clear-weather value); a higher one only joins the median (speed on demand: the climb + its test raise it)
 T = time.mktime(time.strptime("2026-11-18 19:00", "%Y-%m-%d %H:%M")); at = lambda h: time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(T - h * 3600))
 H = [dict(G, time=at(30)), dict(G, time=at(29)), dict(G, slot="12:30", down=60.0, time=at(1))]
-assert c.ceilings(H, "18:30", T)["down"] == 55.2 and c.ceilings(H, "18:30")["down"] == 138.0, c.ceilings(H, "18:30", T)   # 0.92 x 60, 1 h old
-assert c.ceilings(H, "18:30", T + 2.5 * 3600)["down"] == 138.0                       # 3.5 h old: the median again
+# 2026-11-20 sweep: one peak-hour test swings +-25 % (Sofia 110 -> 178 in 10 min) -> ONE low result changes nothing (it asks for a
+# confirmation test); the 2 newest fresh results both lower -> the higher of the two
+assert c.ceilings(H, "18:30", T)["down"] == 138.0, c.ceilings(H, "18:30", T)                       # one low test: no override
+H2 = H + [dict(G, slot="12:30", down=80.0, time=at(0.5))]
+assert c.ceilings(H2, "18:30", T)["down"] == 73.6, c.ceilings(H2, "18:30", T)                       # two low: 0.92 x max(60, 80)
+assert c.ceilings(H2 + [dict(G, slot="12:30", down=170.0, time=at(0.2))], "18:30", T)["down"] == 138.0   # the newest is fine again
+assert c.ceilings(H2, "18:30", T + 2.6 * 3600)["down"] == 138.0                      # > 3 h old: the median again
 assert c.ceilings([dict(G, time=at(30)), dict(G, time=at(29)), dict(G, down=190.0, time=at(1))], "18:30", T)["down"] == 138.0   # higher: median
 assert c.ceilings([dict(G, slot="12:30", down=60.0, time=at(1))], "18:30", T) == {}    # nothing learned for the slot: the env max stays
 assert c.ceilings([dict(G, time=at(30)), dict(G, time=at(29)), dict(G, slot="12:30", down=60.0, time=at(1), diag={"conn": 1})], "18:30", T)["down"] == 138.0   # a diagnostic never
@@ -228,7 +241,14 @@ assert c.info(D)["trigger"]["today"] == 1                                       
 sqm.st.update(last={"limit": {"down": 150.0, "up": 28.0}, "rate": {"down": 140.0, "up": 1.0}, "ceiling": {"down": 150.0, "up": 28.0},
                     "why": {"down": "at the ceiling 150", "up": "holding"}, "delay_ms": 2.0, "time": "10:00:00"}, climb={"down": {"x": 1.1025, "clean": 300}})
 x = c.info(D)["explain"]                                                                  # the panel's 'why' for each direction
-assert x["down"]["ceiling_from"].startswith("a fresh test (< 3 h) measured less: 0.92 x 150 = 138") and x["down"]["why"] == "at the ceiling 150", x   # the 150 just measured
+assert x["down"]["ceiling_from"].startswith("two fresh tests (< 3 h) measured less [150.0, 178.0]: 0.92 x 178 = 163.8") and x["down"]["why"] == "at the ceiling 150", x   # both below 169.3
+assert c.st.get("confirm") and c.st["confirm"]["why"].startswith("confirm a low result"), c.st.get("confirm")   # ... but a confirmation is asked
+# the confirmation runs ~CONFIRM_S later, inside the 1-h gap (only the budget, idle, busy and LOCK_PAUSE rules apply), once
+cf = c.st["confirm"]; common.state({"captest_trig": [], "captest_last_t": cf["at"] - 60}); brain.HIST.extend([{"down_bps": "100", "up_bps": "100"}] * c.IDLE_MIN)
+real_ip2 = c.run_iperf; c.run_iperf = lambda *a, **k: None
+assert not c.maybe_test(R("100/340", "636576/534"), cf["at"] - 30)                         # not yet
+assert c.maybe_test(R("100/340", "636576/534"), cf["at"] + 5) and c.st["trigger"].startswith("confirm"), c.st.get("trigger")
+assert not c.st.get("confirm"); c.st["running"] = False; c.run_iperf = real_ip2
 assert "+10 %" in x["down"]["climb"] and "after 5 more clean busy min" in x["down"]["climb"] and x["delay_limit_ms"] == sqm.DELAY, x
 assert x["up"]["ceiling_from"].startswith("upload learning off") if not c.UP else "learned" in x["up"]["ceiling_from"] or "not learned" in x["up"]["ceiling_from"]
 # weekly summary (Telegram): tests, ceilings, the shaper's busy vs idle latency - the evidence that keeps phases 3 / 4 closed

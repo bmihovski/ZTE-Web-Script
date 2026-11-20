@@ -174,8 +174,9 @@ at `/docs`.
   day, 2 needed, capped at the plan (`SQM_PLAN_DOWN`/`UP`, 200/30); without them `SQM_MAX_*`. Upload only with `CAPTEST_UP=1`.
   Calibration 2026-11-20: the modem's iperf3 (4 streams down / 1 up) reads ~76 % of the line down, ~95 % up (unshaped Ookla 205 / 28.8
   vs medians 156 / 27.5) -> `CAPTEST_SHARE_DOWN=1.15` (~179, ~87 % of the line), up stays 0.92.
-  A counted test from the last `CAPTEST_FRESH_H` (3) hours, any period, that is LOWER wins (0.92 x it): one rainy-day test is 1 of
-  5 in the median. A higher one only joins the median - speed on demand comes from the climb (+5 % per 10 clean busy min, up to
+  When the 2 newest counted tests of the last `CAPTEST_FRESH_H` (3) hours, any period, are BOTH lower, the higher of the two wins
+  (0.92 x it); ONE low test changes nothing but asks for a confirmation test `CAPTEST_CONFIRM_S` (600 s) later - inside the 1-h gap,
+  within the daily budget, after 10 idle minutes, never in LOCK_PAUSE (2026-11-20 sweep: one peak-hour test swings +-25 %).
   the plan) and its test at +10 %. Extra tests (setup change, deep cuts, useless cuts, climb): `CAPTEST_TRIGGER_MAX` 6 a day, >= 1 h apart.
   Never a triggered test inside `LOCK_PAUSE` (the released lock is no setup change; the empty night network is no ceiling).
 - **Tests** = the modem's own iperf3 (TR-143 cannot measure on the MC889 B07): download 4 streams, upload 1 stream (the MC889 gives no

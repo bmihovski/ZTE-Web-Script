@@ -43,7 +43,8 @@ IPERF_DONE = ("complete", "completed", "finish", "finished", "done", "success", 
 IDLE_MIN, SHARE, KEEP = int(E("CAPTEST_IDLE_MIN", "10")), float(E("CAPTEST_SHARE", "0.92")), int(E("CAPTEST_KEEP", "5"))
 # per direction (2026-11-20): the modem's iperf3 (4 streams down, 1 up) read ~76 % of the line down (156 vs 205 unshaped), ~95 % up
 SHARE_D = {d: float(E("CAPTEST_SHARE_" + d.upper(), str(SHARE))) for d in ("down", "up")}
-FRESH_H = float(E("CAPTEST_FRESH_H", "3"))   # a test this fresh that is LOWER than the period's ceiling wins (rain, a busy cell)
+FRESH_H = float(E("CAPTEST_FRESH_H", "3"))
+CONFIRM_S = float(E("CAPTEST_CONFIRM_S", "600"))   # a single low result asks for a second test this much later (not the 1-h gap)   # a test this fresh that is LOWER than the period's ceiling wins (rain, a busy cell)
 PLAN = sqm.PLAN                    # SQM_PLAN_DOWN / SQM_PLAN_UP (200 / 30)
 TRIG_MAX, TRIG_GAP_S = int(E("CAPTEST_TRIGGER_MAX", "6")), 3600       # extra tests a day when the line changed; >= 1 h after the last test
 SETUP_STABLE_S = 900                                                   # a new anchor / 5G cell must hold 15 min before it is worth a test
@@ -171,7 +172,7 @@ def trig_ok(now):
 
 def counted(now, trig=None):
     """A test that counts for a ceiling starts: it answers any pending reason, and the setup it measures becomes the tested one."""
-    st.update(want=None, trigger=trig, setup_now=st.get("seen_key"))
+    st.update(want=None, trigger=trig, setup_now=st.get("seen_key")); st["confirm"] = None      # any counted test is the second result
     state(dict({"captest_last_t": now}, **({"captest_setup": st["seen_key"]} if st.get("seen_key") else {})))
 
 
@@ -187,26 +188,29 @@ def counted_results(hist, slot, d):
             and not (str(r.get("server", "")).startswith("iperf3") and not r.get("v"))][-KEEP:]
 
 
-def fresh(hist, d, now):
-    """The newest counted result of any slot within FRESH_H of `now` (Mbit/s), else None."""
+def fresh(hist, d, now, n=2):
+    """The newest `n` counted results of any slot within FRESH_H of `now` (Mbit/s), newest first."""
+    out = []
     for r in reversed(hist):
         try: t = time.mktime(time.strptime(r["time"][:19], "%Y-%m-%d %H:%M:%S"))
         except (KeyError, TypeError, ValueError): continue
-        if now - t > FRESH_H * 3600: return None
-        if counted_results([r], r.get("slot"), d): return r[d]
-    return None
+        if now - t > FRESH_H * 3600: break
+        if counted_results([r], r.get("slot"), d): out.append(r[d])
+        if len(out) == n: break
+    return out
 
 
 def ceilings(hist, slot, now=None):
     """{"down": Mbit/s, "up": Mbit/s} for `slot` from its last KEEP results: SHARE_D[d] x median, capped at the plan; {} without data.
-    With `now`: a result from the last FRESH_H hours (any slot) that is LOWER wins - one rainy-day test is 1 of 5 in the median,
-    the ceiling would stay at the clear-weather value (2026-11-18). A higher one only joins the median (the climb raises it live)."""
+    With `now`: when the 2 newest results of the last FRESH_H hours (any slot) are BOTH lower, the higher of the two wins - one
+    rainy-day test is 1 of 5 in the median (2026-11-18), but ONE peak-hour test swings +-25 % (2026-11-20: Sofia 110 -> 178 in
+    10 min), so a single low one only asks for a confirmation test (CONFIRM_S later). A higher one only joins the median."""
     out = {}
     for d in ("down", "up"):
         xs = counted_results(hist, slot, d)
         if len(xs) >= MIN_TESTS: out[d] = round(min(PLAN[d], SHARE_D[d] * statistics.median(xs)), 1)
-        f = fresh(hist, d, now) if now and d in out else None
-        if f is not None and min(PLAN[d], SHARE_D[d] * f) < out[d]: out[d] = round(min(PLAN[d], SHARE_D[d] * f), 1)
+        fs = fresh(hist, d, now) if now and d in out else []
+        if len(fs) == 2 and all(SHARE_D[d] * f < out[d] for f in fs): out[d] = round(min(PLAN[d], SHARE_D[d] * max(fs)), 1)
     return out
 
 
@@ -218,7 +222,7 @@ def explain(now=None):
         xs = counted_results(hist, slot, d); learned = ceilings(hist, slot).get(d); low = ceilings(hist, slot, now).get(d)
         if d == "up" and not UP: src = "upload learning off (CAPTEST_UP=0): SQM_MAX_UP %g" % sqm.MAX["up"]
         elif learned and low is not None and low < learned:
-            src = "a fresh test (< %g h) measured less: %g x %g = %g, below the %s period's %g" % (FRESH_H, SHARE_D[d], fresh(hist, d, now), low, slot, learned)
+            src = "two fresh tests (< %g h) measured less %s: %g x %g = %g, below the %s period's %g" % (FRESH_H, fresh(hist, d, now), SHARE_D[d], max(fresh(hist, d, now)), low, slot, learned)
         elif learned: src = "learned for the %s period: %g x the median %g of %d tests %s" % (slot, SHARE_D[d], statistics.median(xs), len(xs), xs)
         else: src = "not learned yet for the %s period (%d of %d tests): SQM_MAX_%s %g" % (slot, len(xs), MIN_TESTS, d.upper(), sqm.MAX[d])
         c = (sqm.st.get("climb") or {}).get(d) or {}
@@ -253,13 +257,25 @@ def servers(now):
     return st["servers"] or []
 
 
+CPU_PARAM = "Device.DeviceInfo.ProcessStatus.CPUUsage"   # the modem's CPU % while its iperf3 runs (2026-11-20: is it the limit?)
+
+
 def extra_read():
     """Names the ACS adds to its GetParameterValues while a test runs (the result arrives with the modem's next informs)."""
-    return [st["base"]] if st["running"] and st["base"] else []
+    return [st["base"], CPU_PARAM] if st["running"] and st["base"] else []
+
+
+def cpu_note():
+    """'; modem CPU max 97 % (2 reads)' from the reads during the test, '' without any."""
+    xs = st.get("cpu") or []
+    return "; modem CPU max %d %% (%d reads)" % (max(xs), len(xs)) if xs else ""
 
 
 def on_values(vals):
     """ACS hook (every read): the running test's state; a final one (Completed / Error_*) after it was armed ends the wait."""
+    if st["running"] and CPU_PARAM in vals:
+        try: st.setdefault("cpu", []).append(int(float(vals[CPU_PARAM])))
+        except (TypeError, ValueError): pass
     if st["running"] and st["base"] == IP3: return _ip3_values(vals)
     if not (st["running"] and st["base"]) or (st["base"] + "DiagnosticsState") not in vals: return
     s = vals[st["base"] + "DiagnosticsState"]
@@ -413,7 +429,7 @@ def ip3_result(v, reverse=True):
 
 def _iperf_once(server, secs, conn, reverse):
     """One iperf3 run by the modem against `server`: (Mbit/s or None, why, the reads)."""
-    st.update(base=IP3, first=True, vals=None, ip3_snaps=[], ip3_base=None, ip3_seen_on=False, ip3_started=False); st["ev"].clear()
+    st.update(base=IP3, first=True, vals=None, ip3_snaps=[], ip3_base=None, ip3_seen_on=False, ip3_started=False, cpu=[]); st["ev"].clear()
     ok, notes = write_settings(iperf_params(server, secs, conn, reverse))
     if ok:
         st["ev"].clear(); ok, how = start_iperf(); notes.append(how)
@@ -421,7 +437,7 @@ def _iperf_once(server, secs, conn, reverse):
     if not ok: return None, "the modem refused the iperf3 settings: %s" % ", ".join(notes), st["ip3_snaps"]
     if not st["ev"].wait(secs + 150): return None, "iperf3: no result within %d s (%s)" % (secs + 150, ", ".join(notes)), st["ip3_snaps"]
     sp, why = ip3_result(st["vals"], reverse)
-    return sp, "%s (%s), %d streams %d s" % (why, ", ".join(notes), conn, secs), st["ip3_snaps"]     # ends in 'N s': valid()
+    return sp, "%s (%s)%s, %d streams %d s" % (why, ", ".join(notes), cpu_note(), conn, secs), st["ip3_snaps"]     # ends in 'N s': valid()
 
 
 def measure(secs=None):
@@ -467,6 +483,10 @@ def run_iperf(now, servers, secs, conn, reverse, slot=None, diag=None):
         event({"event": "capacity test", "to": "down %s%s Mbit/s (iperf3)" % (rec["down"], " / up %s" % rec["up"] if "up_how" in rec else ""),
                "why": "%s slot %s: %s%s" % (srv, slot, rec.get("down_how") or rec.get("up_how"), "; up: %s" % rec["up_how"] if rec.get("up_how") and rec.get("down_how") else "")})
         after = applied(ceilings(hist, slot))
+        learned = ceilings(hist, slot).get("down")
+        if not diag and rec.get("down") and learned and SHARE_D["down"] * rec["down"] < learned and not str(rec.get("trigger") or "").startswith("confirm"):
+            st["confirm"] = {"at": time.time() + CONFIRM_S, "why": "confirm a low result: down %s Mbit/s (%g x = %g < the %s period's %g)"
+                             % (rec["down"], SHARE_D["down"], round(SHARE_D["down"] * rec["down"], 1), slot, learned)}
         moved = [k for k in after if not before.get(k) or abs(after[k] - before[k]) > 0.1 * before[k]]
         if moved:
             event(ceiling_event(slot, after, rec))
@@ -553,8 +573,10 @@ def maybe_test(row, now=None):
     if (state().get("quality_ab") or {}).get("phase") == "trial": return False
     done = state().get("captest_done") or {}
     why = trigger(row, now)
+    cf = st.get("confirm"); confirming = bool(cf) and now >= cf["at"] and trig_today(now) < TRIG_MAX and not slot_soon(now)
+    if confirming: why = cf["why"]                   # the confirmation of a low result: inside the 1-h gap, once
     s = due(now, done)
-    if not s and not (why and trig_ok(now)): return False
+    if not s and not (why and (confirming or trig_ok(now))): return False
     if not s and guard.pause_end(now): return False    # LOCK_PAUSE: the released lock is no setup change and the empty night network
     last = list(brain.HIST)[-IDLE_MIN:]                # is no ceiling; it held the night screen ~40 min (2026-11-20 01:22) - the day's turn
     if len(last) < IDLE_MIN or not all(brain.idle(r) for r in last): return False

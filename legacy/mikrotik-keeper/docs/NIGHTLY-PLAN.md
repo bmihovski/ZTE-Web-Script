@@ -69,6 +69,20 @@ INVALID for 5G: the 5G lock on 534 (n78) stayed active (LOCK_PAUSE frees only LT
 per step comes with item 4).
 
 ## Log
+- 2026-11-20 ~22:00 `2026-11-20j` Ookla Yettel 69006: 178.45 / 25.47 Mbit/s, loaded +4.6 ms down (peak 100), +5.9 up (peak 77), 0 %
+  loss (unshaped earlier: 205-212 with +35-40 ms, peaks 0.8-1.9 s). Boyan: a fair trade.
+- 2026-11-20 21:30-21:52 `tools/iperf_sweep.py` (11 servers x 2 rounds, peak, IPTV off): one server swings 110 -> 178 in 10 min (the
+  cell, not the server); DataPacket (Sofia, Istanbul, Athens, Zagreb, Vienna, Bucharest-DP) 125-178, ServersCamp 104-120 (slow
+  path - NOT a good fallback), Belgrade SOX no answer; modem CPU 46-93 %, not tied to the speed (Sofia 178 at 73 %) -> not the
+  limit; 8 streams no gain. Athens is fine (150/134) - the 19:39 81 was the cell. Env: CAPTEST_IPERF=37.19.203.1:5201,
+  156.146.52.1:5201,169.150.252.2:5201,169.150.242.129:5201,185.102.217.170:5201. `2026-11-20j`: the fresh-lower override needs
+  2 low tests (the higher wins); one low test asks for a confirmation 10 min later.
+- 2026-11-20 20:47-20:50 server check (diagnostic /captest, peak): Sofia 4 streams busy (no speed), Sofia 8 streams 102, Bucharest
+  ServersCamp (lg.serverscamp.com:5202) 103, Bucharest DataPacket busy, Athens (the 19:39 fallback) 81 -> Athens reads ~20 % low;
+  env CAPTEST_IPERF=37.19.203.1:5201,lg.serverscamp.com:5202,lg.serverscamp.com:5203,169.150.252.2:5201. Download queue is already
+  fq_codel (README: CAKE fills a core at ~140 Mbit/s), upload CAKE. `2026-11-20i`: the modem's CPU (TR-069
+  Device.DeviceInfo.ProcessStatus.CPUUsage) is read while its iperf3 runs, the max goes into the result ('modem CPU max N %');
+  `tools/iperf_sweep.py` ranks the servers (diagnostic tests, ~1 min each) with it.
 - 2026-11-20 19:46 peak: call-ready 80 % / 30 min (A/B needs < 70 %), 26/30 idle, SINR 5 / 13 -> no trial, as designed (Boyan: no
   "disco lights"). `2026-11-20g`: every A/B reboot waits until no call: not 5 steady minutes >= 4 kB/s in a direction (3 kB/s
   all-quiet held in only 26 % of windows with 2 PCs + 2 phones) - an internet audio call looked "idle". The trend stays passive: calls-at-risk by hour + the probe's idle-delay excess (no iperf). Boyan: IPTV
