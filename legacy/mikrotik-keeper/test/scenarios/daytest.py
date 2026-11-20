@@ -36,5 +36,13 @@ assert any(x[0] == "telegram" and "day test" in x[1] for x in runs), runs
 assert not locktest.maybe_day(idle, SAT + 600)                                           # once a Saturday
 common.state({"day_last": None}); brain.HIST.append(dict(idle, down_bps="900000"))
 assert not locktest.maybe_day(idle, SAT + 1200)                                          # not 10 idle minutes: wait (no call cut)
+# a day-only cell whose lock never came back (2026-11-19 12:36 434@100: no boot inform within 420 s, 7 min offline) is not tried
+# again for NOINFORM_DAYS - the Saturday window is short and the link is down for the whole wait
+store.add(common.DATA, "lock_tests", {"time": "2026-11-20 12:36:00", "lock": "264@100", "minutes": "0", "mode": "as is",
+                                      "note": "not measured: no boot inform within 420 s"})
+runs.clear(); common.state({"day_last": None}); brain.HIST.extend([dict(idle)] * locktest.DAY_IDLE_MIN)
+assert locktest.maybe_day(idle, SAT + 1800); time.sleep(0.2)
+plan, k = [x for x in runs if x[0] != "telegram"][0]
+assert "264@100" not in plan and plan[0] == "340@100", plan
 assert locktest.maybe_day in zdev.minute_jobs()
 print("OK daytest")

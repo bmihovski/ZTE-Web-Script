@@ -51,6 +51,7 @@ LT_COLS = ["time", "rat", "lock", "minutes", "on_target_pct", "anchor", "site", 
 LT_IPERF = E("LOCKTEST_IPERF", "1") == "1"
 NIGHT = E("NIGHT_SCREEN", "02:00-05:00")
 BANDSCAN_NIGHT = [b for b in E("BANDSCAN_NIGHT", "1,3,7,8,20").replace(" ", "").split(",") if b]   # a test night starts with a band scan ('' = off); no B28: no service here, 3 min offline (2026-11-18)
+IPERF_TAIL_S = 90.0   # a sample is the minute's average: the one after the run's own iperf still carries it (2026-11-20 02:27:06)
 BOOT_QUIET_S = float(E("NIGHT_BOOT_QUIET_S", "300"))   # traffic in the first 5 min after a step's reboot is the modem's own reconnect
 NIGHT_ALWAYS = E("NIGHT_ALWAYS", "0") == "1"      # research: every night in the window; else only a night armed from the ZTE helper
 REMIND_AT, REMIND_DAY = E("NIGHT_REMIND", "21:30"), E("NIGHT_REMIND_DAY", "Fri")   # weekly reminder from this day + time until armed ('' = off)
@@ -326,7 +327,7 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
                 lt["iperf"] = True; h0 = list(brain.HIST); mark = h0[-1] if h0 else None    # the last sample before the iperf
                 try: dn, up, how = captest.measure(); log("lock test %s: iperf3 down %s / up %s Mbit/s (%s)" % (lock, dn, up, how))
                 except Exception as e: log("lock test %s: iperf3 failed: %r" % (lock, e))
-                finally: lt["iperf"] = False
+                finally: lt["iperf"] = False; lt["iperf_end"] = time.monotonic()
                 h = list(brain.HIST); i = next((k for k in range(len(h) - 1, -1, -1) if h[k] is mark), -1)
                 c = collections.Counter(r.get("nr_cell") or "no5G" for r in h[i + 1:])          # NSA adds the 5G leg on traffic
                 nr_ip = " ".join("%s:%d" % kv for kv in c.most_common()) or None
@@ -537,6 +538,14 @@ def _dead_cells(now):
             and (brain.f(r.get("minutes")) or 0) > 0}
 
 
+def _no_inform(now):
+    """Cells whose lock gave no boot inform in the last NIGHT_NOINFORM_DAYS, any mode (2026-11-19 434@100 by day: 7 min offline
+    for nothing) - the day test skips them; the night screen has its own, softer rule (_night_unreachable)."""
+    cut = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - NIGHT_NOINFORM_DAYS * 86400))
+    return {r["lock"] for r in store.rows(DATA, "lock_tests", cut)
+            if (brain.f(r.get("minutes")) or 0) == 0 and "no boot inform" in (r.get("note") or "")}
+
+
 def _night_unreachable(now):
     """Cells that gave no boot inform on >= NIGHT_NOINFORM_SKIP of the last NIGHT_NOINFORM_DAYS nights - CETIN powers the cell
     down overnight, so the lock never attaches and the boot inform never comes. Skip it at night (a 2 a.m. reboot for nothing)
@@ -643,7 +652,8 @@ def maybe_night(row, now=None):
     traffic during the screen stops it (the lock is put back). True when it started."""
     now = now or time.time()
     rebooting = (brain.f(row.get("uptime_s")) or 9e9) < BOOT_QUIET_S       # the modem's own reconnect after a step's reboot (2026-11-18 08:56)
-    if lt.get("night") and lt["running"] and not brain.idle(row) and not lt["cut"] and not lt.get("iperf") and not rebooting:   # its own iperf: not traffic
+    own = lt.get("iperf") or time.monotonic() - lt.get("iperf_end", -1e9) < IPERF_TAIL_S     # its own iperf + the sample after it: not traffic
+    if lt.get("night") and lt["running"] and not brain.idle(row) and not lt["cut"] and not own and not rebooting:
         log("night screen: traffic - stopping"); lt_cut("stop"); return False
     if NIGHT in ("", "off") or common.busy() or not common.clock_ok(): return False     # old clock after a power cut: not night yet
     day = time.strftime("%Y-%m-%d", time.localtime(now))
@@ -692,7 +702,7 @@ def maybe_day(row, now=None):
     nights = [r for r in store.rows(DATA, "lock_tests") if r.get("mode") == "night" and r.get("run")]
     run = max((r["run"] for r in nights), default=None)
     confirm = nightplan.day_confirm([r for r in nights if r["run"] == run])
-    dead = _dead_cells(now)
+    dead = _dead_cells(now) | _no_inform(now)
     plan = [base] + [c for c in list((state().get("night_plan") or {}).get("day_only") or []) + confirm if c not in dead]
     seen = set(); plan = [c for c in plan if not (c in seen or seen.add(c))]
     end = nightplan.window_end(now, DAY_TEST.split()[-1]) or now + 3600

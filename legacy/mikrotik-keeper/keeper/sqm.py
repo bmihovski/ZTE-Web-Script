@@ -23,6 +23,8 @@ URL, USER, PASS, QUEUE, IFACE = E("SQM_URL", ""), E("SQM_USER", ""), E("SQM_PASS
 MIN = {"up": float(E("SQM_MIN_UP", "5")), "down": float(E("SQM_MIN_DOWN", "20"))}
 MAX = {"up": float(E("SQM_MAX_UP", "30")), "down": float(E("SQM_MAX_DOWN", "200"))}
 DELAY, TICK = float(E("SQM_DELAY_MS", "15")), float(E("SQM_TICK", "10"))
+BASE_SAVE_S = 600.0   # the idle baseline survives a restart (2026-11-20): state.json "sqm_base", at most this often
+STREAK_GAP_S = 120.0   # cuts this close belong to one streak, +5 % ticks between them included (2026-11-20: 151.8 -> 35 in 13 min)
 CUT_PROOF, CUT_COOL = int(E("SQM_CUT_PROOF", "3")), float(E("SQM_CUT_COOL_S", "600"))   # cuts that must lower the delay / pause when they don't
 ERROR_WAIT_S = 300
 CEILING = [lambda d, now: MAX[d]]          # the ceiling now per direction (keeper.captest learns one per period of the day)
@@ -174,9 +176,11 @@ def earn_keep(limit, new, delay, now):
         s = st.setdefault("streak", {}).setdefault(k, {"n": 0})
         cut = bool(limit[k]) and bool(new[k]) and new[k] < limit[k]
         if cut and now < s.get("cool", 0): new[k] = limit[k]; continue             # cooling down: this direction is not cut
-        if not cut: s["n"] = 0; continue
+        if not cut:
+            if now - s.get("last", 0) > STREAK_GAP_S: s["n"] = 0                  # a +5 % tick between cuts does not end the streak
+            continue
         if s["n"] == 0: s.update(d0=delay, lim0=limit[k])
-        s["n"] += 1
+        s["n"] += 1; s["last"] = now
         if s["n"] > CUT_PROOF and delay is not None and s.get("d0") is not None and delay > 0.8 * s["d0"]:
             new[k] = s["lim0"]; s.update(n=0, cool=now + CUT_COOL); st["useless"] = st.get("useless", 0) + 1
             want_test("%s: %d cuts did not lower the latency (+%g ms) - the line may have lost capacity (rain, a busy cell)"
@@ -212,7 +216,11 @@ def delay_now(lat_buf, now, idle, rebase=False):
     by = {}
     for x in list(lat_buf):
         if x[1] is not None and now - x[0] <= max(TICK, 6): by.setdefault(x[2] if len(x) > 2 else "", []).append(x[1])
-    base, d = st.setdefault("base", {}), []
+    if "base" not in st:                                   # first tick after a (re)start: the last idle baseline (state.json)
+        from keeper import common                          # lazy: the decision rules above stay importable on their own
+        try: st["base"] = {k: float(v) for k, v in (common.state().get("sqm_base") or {}).items()}
+        except (AttributeError, TypeError, ValueError): st["base"] = {}
+    base, d = st["base"], []
     for k, xs in by.items():
         m = statistics.median(xs)
         if k in base and m < base[k]: base[k] = m              # a lower round trip proves the baseline is lower: follow at once
@@ -220,6 +228,10 @@ def delay_now(lat_buf, now, idle, rebase=False):
         elif idle: base[k] = m if k not in base else base[k] + 0.2 * (m - base[k])   # (a baseline from a slow start, e.g. right
                                                                                       # after a ZTE boot on LTE only, read -126 ms)
         if k in base: d.append(m - base[k])
+    if idle and base and now - st.get("base_saved", 0) > BASE_SAVE_S:     # few writes: the router's flash; atomic (tmp + replace)
+        from keeper import common
+        try: common.state({"sqm_base": dict(base)}); st["base_saved"] = now
+        except OSError: pass
     return round(statistics.mean(d), 1) if d else None
 
 
@@ -311,6 +323,11 @@ if __name__ == "__main__":          # self-check of the decision rule
     assert delay_now(buf, now, False) is None and delay_now(buf, now, True) == 0.0       # no baseline yet; idle sets it (32 / 52)
     load = [(now - 8, 72.0, "1.1.1.1"), (now - 6, 92.0, "8.8.8.8"), (now - 4, 72.0, "1.1.1.1"), (now - 2, 92.0, "8.8.8.8")]
     assert delay_now(load, now, False) == 40.0 and st["base"] == {"1.1.1.1": 32.0, "8.8.8.8": 52.0}    # loaded: baseline kept
+    # a restart under load (2026-11-20 12:33: the deploy during a download) had no baseline -> "holding, no latency data" at the
+    # inherited 103.8 of a 150 ceiling until the line went idle: the idle baseline is kept on disk (<= every BASE_SAVE_S) and read at start
+    import tempfile; from keeper import common; common.DATA = tempfile.mkdtemp(); st["base_saved"] = 0     # state.json in a temp dir
+    delay_now(buf, now + 700, True); st.pop("base")                                       # an idle tick saves it; the keeper restarts
+    assert delay_now([(t + 700, v, k) for t, v, k in load], now + 700, False) == 40.0, st.get("base")   # loaded right after the restart
     low = [(now - 4, 20.0, "1.1.1.1"), (now - 2, 40.0, "8.8.8.8")]
     assert delay_now(low, now, False) == 0.0 and st["base"] == {"1.1.1.1": 20.0, "8.8.8.8": 40.0}        # lower: baseline follows down
     st["base"] = {"1.1.1.1": 32.0, "8.8.8.8": 52.0}
@@ -368,6 +385,17 @@ if __name__ == "__main__":          # self-check of the decision rule
         lim = earn_keep(lim, step(lim, {"up": 1, "down": lim["down"]}, dl), dl, t + i * 10)
     n = earn_keep(lim, step(lim, {"up": 1, "down": lim["down"]}, 16), 16, t + 30)
     assert n["down"] < lim["down"] and st["useless"] == 1, n                             # 16 < 0.8 * 60: kept cutting
+    # 2026-11-20 download: cut, clean +5 %, cut, +5 % ... at ~16 ms - the +5 % ticks reset the streak, it never reached 4 cuts and the
+    # limit slid 151.8 -> 35 in 13 min (103 cuts) while the delay at 41 Mbit/s (p50 10.9) was WORSE than at 146 (6.8): radio jitter.
+    # The streak now ends only after STREAK_GAP_S without a cut.
+    st.update(streak={}, useless=0, want_test=None); lim = {"up": 26.0, "down": 151.8}; t = 20000.0
+    for i, dl in enumerate((17.6, 5, 16, 6, 16.5, 4, 15.9, 16.2)):
+        lim = earn_keep(lim, step(lim, {"up": 1, "down": lim["down"]}, dl), dl, t + i * 10)
+    assert lim["down"] == 151.8 and st["useless"] == 1, (lim, st["useless"])            # back to the limit before the streak, cuts paused
+    st.update(streak={}, useless=0); lim = {"up": 26.0, "down": 150.0}
+    lim = earn_keep(lim, step(lim, {"up": 1, "down": 150}, 30), 30, t)                 # one cut ...
+    lim = earn_keep(lim, step(lim, {"up": 1, "down": lim["down"]}, 2), 2, t + 200)       # ... long clean: the streak is over
+    assert st["streak"]["down"]["n"] == 0, st["streak"]
     st.update(acc={}, limit={"up": 26.0, "down": 150.0})
     _acc({"up": 26.0, "down": 140.0}, {"up": 2.0, "down": 130.0}, 12.0, [10, 40]); _acc({"up": 25.0, "down": 150.0}, {"up": 3.0, "down": 90.0}, 30.0, [5])
     mm = minute(); assert mm["sqm_down_min"] == 140.0 and mm["sqm_up_min"] == 25.0 and mm["sqm_delay"] == 30.0 and mm["sqm_rx"] == 130.0 \

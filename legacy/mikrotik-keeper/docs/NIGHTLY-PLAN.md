@@ -69,6 +69,42 @@ INVALID for 5G: the 5G lock on 534 (n78) stayed active (LOCK_PAUSE frees only LT
 per step comes with item 4).
 
 ## Log
+- 2026-11-20 `2026-11-20e` + CAPTEST_SHARE_DOWN=1.15 verified (Ookla, Yettel 69006 + Vivacom 1917): SHAPED 185 / 23.8-24.0 Mbit/s,
+  loaded +1..+4 ms down (peaks 65-82), +3..+5 up (peaks 40-62) vs UNSHAPED 208-212 / 28.6-29.6, loaded +35..+40 ms (peaks
+  959-1874 down, 1040-1083 up). 88 % of the line down for clean latency (was 143.5 = 70 %). Up stays 0.92 (~82 % of the line).
+- 2026-11-20 ceiling calibration: shaped Ookla 148 / 24 (loaded +6.7 ms, peak 78) vs UNSHAPED 205 / 28.8 (loaded 115 ms avg, peaks
+  836 / 1285 ms); the modem's iperf3 medians 156 / 27.5 -> it reads ~76 % down, ~95 % up. `2026-11-20e`: CAPTEST_SHARE_DOWN /
+  _UP (default CAPTEST_SHARE); env CAPTEST_SHARE_DOWN=1.15 -> the 12:30 ceiling 143.5 -> ~179, up unchanged (25.3).
+- 2026-11-20 13:24-13:40 LM Studio download (`2026-11-20c`, logger every 2 s): latency data in every busy row, also right after a
+  redeploy UNDER LOAD (13:28:59-13:29:33: the first row after it held the ceiling 143.5 with latency); the streak fix live: cuts at
+  15-22 ms with +5 % ticks between them (143.5 -> 103.7 -> ... -> 107.1), at 13:35:38 judged useless -> back to 143.5, cuts paused,
+  at the ceiling to the end. Rate p50 146 (morning 79), delay p50/p90/max 7.7/13.3/22.4 ms, 6 cut ticks (morning 103). Open
+  (cosmetic): the restore tick's why says "+5 % -> 143.5" instead of "useless cuts, back to 143.5". `2026-11-20d` live 13:43.
+- 2026-11-20 12:33 smoke test of `2026-11-20b` (deployed during the download): "holding: no latency data" at the inherited 103.8 of
+  the 150 ceiling - a restart under load had no idle baseline. Fixed in `2026-11-20c`: the baseline is kept in state.json `sqm_base`
+  (atomic, <= every 10 min while idle; `2026-11-20d`, was a separate file in 20c) and read at start.
+- 2026-11-20 12:00-12:29 big download (Hugging Face, `tools/sqm_watch.py` every 2 s): the download limit slid 151.8 -> 35 (the floor)
+  in 13 min - 103 cuts at ~16 ms "latency", +5 % ticks between them reset the cut-proof streak so it never caught them; the delay
+  at < 50 Mbit/s (p50 10.9, p90 17) was WORSE than at >= 130 (6.8 / 13.2): radio / path jitter, not our queue - ~70 % of the
+  speed lost for nothing. Fixed in `2026-11-20b`: a streak = cuts < 2 min apart. CPU: >= 90 % in 3.5 % of busy and 17 % of idle
+  2-s samples, p50 58 % at 146 Mbit/s - load-independent, no delay effect.
+- 2026-11-20: env for one night: `LOCK_PAUSE=23:30-08:00` (unlocked from 23:30 -> the exact minute B1/ARFCN 100 goes dark; so far
+  only 10-28 ~01:02 is clean, the 00:50 unlock reboot hid it since) + `NIGHT_SCREEN=01:30-05:00` (tests start after B1 is off).
+  CETIN so far: only ARFCN 100 (B1 20 MHz, every PCI, several sites) is off at night; B3/B7/B20 + n78 stay; back 06:04-08:24,
+  different each day (load-triggered wake?). `tools/sqm_watch.py` = the shaper's 10-s decisions to test-logs/sqm-*.csv.
+- 2026-11-20 09:42-10:39 `2026-11-20a` live check of the iperf-tail fix (`/lock-test?cells=340@1550,340@3350&night=1`, idle line):
+  the 10:19:21 sample carried 340@1550's own iperf (3.3 MB/s up) - the run went on (11-20 02:27 the same pattern ended the night).
+  Baseline 91.7 (168/26.9, 100 %, p95 53, 7-carrier CA on 3350/340 + n78 534); 340@1550 70.4 (74.2/25.9, 91.7 %, p95 67, B3+B1,
+  SINR -2, site 1243 = the lock's site: no B cell); 340@3350 88.6 (157/28.9, 91.7 %, p95 57, same CA as the baseline, site 1243).
+  Rows are mode night -> tonight's planner skips both. Locks back 10:39.
+- 2026-11-20 night (`2026-11-18p`): the plan was right (7 cells: 340@1550, 340@3350, 112@1550, 493@1550, 202/201/36@3350), the band
+  scan 02:01-02:08 (B1 noise -128 dBm ignored), baseline 02:15-02:27 = 92.6 (171/27.4 Mbit/s, 100 %, p95 49, n78 534) - then
+  340@1550 "stopped by you" at 02:27:12: the 02:27:06 sample carried the baseline's own iperf (554 kB/s up), it arrived after the
+  iperf flag was cleared -> the traffic rule ended the night after its baseline. Fixed in `2026-11-20a` (test first), with:
+  the run's own iperf counts for IPERF_TAIL_S (90 s) after it ends; no TRIGGERED capacity test inside LOCK_PAUSE (01:22: the
+  released lock read as a setup change -> a test every night, the empty night network went into the 21:30 period's ceiling
+  (CORRECTION: the night start at ~02:00 is NIGHT_SCREEN's default 02:00-05:00, not this test) - those values age out of its last 5); the day test skips cells with a no-boot-inform row in
+  the last NIGHT_NOINFORM_DAYS (434@100, 2026-11-19: 7 min offline). Locks back 08:00-08:03.
 - 2026-11-19 `2026-11-18p` live: `GET /night-plan` on the real data - tonight 7 cells (B3/B7): 340@1550 99 %, 340@3350 87 %, 112@1550
   71 % of night samples, + band scan 493@1550, 202/201/36@3350 (-91..-99 dBm); day_only = 202@100, 434@100 (was 206); night_off 100.
   Day-only test 11:5x-12:42 (5G free): baseline 92.2 (171/26.8, 100 %, p95 51); 202@100 (site 1265) 90.6 = 160/27.8, 100 %, p95 55,

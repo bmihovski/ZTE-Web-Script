@@ -14,7 +14,7 @@ older firmware: TestBytes / (EOMTime - BOMTime). Ceiling per slot = CAPTEST_SHAR
 capped at the plan (SQM_PLAN_DOWN / SQM_PLAN_UP) - the shaper must sit just below the real bottleneck to own the queue.
 Night slots (01:30, 04:30) learn their own ceilings (night cells / LOCK_PAUSE anchor) - they never touch the daytime ones.
 Env: CAPTEST (1), CAPTEST_SLOTS (01:30,04:30,07:30,12:30,18:30,21:30), CAPTEST_CONN (4), CAPTEST_UP_BYTES (25000000), CAPTEST_SERVER_ID (69006),
-CAPTEST_SPONSOR (Yettel), CAPTEST_CC (BG), CAPTEST_HOST (speedtest1.yettel.bg:8080), CAPTEST_IDLE_MIN (10), CAPTEST_SHARE (0.92),
+CAPTEST_SPONSOR (Yettel), CAPTEST_CC (BG), CAPTEST_HOST (speedtest1.yettel.bg:8080), CAPTEST_IDLE_MIN (10), CAPTEST_SHARE (0.92; per direction CAPTEST_SHARE_DOWN / _UP),
 CAPTEST_KEEP (5), CAPTEST_FRESH_H (3: a fresher lower test wins), CAPTEST_WEEKLY (Mon 09:05: weekly summary to Telegram, empty = off), SQM_PLAN_DOWN (200), SQM_PLAN_UP (30), CAPTEST_UP (0: no upload test, the upload ceiling is SQM_MAX_UP).
 Upload: TR-143 specifies HTTP PUT; tools/tr143_sim.py showed 2026-11-13 that Ookla drops PUT (POST works). The modem's upload is
 tried; an Error_* turns it off for good (state captest_up, one message) - the upload ceiling then stays SQM_MAX_UP.
@@ -41,6 +41,8 @@ METHOD = E("CAPTEST_METHOD", "iperf3")              # iperf3 (works) | tr143 (th
 ISECS = int(E("CAPTEST_SECS", "10"))
 IPERF_DONE = ("complete", "completed", "finish", "finished", "done", "success", "succeeded", "fail", "failed", "error", "stop", "stopped")
 IDLE_MIN, SHARE, KEEP = int(E("CAPTEST_IDLE_MIN", "10")), float(E("CAPTEST_SHARE", "0.92")), int(E("CAPTEST_KEEP", "5"))
+# per direction (2026-11-20): the modem's iperf3 (4 streams down, 1 up) read ~76 % of the line down (156 vs 205 unshaped), ~95 % up
+SHARE_D = {d: float(E("CAPTEST_SHARE_" + d.upper(), str(SHARE))) for d in ("down", "up")}
 FRESH_H = float(E("CAPTEST_FRESH_H", "3"))   # a test this fresh that is LOWER than the period's ceiling wins (rain, a busy cell)
 PLAN = sqm.PLAN                    # SQM_PLAN_DOWN / SQM_PLAN_UP (200 / 30)
 TRIG_MAX, TRIG_GAP_S = int(E("CAPTEST_TRIGGER_MAX", "6")), 3600       # extra tests a day when the line changed; >= 1 h after the last test
@@ -196,15 +198,15 @@ def fresh(hist, d, now):
 
 
 def ceilings(hist, slot, now=None):
-    """{"down": Mbit/s, "up": Mbit/s} for `slot` from its last KEEP results: SHARE x median, capped at the plan; {} without data.
+    """{"down": Mbit/s, "up": Mbit/s} for `slot` from its last KEEP results: SHARE_D[d] x median, capped at the plan; {} without data.
     With `now`: a result from the last FRESH_H hours (any slot) that is LOWER wins - one rainy-day test is 1 of 5 in the median,
     the ceiling would stay at the clear-weather value (2026-11-18). A higher one only joins the median (the climb raises it live)."""
     out = {}
     for d in ("down", "up"):
         xs = counted_results(hist, slot, d)
-        if len(xs) >= MIN_TESTS: out[d] = round(min(PLAN[d], SHARE * statistics.median(xs)), 1)
+        if len(xs) >= MIN_TESTS: out[d] = round(min(PLAN[d], SHARE_D[d] * statistics.median(xs)), 1)
         f = fresh(hist, d, now) if now and d in out else None
-        if f is not None and SHARE * f < out[d]: out[d] = round(SHARE * f, 1)
+        if f is not None and min(PLAN[d], SHARE_D[d] * f) < out[d]: out[d] = round(min(PLAN[d], SHARE_D[d] * f), 1)
     return out
 
 
@@ -216,8 +218,8 @@ def explain(now=None):
         xs = counted_results(hist, slot, d); learned = ceilings(hist, slot).get(d); low = ceilings(hist, slot, now).get(d)
         if d == "up" and not UP: src = "upload learning off (CAPTEST_UP=0): SQM_MAX_UP %g" % sqm.MAX["up"]
         elif learned and low is not None and low < learned:
-            src = "a fresh test (< %g h) measured less: %g x %g = %g, below the %s period's %g" % (FRESH_H, SHARE, fresh(hist, d, now), low, slot, learned)
-        elif learned: src = "learned for the %s period: %g x the median %g of %d tests %s" % (slot, SHARE, statistics.median(xs), len(xs), xs)
+            src = "a fresh test (< %g h) measured less: %g x %g = %g, below the %s period's %g" % (FRESH_H, SHARE_D[d], fresh(hist, d, now), low, slot, learned)
+        elif learned: src = "learned for the %s period: %g x the median %g of %d tests %s" % (slot, SHARE_D[d], statistics.median(xs), len(xs), xs)
         else: src = "not learned yet for the %s period (%d of %d tests): SQM_MAX_%s %g" % (slot, len(xs), MIN_TESTS, d.upper(), sqm.MAX[d])
         c = (sqm.st.get("climb") or {}).get(d) or {}
         climb = ("climbed x%g (+%d %%) above it - busy at the ceiling with clean latency" % (c["x"], round((c["x"] - 1) * 100)) if c.get("x", 1) > 1
@@ -325,8 +327,8 @@ def ceiling_event(slot, after, rec):
     up = "up %s Mbit/s" % after["up"] if "up" in after else "up stays %g Mbit/s%s" % (
         sqm.MAX["up"], " (measured %s)" % rec["up"] if rec.get("up") is not None else "")
     return {"event": "capacity ceiling", "to": "%s: down %s Mbit/s / %s" % (slot, after.get("down", "-"), up),
-            "why": "this test: down %s / up %s Mbit/s; %g x the median of the last %d tests in this period (plan %g / %g)"
-                   % (rec.get("down"), rec.get("up"), SHARE, KEEP, PLAN["down"], PLAN["up"])}
+            "why": "this test: down %s / up %s Mbit/s; %g / %g x the median of the last %d tests in this period (plan %g / %g)"
+                   % (rec.get("down"), rec.get("up"), SHARE_D["down"], SHARE_D["up"], KEEP, PLAN["down"], PLAN["up"])}
 
 
 def iperf_params(server, secs=10, conn=4, reverse=True, plain=False):
@@ -553,7 +555,8 @@ def maybe_test(row, now=None):
     why = trigger(row, now)
     s = due(now, done)
     if not s and not (why and trig_ok(now)): return False
-    last = list(brain.HIST)[-IDLE_MIN:]
+    if not s and guard.pause_end(now): return False    # LOCK_PAUSE: the released lock is no setup change and the empty night network
+    last = list(brain.HIST)[-IDLE_MIN:]                # is no ceiling; it held the night screen ~40 min (2026-11-20 01:22) - the day's turn
     if len(last) < IDLE_MIN or not all(brain.idle(r) for r in last): return False
     day = time.strftime("%Y-%m-%d", time.localtime(now))
     trig = None

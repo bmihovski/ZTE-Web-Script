@@ -78,6 +78,13 @@ assert locktest.lt["cut"] is None, locktest.lt["cut"]
 # boot - uptime 72 s, 82 kB/s up): traffic counts only once the modem is up longer than the settle time
 locktest.lt.update(iperf=False, cut=None); locktest.maybe_night(dict(idle, up_bps="82189", down_bps="57371", uptime_s="72"))
 assert locktest.lt["cut"] is None, locktest.lt["cut"]
+# nor its tail: a sample is the minute's average and arrives after the iperf ended (2026-11-20 02:27:06: 554 kB/s up, 6 s after the
+# baseline's iperf - "stopped by you", the night over after its baseline)
+locktest.lt.update(iperf=False, cut=None, iperf_end=time.monotonic()); locktest.maybe_night(dict(idle, up_bps="553907", down_bps="5554"))
+assert locktest.lt["cut"] is None, locktest.lt["cut"]
+locktest.lt.update(iperf_end=time.monotonic() - locktest.IPERF_TAIL_S - 1); locktest.maybe_night(dict(idle, up_bps="553907", down_bps="5554"))
+assert locktest.lt["cut"] == "stop", locktest.lt["cut"]                                                    # later: real traffic stops it
+locktest.lt.update(cut=None)
 locktest.lt.update(night=False, running=None, iperf=False)
 # traffic during the screen -> stopped, lock put back
 common.state({"night_last": None}); m.st["sets"].clear(); [e.update(last=T230 + 86400) for e in reg.values()]; store.db(DATA).execute("DELETE FROM rec WHERE kind = 'lock_tests'")

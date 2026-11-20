@@ -6,7 +6,7 @@ here = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.abspath(os.pat
 DATA = "/tmp/zte-keeper-test-captest"; shutil.rmtree(DATA, ignore_errors=True); os.makedirs(DATA)
 os.environ.update(NIGHT_SCREEN="off", DATA=DATA, ZTE_HOST="127.0.0.1:9")
 sys.path.insert(0, ROOT)
-from keeper import acs, alert, brain, captest as c, common, sqm
+from keeper import acs, alert, brain, captest as c, common, guard, sqm
 from keeper.devices import zte as z
 ENV = ('<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:cwmp="urn:dslforum-org:cwmp-1-0">'
        '<soap:Header><cwmp:ID soap:mustUnderstand="1">x</cwmp:ID></soap:Header><soap:Body>%s</soap:Body></soap:Envelope>')
@@ -68,6 +68,13 @@ _G = {"slot": "18:30", "down": 150.0, "down_how": "full load 5.0 s"}
 assert c.ceilings([_G, _G, dict(_G, diag={"conn": 1}, down=5.0)], "18:30")["down"] == 138.0   # diagnostics don't count
 G = {"slot": "18:30", "down": 150.0, "down_how": "full load 5.0 s"}
 assert c.ceilings([G, dict(G, url="http://x/y", down=10.0)], "18:30") == {} and c.ceilings([G, G], "18:30")["down"] == 138.0   # diagnostics don't count
+# per direction (2026-11-20, unshaped Ookla 205/28.8 vs the modem's iperf3 medians 156 (4 streams) / 27.5 (1 stream)): the download
+# test reads ~76 % of the line, the upload ~95 % -> CAPTEST_SHARE_DOWN calibrates the download alone; both default to CAPTEST_SHARE
+U = {"slot": "18:30", "down": 156.0, "up": 27.5, "down_how": "full load 10.0 s", "up_how": "full load 10.0 s"}
+assert c.ceilings([U, U], "18:30") == {"down": 143.5, "up": 25.3}                          # 0.92 both (the default)
+c.SHARE_D = {"down": 1.15, "up": 0.92}; assert c.ceilings([U, U], "18:30") == {"down": 179.4, "up": 25.3}, c.ceilings([U, U], "18:30")
+c.SHARE_D = {"down": 1.3, "up": 1.2}; assert c.ceilings([U, U], "18:30") == {"down": 200.0, "up": 30.0}   # never above the plan
+c.SHARE_D = {"down": c.SHARE, "up": c.SHARE}
 # a FRESH lower result wins for CAPTEST_FRESH_H (3 h), any slot (2026-11-18: one rainy-day test is 1 of 5 in the median - the ceiling
 # stayed at the clear-weather value); a higher one only joins the median (speed on demand: the climb + its test raise it)
 T = time.mktime(time.strptime("2026-11-18 19:00", "%Y-%m-%d %H:%M")); at = lambda h: time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(T - h * 3600))
@@ -191,6 +198,12 @@ assert not c.maybe_test(R("3350/340"), D + 600)                                 
 assert c.maybe_test(R("3350/340"), D + 960) and len(started) == n + 1 and started[-1][5] == "07:30", started[-1]
 assert c.st["trigger"] == "setup 100/340|636576/534 -> 3350/340|636576/534" and common.state()["captest_setup"] == "3350/340|636576/534"
 c.st["running"] = False
+# no TRIGGERED test inside LOCK_PAUSE (2026-11-20 01:22: the released lock read as a setup change -> a test every night; its
+# traffic held the night screen ~40 min, and the empty night network (169) went into the 21:30 period's ceiling)
+N = time.mktime((2026, 11, 14, 1, 22, 0, 0, 0, -1)); guard.LOCK_PAUSE = "00:50-08:00"; sqm.want_test("setup x -> y", N)
+_k = {k: common.state().get(k) for k in ("captest_trig", "captest_last_t")}
+common.state({"captest_trig": [], "captest_last_t": 0}); assert not c.maybe_test(R("3350/340"), N) and c.st.get("want")   # waits for the day
+guard.LOCK_PAUSE = ""; common.state(_k); c.st["want"] = None
 sqm.want_test("down climbed to 165.4 (+10 % over the learned 150)", D + 1000)
 assert not c.maybe_test(R("3350/340"), D + 1000)                                         # < 1 h after the last test: waits
 assert c.maybe_test(R("3350/340"), D + 960 + 3600) and c.st["trigger"].startswith("down climbed")
