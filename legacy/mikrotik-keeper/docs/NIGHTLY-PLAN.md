@@ -69,6 +69,16 @@ INVALID for 5G: the 5G lock on 534 (n78) stayed active (LOCK_PAUSE frees only LT
 per step comes with item 4).
 
 ## Log
+- 2026-11-20 19:46 peak: call-ready 80 % / 30 min (A/B needs < 70 %), 26/30 idle, SINR 5 / 13 -> no trial, as designed (Boyan: no
+  "disco lights"). `2026-11-20g`: every A/B reboot waits until no call: not 5 steady minutes >= 4 kB/s in a direction (3 kB/s
+  all-quiet held in only 26 % of windows with 2 PCs + 2 phones) - an internet audio call looked "idle". The trend stays passive: calls-at-risk by hour + the probe's idle-delay excess (no iperf). Boyan: IPTV
+  stable this evening with 20b-f (yesterday cuts + pixelation) - the ratchet to the 35 floor starved it.
+- 2026-11-20 18:30-19:28 peak hour: the 18:31 capacity test measured 154 -> the fresh-lower rule set 177.1 (1.15 x 154) as designed;
+  the delay above idle was 13-30 ms with the line IDLE (19:18-19:21) - congestion in the cell, not our queue (only a cell change
+  helps); a speedtest's 10-15 s burst (168 Mbit/s, +39 ms, peak 424) ends before the 10-s loop reacts; under load it cut (19:27
+  -> 150.5). BUG fixed in `2026-11-20f`: a ceiling drop counted as a cut -> a streak started at +3.5 ms, real cuts after it read as
+  useless -> the old higher limit back + cuts paused at peak (`useless` 2). Only cuts with delay > SQM_DELAY_MS count; a restore
+  never goes above the ceiling.
 - 2026-11-20 `2026-11-20e` + CAPTEST_SHARE_DOWN=1.15 verified (Ookla, Yettel 69006 + Vivacom 1917): SHAPED 185 / 23.8-24.0 Mbit/s,
   loaded +1..+4 ms down (peaks 65-82), +3..+5 up (peaks 40-62) vs UNSHAPED 208-212 / 28.6-29.6, loaded +35..+40 ms (peaks
   959-1874 down, 1040-1083 up). 88 % of the line down for clean latency (was 143.5 = 70 %). Up stays 0.92 (~82 % of the line).

@@ -167,14 +167,14 @@ def now_cooling(now=None):
     now = now or time.time(); return any(now < s.get("cool", 0) for s in (st.get("streak") or {}).values())
 
 
-def earn_keep(limit, new, delay, now):
+def earn_keep(limit, new, delay, now, caps=None):
     """A cut must lower the latency. After CUT_PROOF cuts in a row in one direction with the delay not >= 20 % below the delay
     before the first cut, the queue is not ours (it sits in the radio / operator buffers): back to the limit before the streak,
     and no cuts in that direction for CUT_COOL s. Without this a download whose delay sits upstream slides 15 % a tick to the
     floor (10-31: fq_codel at 120M of ~178 still added 58-80 ms) - throughput lost for no latency gain."""
     for k in ("up", "down"):
         s = st.setdefault("streak", {}).setdefault(k, {"n": 0})
-        cut = bool(limit[k]) and bool(new[k]) and new[k] < limit[k]
+        cut = bool(limit[k]) and bool(new[k]) and new[k] < limit[k] and delay is not None and delay > DELAY   # a latency cut, not a ceiling drop
         if cut and now < s.get("cool", 0): new[k] = limit[k]; continue             # cooling down: this direction is not cut
         if not cut:
             if now - s.get("last", 0) > STREAK_GAP_S: s["n"] = 0                  # a +5 % tick between cuts does not end the streak
@@ -182,7 +182,7 @@ def earn_keep(limit, new, delay, now):
         if s["n"] == 0: s.update(d0=delay, lim0=limit[k])
         s["n"] += 1; s["last"] = now
         if s["n"] > CUT_PROOF and delay is not None and s.get("d0") is not None and delay > 0.8 * s["d0"]:
-            new[k] = s["lim0"]; s.update(n=0, cool=now + CUT_COOL); st["useless"] = st.get("useless", 0) + 1
+            new[k] = min(s["lim0"], (caps or {}).get(k) or s["lim0"]); s.update(n=0, cool=now + CUT_COOL); st["useless"] = st.get("useless", 0) + 1
             want_test("%s: %d cuts did not lower the latency (+%g ms) - the line may have lost capacity (rain, a busy cell)"
                       % (k, CUT_PROOF + 1, delay), now)     # a fresh lower result becomes the ceiling for 3 h (captest.ceilings)
     return new
@@ -258,7 +258,7 @@ def tick(lat_buf, now=None, path_change=0.0):
     d = delay_now(lat_buf, now, idle, rebase)
     learned = {k: CEILING[0](k, now) for k in MAX}; was = st.get("learned") or learned; st["learned"] = learned
     caps = {k: climb(k, learned[k], st["limit"], rate, d, TICK, now) for k in MAX}
-    new = earn_keep(st["limit"], step(st["limit"], rate, d, caps), d, now)
+    new = earn_keep(st["limit"], step(st["limit"], rate, d, caps), d, now, caps)
     for k in caps: deep_cut(k, st["limit"][k], new[k], caps[k], now)
     if rebase:                      # do not raise the limit on the rebase tick: let the next ticks see if the new path is calm
         for k in new:
@@ -392,6 +392,15 @@ if __name__ == "__main__":          # self-check of the decision rule
     for i, dl in enumerate((17.6, 5, 16, 6, 16.5, 4, 15.9, 16.2)):
         lim = earn_keep(lim, step(lim, {"up": 1, "down": lim["down"]}, dl), dl, t + i * 10)
     assert lim["down"] == 151.8 and st["useless"] == 1, (lim, st["useless"])            # back to the limit before the streak, cuts paused
+    # 2026-11-20 18:31 peak: a CEILING drop (fresh test 154 -> 177.1) is no latency cut - it started a streak at +3.5 ms, the real
+    # cuts after it read as useless -> the old higher limit back, cuts paused at peak. Only cuts with delay > DELAY count, and a
+    # restore never goes above the ceiling now.
+    st.update(streak={}, useless=0); lim = {"up": 26.0, "down": 185.1}; t = 30000.0
+    lim = earn_keep(lim, {"up": 26.0, "down": 177.1}, 3.5, t, {"up": 26.0, "down": 177.1})            # the ceiling drop
+    assert st["streak"]["down"]["n"] == 0, st["streak"]
+    for i, dl in enumerate((18.0, 17.0, 16.5, 16.0)):
+        lim = earn_keep(lim, step(lim, {"up": 1, "down": lim["down"]}, dl), dl, t + 10 + i * 10, {"up": 26.0, "down": 177.1})
+    assert st["useless"] == 1 and lim["down"] == 177.1, (lim, st["useless"])           # useless -> back to the CEILING, not 185.1
     st.update(streak={}, useless=0); lim = {"up": 26.0, "down": 150.0}
     lim = earn_keep(lim, step(lim, {"up": 1, "down": 150}, 30), 30, t)                 # one cut ...
     lim = earn_keep(lim, step(lim, {"up": 1, "down": lim["down"]}, 2), 2, t + 200)       # ... long clean: the streak is over

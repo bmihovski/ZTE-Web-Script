@@ -23,6 +23,10 @@ NR_BACK_MIN = int(E("NR_BACK_MIN", "3"))                      # 5G served by the
 LOCK_MAX_REBOOTS_DAY = int(E("LOCK_MAX_REBOOTS_DAY", "4"))
 LOCK_PAUSE = E("LOCK_PAUSE", "")
 QUALITY_AB = E("QUALITY_AB", "1") == "1"                     # bad calls with good signal on an idle link -> try unlocked (quality_ab)
+# every A/B reboot waits until no one is in a CALL: steady traffic, every one of the last AB_QUIET_MIN minutes >= AB_CALL_BYTES in a
+# direction (a Teams / Zoom audio call ~5-12 kB/s each way; "idle" < 0.5 Mbit/s up let it through). Bursts (updates, mail) are no call:
+# 2026-11-20, 2 PCs + 2 phones: up p50 0.6 kB/s, steady >= 4 kB/s in 8.5 % of 5-min windows (all under 3 kB/s only 26 %)
+AB_QUIET_MIN, AB_CALL_BYTES = int(E("AB_QUIET_MIN", "5")), float(E("AB_CALL_BYTES", "4000"))
 AB_BAD_PCT, AB_WINDOW_MIN, AB_TRIAL_MIN, AB_KEEP_H = float(E("AB_BAD_PCT", "70")), int(E("AB_WINDOW_MIN", "30")), int(E("AB_TRIAL_MIN", "20")), float(E("AB_KEEP_H", "3"))
 OFFLINE_RELEASE_MIN = float(E("OFFLINE_RELEASE_MIN", "8"))   # no inform AND no internet this long with an LTE lock held -> release it over the LAN
 KEYS = {"lte": "lte_lock", "nr": "nr_lock"}
@@ -215,6 +219,14 @@ def _ab_restore(ab, now):
             state({KEYS[k]: {x: v for x, v in dict(o, state="pending", requested=now, reason="A/B over").items() if x not in ("released_at", "retry_at")}})
 
 
+def quiet(rows=None, row=None):
+    """No call on the line: not every one of the last AB_QUIET_MIN samples carries >= AB_CALL_BYTES/s in the
+    same direction - a call is steady, bursts are not - and the current minute is idle. Fewer samples: not proven."""
+    rows = (list(brain.HIST) if rows is None else list(rows))[-AB_QUIET_MIN:]
+    if len(rows) < AB_QUIET_MIN or (row and not brain.idle(row)): return False        # this minute in use (a download): no reboot
+    return not any(all((brain.f(r.get(k)) or 0) >= AB_CALL_BYTES for r in rows) for k in ("up_bps", "down_bps"))
+
+
 def quality_ab(row, now=None):
     """Minute job, at most once a day. Calls go bad while the signal is good and the link idle (2026-11-12 evening: call-ready
     77 -> 20 % on 340@100 + 534, SINR 5 / 11, ~0 Mbit/s, 1-s stalls from lost packets; unstable weather) - not our load, not the
@@ -228,7 +240,7 @@ def quality_ab(row, now=None):
         _ab_restore(ab, now)                                       # you changed a lock: stop, the other one goes back to yours
         state({"quality_ab": dict(ab, phase="done", result="stopped: locks changed by hand")}); return None
     if ph == "keep":
-        if now < ab["until"]: return None
+        if now < ab["until"] or not quiet(row=row): return None                  # a call on the line: your locks come back after it
         _ab_restore(ab, now); state({"quality_ab": dict(ab, phase="done")})
         event({"event": "lte lock A/B", "to": "back to your locks", "why": "%g h on %s are over" % (AB_KEEP_H, ARMS[ab["arm"]])})
         return "restored"
@@ -239,9 +251,10 @@ def quality_ab(row, now=None):
         res = dict(ab.get("res") or {}, **{ab["arm"]: pct})
         nxt = [x for x in ab["arms"] if x not in res]
         if nxt and not (pct is not None and pct >= max(ab["before"] + 15, 90)):
-            if brain.idle(row) and not common.busy():
+            if quiet(row=row) and not common.busy():
                 state({"quality_ab": _ab_apply(dict(ab, res=res), nxt[0], now)}); return "trial"
-            if now - ab["start"] < 2 * AB_TRIAL_MIN * 60: return None                                  # in use: wait for an idle minute
+            if now - ab["start"] < 2 * AB_TRIAL_MIN * 60: return None                                  # in use: wait for a quiet line
+        if not quiet(row=row): return None            # the winner back / your locks back = a reboot: never during a call
         txt = ", ".join("%s %s%%" % ("LTE %s (%s)" % (ab["alt"], ARMS[x]) if x == "site" else ARMS[x], res[x]) for x in res) + \
             " vs %s%% on your locks" % ab["before"]
         best = max((x for x in res if res[x] is not None), key=lambda x: res[x], default=None)
@@ -264,6 +277,7 @@ def quality_ab(row, now=None):
     ok = brain.share(rows)
     if len(rows) < AB_WINDOW_MIN - 5 or ok is None or ok >= AB_BAD_PCT: return None
     if sum(1 for r in rows if brain.idle(r)) < 0.8 * len(rows) or not brain.idle(row): return None      # our own traffic: the SQM's job
+    if not quiet(row=row): return None                                                                  # a call: never reboot under it
     lte, nr = brain.med([brain.f(r.get("lte_sinr")) for r in rows]), brain.med([brain.f(r.get("nr_sinr")) for r in rows])
     if lte is None or lte < brain.MIN_SINR or (nr is not None and nr < brain.MIN_SINR): return None     # weak signal: the guard's job
     nrw = state().get("nr_lock")

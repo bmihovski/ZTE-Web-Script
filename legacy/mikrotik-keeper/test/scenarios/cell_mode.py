@@ -16,8 +16,9 @@ def ago(days):
 def row(t, mode="ant5 dir / ant6 omni", a5="4", a6="1", target="100.0", unstable="0", kind="fixed", rat="nr", lock="534@636576"):
     return {"time": t, "rat": rat, "lock": lock, "antennas": mode, "ant5": a5, "ant6": a6, "on_target_pct": target, "unstable": unstable,
             "mode": kind, "call_ok_pct": "100.0", "lat_p95": "40.0", "jitter_ms": "4.0", "loss_pct": "0.0", "heading": "108"}
+T2 = ago(2)                                                                     # once: a second can tick between two ago(2) calls under load
 for r in [row(ago(3)),                                                          # good, but an older one wins
-          row(ago(2), "ant5 omni / ant6 omni", "1", "1"),                       # the newest good -> this mode
+          row(T2, "ant5 omni / ant6 omni", "1", "1"),                           # the newest good -> this mode
           row(ago(1), "ant5 dir / ant6 dir", "4", "4", kind="cut"),             # cut: not a result
           row(ago(0.5), "ant5 dir / ant6 dir", "4", "4", unstable="1"),         # unstable anchor: not a result
           row(ago(0.2), "ant5 dir / ant6 dir", "4", "4", target="50.0"),        # off target: not a result
@@ -25,7 +26,7 @@ for r in [row(ago(3)),                                                          
     store.add(DATA, "lock_tests", r)
 
 rec = locktest.cell_mode("534@636576"); print(rec)
-assert rec and rec["mode"] == "ant5 omni / ant6 omni" and (rec["ant5"], rec["ant6"]) == ("1", "1") and rec["time"] == ago(2), rec
+assert rec and rec["mode"] == "ant5 omni / ant6 omni" and (rec["ant5"], rec["ant6"]) == ("1", "1") and rec["time"] == T2, rec
 assert rec["heading"] == "108" and locktest.cell_mode("747@629988") is None and locktest.cell_mode("") is None and locktest.cell_mode(None) is None
 
 # the kept mode is the fallback; the locked cell's record wins only with AUTO=on

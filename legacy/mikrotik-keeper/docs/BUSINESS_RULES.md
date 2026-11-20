@@ -118,6 +118,10 @@ at `/docs`.
 - Quality A/B (`guard.quality_ab`, bad call-ready with good signal on an idle link, once a day): trial 1 = the B cell
   (`guard.ab_alt`): a daytime lock-test result (night rows never count), 5G paired in that test, ANOTHER site (eNB) than the lock,
   seen in the last 6 h; best score as the share of the points measured (rows measuring >= 60 % of the weight), sparser rows after. Trial 2 = everything unlocked (the modem's choice).
+  EVERY A/B reboot (the start, the next arm, the winner back, your locks back) waits until no one is in a CALL: blocked while every
+  one of the last `AB_QUIET_MIN` (5) samples carries >= `AB_CALL_BYTES` (4000 B/s) in the same direction - a
+  Teams / Zoom call is steady (~5-12 kB/s, also down when muted), update / mail / browsing bursts are not (2026-11-20: up p50 0.6
+  kB/s, steady >= 4 kB/s in 8.5 % of 5-min windows). The current minute must be idle as well. A missed trial is fine; a dropped call is not.
 - **Night screen** (LTE only): only on a night **armed** from the ZTE helper (`POST /night-screen?arm=1`, persisted as `night_armed`
   = the night's morning date; you leave the router + modem on - they are off the other nights) or every night with `NIGHT_ALWAYS=1`
   (research). Weekly Telegram reminder: from `NIGHT_REMIND_DAY` (Fri) at `NIGHT_REMIND` (21:30) once each evening until Arm is

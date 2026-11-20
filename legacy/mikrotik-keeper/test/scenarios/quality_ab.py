@@ -98,6 +98,21 @@ w = common.state()["nr_lock"]; assert w["cell"] == "534@636576" and w["state"] =
 D6 = D5 + 86400; locked(D6); brain.REG["lte"]["1550/434"]["last"] = 0
 assert guard.quality_ab(row, D6) == "trial" and common.state()["quality_ab"]["arms"] == ["free"]; wait()
 assert sets()[0] == ("LTE_LOCK_CELL_SET", "0@0"), sets()
+# --- an internet call blocks every A/B reboot (2026-11-20: "idle" is < 0.5 Mbit/s up, a Teams / Zoom audio call is ~5-12 kB/s each
+# way - it looked idle, a trial reboot would have dropped the meeting): AB_QUIET_MIN minutes under AB_QUIET_UP / _DOWN bytes/s ---
+D7 = D6 + 86400; locked(D7)
+for r in list(brain.HIST)[-guard.AB_QUIET_MIN:]: r.update(up_bps="9000", down_bps="12000")          # a Teams audio call: "idle" by brain.idle
+assert all(brain.idle(r) for r in list(brain.HIST)[-guard.AB_QUIET_MIN:]) and guard.quality_ab(row, D7) is None   # no trial during it
+for r in list(brain.HIST)[-guard.AB_QUIET_MIN:]: r.update(up_bps="500", down_bps="800")             # the call is over
+assert guard.quality_ab(row, D7) == "trial"; wait()
+assert guard.quiet() and not guard.quiet([{"up_bps": "9000", "down_bps": "0"}] * guard.AB_QUIET_MIN)
+assert not guard.quiet([{"up_bps": "0", "down_bps": "0"}] * (guard.AB_QUIET_MIN - 1))               # too few minutes: not proven quiet
+# realistic (2026-11-20, 4 days, 2 PCs + 2 phones working from home: up p50 0.6 kB/s, p90 19; all-under-3k in only 26 % of 5-min
+# windows): a CALL is STEADY traffic - every minute >= AB_CALL_BYTES in a direction; bursts (updates, mail, browsing) are not
+burst = [{"up_bps": "500", "down_bps": "600"}] * 3 + [{"up_bps": "40000", "down_bps": "900000"}, {"up_bps": "700", "down_bps": "300"}]
+assert guard.quiet(burst), "an update burst is no call"
+assert not guard.quiet([{"up_bps": "1500", "down_bps": "8000"}] * guard.AB_QUIET_MIN), "a muted meeting: steady audio down"
+assert guard.quiet([{"up_bps": "1500", "down_bps": "8000"}] * (guard.AB_QUIET_MIN - 1) + [{"up_bps": "1500", "down_bps": "900"}])   # not every minute
 # --- the B cell (docs/NIGHTLY-PLAN.md item 6, 2026-11-18): the weighted score first, 5G pairing required, daytime results only ---
 full = lambda lock, anchor, site, down, nr, mode="as is": store.add(DATA, "lock_tests", {"time": "2026-11-18 10:00:00", "rat": "lte", "lock": lock,
     "anchor": anchor, "site": site, "minutes": "12", "on_target_pct": "100.0", "call_ok_pct": "100", "anchor_sinr_p50": "5", "nr_sinr_p50": "8",
