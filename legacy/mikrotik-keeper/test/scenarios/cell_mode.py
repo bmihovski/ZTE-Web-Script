@@ -33,7 +33,7 @@ assert rec["heading"] == "108" and locktest.cell_mode("747@629988") is None and 
 common.state({"antennas": {"auto": "0", "ant5": "4", "ant6": "4"}, "nr_lock": {"cell": "534@636576", "state": "active"}})
 brain.AUTO = "on"
 eff, src, r = antennas.effective()
-assert (eff["ant5"], eff["ant6"]) == ("1", "1") and "534@636576" in src and r["time"] == ago(2), (eff, src)
+assert (eff["ant5"], eff["ant6"]) == ("1", "1") and "534@636576" in src and r["time"] == T2, (eff, src)
 brain.AUTO = "dryrun"
 eff, src, r = antennas.effective()
 assert (eff["ant5"], eff["ant6"]) == ("4", "4") and src == "kept" and r["mode"] == "ant5 omni / ant6 omni", (eff, src, r)

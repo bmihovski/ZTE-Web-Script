@@ -75,4 +75,9 @@ print("OK test_tr069lock")
 from keeper.devices.zte import locks as _locks
 assert _locks.unlock_val({"lock": "{pci},{earfcn},0,0", "unlock": ""}) == "0,0,0,0"      # empty read-back -> write 0,0, not ''
 assert _locks.unlock_val({"lock": "{pci},{earfcn}", "unlock": "0,0,0,0"}) == "0,0,0,0"   # non-empty read-back kept
+# an OFFLINE modem (no inform for > OFFLINE_S: locked to a cell it cannot attach to, 2026-11-21 02:06-02:09) cannot take a TR-069
+# write - it waited the full 180 s before the web page; now it waits only OFFLINE_WAIT_S
+acs.st["last_inform"] = time.monotonic() - acs.OFFLINE_S - 5; acs.OFFLINE_WAIT_S = 0.3
+t_ = time.monotonic(); assert acs.tr069_set([("X", "xsd:string", "1")], reboot=True) is False and time.monotonic() - t_ < 5, time.monotonic() - t_
+acs.st["last_inform"] = time.monotonic()                                               # informing: the normal wait (not run here)
 print("OK unlock_val")

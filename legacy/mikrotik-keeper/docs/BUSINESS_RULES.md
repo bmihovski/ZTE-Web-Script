@@ -51,7 +51,7 @@ at `/docs`.
 
 - `POST /lte-lock?cell=PCI@EARFCN|none` (guarded LTE anchor) and `POST /nr-lock?cell=PCI@ARFCN|none` (guarded 5G cell). The guard
   releases a lock when its cell is lost, restores it when it is back (idle only, `LOCK_RETRY_H`), and caps lock reboots
-  (`LOCK_MAX_REBOOTS_DAY`). `LOCK_PAUSE` releases the LTE lock before a nightly window and restores it after (the operator switches
+  (`LOCK_MAX_REBOOTS_DAY`). `LOCK_PAUSE` releases the LTE lock - and your 5G lock in the same write (2026-11-21: the night sees the network's own NSA pairs) - before a nightly window and restores both together after (the operator switches
   the B1 cell off at night). A released lock whose cell is not back yet logs `lock restore pending` (event + log, at most once an
   hour), so the events explain a long wait instead of staying silent between the release and the restore (2026-11-03: released
   00:50, cell back 08:18, restored 08:24).

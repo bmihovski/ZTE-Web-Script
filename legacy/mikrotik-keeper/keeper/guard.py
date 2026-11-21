@@ -136,6 +136,10 @@ def lock_guard(row, now=None):
         elif guard["nosvc"] >= LOCK_NOSERVICE_MIN: why = "no LTE service for %d min" % guard["nosvc"]
         elif guard["bad"] >= LOCK_BAD_MIN: why = ("not on %s" % "/".join(sorted(targets)) if not on else "calls at risk with anchor SINR %s" % a_sinr) + " for %d min" % guard["bad"]
         if why: rel["lte"] = "none"; whys.append("LTE %s: %s" % (w["cell"], why)); state({"lte_lock": dict(w, state="released", released_at=now, retry_at=retry, reason=why)})
+        wn = want["nr"]
+        if why and pe and idle and wn and wn.get("state") == "active":   # the pause frees 5G too, in the same write: the night's band scan +
+            rel["nr"] = "none"; whys.append("5G %s: %s" % (wn["cell"], why))   # steps see the NSA pairs the network gives (2026-11-21)
+            state({"nr_lock": dict(wn, state="released", released_at=now, retry_at=retry, reason=why, pause=True)}); want["nr"] = None
     w = want["nr"]
     if w and w.get("state") == "active" and not booted:
         if devices.current().nr_on(row, w["cell"]): guard["nr_bad"] = 0
@@ -153,7 +157,7 @@ def lock_guard(row, now=None):
     if not idle or len([t for t in guard["reboots"] if now - t < 86400]) >= LOCK_MAX_REBOOTS_DAY: return None
     todo, whys = {}, []
     for k, w in want.items():
-        if not w or (k == "lte" and LOCK_PAUSE and (pause_end(now) or not common.clock_ok())): continue      # no LTE lock inside LOCK_PAUSE (or before the clock is verified)
+        if not w or ((k == "lte" or w.get("pause")) and LOCK_PAUSE and (pause_end(now) or not common.clock_ok())): continue      # no lock inside LOCK_PAUSE (or before the clock is verified)
         if w.get("state") == "pending": todo[k] = w["cell"]; whys.append("%s set" % w["cell"])
         elif w.get("state") == "released" and now >= w.get("retry_at", 0):
             if k == "lte":
@@ -162,6 +166,10 @@ def lock_guard(row, now=None):
                                                                             or seen[t] >= brain.REG["lte"][t]["rsrp"] - 6)]
                 if back: todo[k] = w["cell"]; whys.append("%s restored - back: %s" % (w["cell"], ", ".join("%s (RSRP %s)" % (t, seen[t]) for t in back)))
                 else: wait_note("lte", w, "%s not in the neighbour list yet" % w["cell"], now)
+            elif w.get("pause"):                       # freed by the pause: back with the LTE lock, in the same write
+                if "lte" in todo or (want.get("lte") or {}).get("state") != "released":
+                    todo[k] = w["cell"]; whys.append("%s restored - the pause is over" % w["cell"])
+                else: wait_note("nr", w, "back with the LTE lock", now)
             elif guard["nr_back"] >= NR_BACK_MIN:
                 todo[k] = w["cell"]; whys.append("%s restored - 5G served by it again for %d min" % (w["cell"], guard["nr_back"]))
             else:

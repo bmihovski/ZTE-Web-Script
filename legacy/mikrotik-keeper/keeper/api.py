@@ -25,6 +25,8 @@ ROUTES = [   # method, path, summary, [(param, example, description)], capabilit
     ("get", "/anchors", "Lock-test ranking (latest result per cell) and the unlocked baseline, per RAT", [("rat", "lte", "lte | nr (default lte)")], None),
     ("get", "/lock-tests", "Lock test now or last (step, phase, plan, RAT, pinned anchor) + the last 40 results", [("rat", "", "lte | nr (default: all results)")], None),
     ("get", "/antenna-sweeps", "The last 40 rows of keeper antenna sweeps", [], None),
+    ("get", "/tr069", "Read-only: one TR-069 read of a parameter or a subtree (a path ending in '.') with the modem's next session (<= 90 s)",
+     [("path", "Device.REBOOTSCHEDULE.", "Device.<object>... - not the whole tree")], None),
     ("get", "/night-plan", "Preview: the night planner on the stored data now (cells a night would test, day-only cells, ARFCNs off at night, why) - nothing stored", [], None),
     ("get", "/band-scans", "Band scan now (the band being scanned) + the last 60 rows: serving cell, RSRP/RSRQ/SINR, neighbours per band", [], None),
     ("post", "/lte-lock", "Keep an LTE cell locked (guarded: released when lost, restored when back) or remove it", [("cell", "340@100", "PCI@EARFCN or none")], None),
@@ -199,6 +201,11 @@ class H(BaseHTTPRequestHandler):
                                   "night_plan": state().get("night_plan")}
             elif path == "/antenna-sweeps":
                 code, obj = 200, store.rows(DATA, "antenna_sweeps", last=40)
+            elif path == "/tr069":                             # read-only: GetParameterValues of one name / subtree, never a write
+                pth = g("path")
+                if not re.match(r"^Device\.[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*\.?$", pth or ""): raise ValueError("path=Device.<object>[.<name>][.]")
+                v = acs.adhoc_read(pth)
+                code, obj = (200, {"path": pth, "n": len(v), "values": v}) if v is not None else (504, {"error": "no read of %s within 90 s (no session, or the modem refused the path)" % pth})
             elif path == "/night-plan":
                 code, obj = 200, locktest.night_candidates(time.time(), preview=True)
             elif path == "/band-scans":

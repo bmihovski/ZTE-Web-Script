@@ -34,6 +34,15 @@ try:
     st, e = post("/band-scan?bands=8,x", ""); assert st == 400 and "bands=" in e["error"], (st, e)            # the band scan
     s_, t_, b_ = get("/band-scans"); assert s_ == 200 and json.loads(b_) == {"running": None, "scans": []}, b_
     assert "night_plan" in json.loads(get("/lock-tests")[2])                          # the planner's last decision (cells, why, day_only)
+    # GET /tr069?path=: one read-only TR-069 read of a name / subtree with the next session (2026-11-21: find the modem's watchdog)
+    assert get("/tr069?path=bad")[0] == 400 and get("/tr069?path=Device.")[0] == 400        # no free-form / whole-tree reads
+    from keeper import acs; import threading as _th
+    out = {}; t_ = _th.Thread(target=lambda: out.update(v=acs.adhoc_read("Device.REBOOTSCHEDULE.", timeout=5))); t_.start()
+    while not acs.adhoc["names"]: time.sleep(0.01)
+    assert "Device.REBOOTSCHEDULE." in [n for h in acs.hooks["read"] for n in h()]
+    for h in acs.hooks["values"]: h({"Device.REBOOTSCHEDULE.enable": "1", "Device.REBOOTSCHEDULE.reboot_hour": "2", "Device.Other.x": "y"})
+    t_.join(); assert out["v"] == {"Device.REBOOTSCHEDULE.enable": "1", "Device.REBOOTSCHEDULE.reboot_hour": "2"}, out
+    assert not [n for h in acs.hooks["read"] for n in h() if n.startswith("Device.REBOOT")]   # one read only
     from keeper import common; np0 = common.state().get("night_plan"); s_, t_, b_ = get("/night-plan"); x = json.loads(b_)         # preview: what a night would test now
     assert s_ == 200 and set(x) >= {"cells", "day_only", "night_off", "why", "night_bands"} and common.state().get("night_plan") == np0, x
     r = json.loads(get("/lock-tests")[2])["results"][-1]; assert r["score"] == 70.0 and r["score_parts"]["down"] == 9.3 and r["score_gate"] == "", r

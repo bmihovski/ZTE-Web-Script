@@ -244,7 +244,7 @@ x = c.info(D)["explain"]                                                        
 assert x["down"]["ceiling_from"].startswith("two fresh tests (< 3 h) measured less [150.0, 178.0]: 0.92 x 178 = 163.8") and x["down"]["why"] == "at the ceiling 150", x   # both below 169.3
 assert c.st.get("confirm") and c.st["confirm"]["why"].startswith("confirm a low result"), c.st.get("confirm")   # ... but a confirmation is asked
 # the confirmation runs ~CONFIRM_S later, inside the 1-h gap (only the budget, idle, busy and LOCK_PAUSE rules apply), once
-cf = c.st["confirm"]; common.state({"captest_trig": [], "captest_last_t": cf["at"] - 60}); brain.HIST.extend([{"down_bps": "100", "up_bps": "100"}] * c.IDLE_MIN)
+c.st["confirm"]["at"] = D + 600; cf = c.st["confirm"]; common.state({"captest_trig": [], "captest_last_t": cf["at"] - 60}); brain.HIST.extend([{"down_bps": "100", "up_bps": "100"}] * c.IDLE_MIN)
 real_ip2 = c.run_iperf; c.run_iperf = lambda *a, **k: None
 assert not c.maybe_test(R("100/340", "636576/534"), cf["at"] - 30)                         # not yet
 assert c.maybe_test(R("100/340", "636576/534"), cf["at"] + 5) and c.st["trigger"].startswith("confirm"), c.st.get("trigger")

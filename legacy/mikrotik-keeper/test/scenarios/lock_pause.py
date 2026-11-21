@@ -55,4 +55,17 @@ assert guard.lock_guard(dict(row, lte_cell="3350/340"), t0700) is None          
 common.clock["ok"] = True
 assert guard.lock_guard(dict(row, lte_cell="3350/340"), t0700) == "restore"; wait()   # after it, cell back -> restored
 assert calls == [("none", None), ("340@100", None)], calls
+# the 5G lock goes with it (2026-11-21: 534@636576 stayed locked all night - the band scan and the night steps should see the
+# NSA pairs the network gives): released in the SAME write at the pause start, never restored inside it, back with the LTE lock
+calls.clear(); n1 = t0055 + 86400; n7 = t0700 + 86400
+common.state({"lte_lock": {"cell": "340@100", "state": "active"}, "nr_lock": {"cell": "534@636576", "state": "active"}})
+Dev.nr_on = lambda self, row, cell: True                                            # 534 serves all night: no reason to keep it
+assert guard.lock_guard(row, n1) == "release"; wait()
+assert calls == [("none", "none")], calls                                               # one write, one reboot
+w = common.state()["nr_lock"]; assert w["state"] == "released" and "LOCK_PAUSE" in w["reason"] and w["retry_at"] == n1 + 5 * 3600 + 15 * 60, w
+guard.guard["nr_back"] = 99
+assert guard.lock_guard(dict(row, lte_cell="3350/340"), n1 + 3 * 3600) is None          # inside: neither comes back
+assert guard.lock_guard(dict(row, lte_cell="3350/340"), n7) == "restore"; wait()
+assert calls[-1] == ("340@100", "534@636576"), calls                                    # both back in ONE write
+assert common.state()["nr_lock"]["state"] == "active"
 print("OK lock_pause")

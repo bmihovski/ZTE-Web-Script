@@ -69,6 +69,11 @@ INVALID for 5G: the 5G lock on 534 (n78) stayed active (LOCK_PAUSE frees only LT
 per step comes with item 4).
 
 ## Log
+- 2026-11-21 night (`2026-11-20j`): Boyan saw 5G lock 534@636576 "active" all night - LOCK_PAUSE released only LTE (the steps free 5G
+  per step, the band scan + the gaps ran on 534); 227@1550 (02:06) and 202@3350 (02:44) "no boot inform within 420 s"; then 3 min
+  until the next lock write fell back to the web page (TR-069 cannot reach an offline modem). `2026-11-21a` (test first): the pause
+  frees 5G in the same write and brings it back with the LTE lock (one reboot each way); LOCKTEST_BOOT_WAIT_S 420 -> 180 (boot
+  informs come in 74-86 s); a TR-069 write to a modem silent > 150 s waits 20 s, not 180, before the web page.
 - 2026-11-20 ~22:00 `2026-11-20j` Ookla Yettel 69006: 178.45 / 25.47 Mbit/s, loaded +4.6 ms down (peak 100), +5.9 up (peak 77), 0 %
   loss (unshaped earlier: 205-212 with +35-40 ms, peaks 0.8-1.9 s). Boyan: a fair trade.
 - 2026-11-20 21:30-21:52 `tools/iperf_sweep.py` (11 servers x 2 rounds, peak, IPTV off): one server swings 110 -> 178 in 10 min (the

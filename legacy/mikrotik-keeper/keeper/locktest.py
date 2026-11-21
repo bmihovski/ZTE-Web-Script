@@ -34,7 +34,7 @@ from keeper import acs, alert, brain, common, devices, guard, store
 from keeper.common import DATA, E, event, log, record, stamp, state
 
 LT_SETTLE_S, LT_MEASURE_MIN = float(E("LOCKTEST_SETTLE_S", "180")), float(E("LOCKTEST_MEASURE_MIN", "12"))
-LT_BOOT_WAIT_S = float(E("LOCKTEST_BOOT_WAIT_S", "420"))
+LT_BOOT_WAIT_S = float(E("LOCKTEST_BOOT_WAIT_S", "180"))   # the boot inform comes 74-86 s after the lock; none in 180 s = no attach (2026-11-21: 420 wasted 4 min a step)
 LT_ALIGN_TIMEOUT_MIN = float(E("LOCKTEST_ALIGN_TIMEOUT_MIN", "90"))
 LT_READY_TIMEOUT_S = float(E("LOCKTEST_READY_TIMEOUT_S", "180"))     # wait for the CPE web after a reboot (a ZTE needs minutes)
 LT_ONLINE_TIMEOUT_S = float(E("LOCKTEST_ONLINE_TIMEOUT_S", "180"))   # wait for stable probes before measuring
