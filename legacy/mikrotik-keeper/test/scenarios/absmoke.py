@@ -16,9 +16,10 @@ z = devices.current(); calls = []
 z.locks_apply = lambda l, n: (calls.append((l, n)), "tr069")[1]
 z.ready = lambda timeout=0: True
 brain.wait_online = lambda timeout=0: True
-brain.REG["nr"] = {"636576/534": {"anchors": {"1550@434": {"time": ts}}}}
+brain.REG["nr"] = {"636576/534": {"anchors": {"1550@434": {"time": ts}, "340@100": {"time": ts}}}}
 brain.pair_quality = lambda p, a: 1
-guard.ab_alt = lambda cur, row, now: "1550@434"
+absmoke.abplan.high = lambda: ["340@100", "1550@434"]
+absmoke.abplan.low = lambda: [("394@3774", "534@156510"), ("112@6400", "534@156510")]
 seq = [dict(down_mbps=30, call_ok=1, loss_pct=0, lat_p95=20, jitter_ms=3),   # A high: p95 20 beats the no-lock 30
        dict(down_mbps=20, call_ok=1, loss_pct=0, lat_p95=30, jitter_ms=5),
        dict(down_mbps=25, call_ok=1, loss_pct=0, lat_p95=30, jitter_ms=5),   # no lock
@@ -35,7 +36,7 @@ res = absmoke.st["result"]; print(res)
 legs = [x["leg"] for x in res["legs"]]
 assert legs == ["A high", "B high", "no lock", "A low", "B low"], legs
 assert calls == [("340@100", "534@636576"), ("1550@434", "534@636576"), ("none", "none"),
-                 ("394@3774", "534@156510"), ("112@6400", "534@156510"), ("340@100", "534@636576")], calls   # the best found (A high 30 > no-lock 25)
+                 ("394@3774", "534@156510"), ("112@6400", "534@156510"), ("340@100", "534@636576")], calls   # A = the max scored, B = the next; best found the A high
 assert res["verdict"] == "modem good" and res["any_internet"], res
 assert rep and "modem good" in rep[0], rep
 assert res["restored"] == {"lte": "340@100", "nr": "534@636576"}, res

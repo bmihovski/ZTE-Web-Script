@@ -42,6 +42,8 @@ try:
     assert get("/ab")[0] == 200 and post("/dev?on=1", "")[0] == 200 and post("/dev?on=0", "")[0] == 200
     import keeper.api as apimod
     assert any(r[1] == "/ab-smoke" for r in apimod.ROUTES)                                     # the real five-switch run is absmoke.py's scenario
+    assert get("/ab-refresh")[0] == 200 and get("/ab")[0] == 200
+    assert any(r[1] == "/ab-refresh" for r in apimod.ROUTES)                                   # the real chain is abrefresh.py's scenario
     from keeper import acs; import threading as _th
     out = {}; t_ = _th.Thread(target=lambda: out.update(v=acs.adhoc_read("Device.REBOOTSCHEDULE.", timeout=5))); t_.start()
     while not acs.adhoc["names"]: time.sleep(0.01)

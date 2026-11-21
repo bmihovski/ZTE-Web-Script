@@ -9,7 +9,7 @@ it blocks the guard/captest/night until done. The auto A/B (Mon-Fri CAPTEST slot
 """
 import threading, time
 
-from keeper import alert, brain, common, devices, guard, lowband
+from keeper import abplan, alert, brain, common, devices
 from keeper.common import event, log, state, stamp
 
 st = {"running": None, "result": None, "started": None, "legs": [], "why": ""}
@@ -54,42 +54,20 @@ def _leg(name, lte, nr, seconds=25):
     return res
 
 
-def _high_a(row):
-    """The previous good lock (state cell, else the serving) + its 5G (state nr_lock, else the sample's cell)."""
-    l = state().get("lte_lock") or {}; cell = l.get("cell") if l.get("state") in ("active", "pending", "released") else ""
-    cell = _spec(cell or row.get("lte_cell") or "")
-    n = state().get("nr_lock") or {}; nr = n.get("cell") if n.get("state") in ("active", "pending", "released") else ""
-    nr = _spec(nr or (row.get("nr_cell") if row.get("nr_cell") not in ("", "no5G") else ""))
-    return (cell or "none"), (nr or "none")
-
-
-def _high_b(row, now):
-    """The best daytime other-site lock-tested anchor (`guard.ab_alt`) + its best 5G pair from the NR database."""
-    cur = _high_a(row)[0]
-    alt = guard.ab_alt(cur if cur != "none" else (row.get("lte_cell") or ""), row, now)
-    if not alt: return None, None
+def _nr_for(anchor, row):
+    """The best measured 5G pair for this LTE anchor (the NR database), else the current sample's 5G."""
     best = None
     for cell, e in (brain.REG.get("nr") or {}).items():
-        a = (e.get("anchors") or {}).get(alt)
+        a = (e.get("anchors") or {}).get(anchor)
         if a:
-            q = brain.pair_quality(a, alt)
+            q = brain.pair_quality(a, anchor)
             if best is None or q > best[0]: best = (q, cell)
-    return alt, _spec(best[1]) if best else (_spec(row.get("nr_cell")) or "none")
-
-
-def _low_legs():
-    """The two low-band pairs from the last band scans (serving cell + n28), best first."""
-    out = []
-    for r in lowband.latest():
-        s = r.get("serving") or ""; n = r.get("nr_cell") or ""
-        if "/" not in s: continue
-        out.append((_spec(s), _spec(n) or "none"))
-    return out[:2]
+    return _spec(best[1]) if best else (_spec(row.get("nr_cell")) or "none")
 
 
 def _best(legs):
-    """The best found: the leg with the best quality tuple; no-lock when no lock is clearly better (all worse than no-lock) or
-    the no-lock itself is the best. Returns (lte, nr) - 'none'/'none' for the no-lock."""
+    """The best found: the leg with the best quality tuple; no-lock when no lock is better (all worse than no-lock) or the
+    no-lock itself is the best. Returns (lte, nr) - 'none'/'none' for the no-lock."""
     q = {}
     for x in legs:
         if not x.get("ok"): continue
@@ -97,7 +75,7 @@ def _best(legs):
                                            x.get("loss_pct"), x.get("lat_p95"), x.get("jitter_ms"))
     if not q: return "none", "none"
     nl = q.get("no lock"); best = max(q, key=lambda k: q[k])
-    if best == "no lock" or (nl and not brain.clearly_better(q[best], nl)): return "none", "none"
+    if best == "no lock" or (nl and q[best] == nl): return "none", "none"
     x = next(x for x in legs if x["leg"] == best)
     return x["lte"], x["nr"]
 
@@ -125,16 +103,18 @@ def _msg(r):
     return "\n".join(lines)
 
 
-def _run():
+def _run(notify=True):
     dev = devices.current(); row = dict(list(brain.HIST)[-1]) if brain.HIST else {}
     t0 = time.time(); l = n = "none"
     try:
-        a = _high_a(row); _leg("A high", a[0], a[1])
-        b = _high_b(row, time.time())
-        if b[0]: _leg("B high", b[0], b[1])
-        else: st["legs"].append({"leg": "B high", "ok": False, "note": "no other-site daytime B candidate", "time": stamp()})
-        _leg("no lock", "none", "none")
-        for name, (lo, no) in zip(("A low", "B low"), _low_legs()): _leg(name, lo, no)
+        hi = abplan.high(); lo = abplan.low()          # A = the max scored anchor, B = the next; the low pair from the band scans
+        if not hi and not lo:
+            _leg("no lock", "none", "none")             # one cell total / nothing measured: the no-lock is the network's choice
+        else:
+            if hi: _leg("A high", hi[0], _nr_for(hi[0], row))
+            if len(hi) > 1: _leg("B high", hi[1], _nr_for(hi[1], row))
+            _leg("no lock", "none", "none")
+            for name, (lo_cell, no_cell) in zip(("A low", "B low"), lo): _leg(name, lo_cell, no_cell)
     except Exception as e:
         st["why"] = "%s failed: %r" % (st["why"], e); log("ab smoke failed: %r" % e)
     finally:
@@ -149,16 +129,18 @@ def _run():
                "legs": list(st["legs"]), "restored": {"lte": l, "nr": n}}
         res.update(_classify(res["legs"]))
         st["result"] = res; state({"ab_smoke": res})
-        try: alert.report(_msg(res))
-        except Exception as e: log("ab smoke telegram failed: %r" % e)
+        if notify:
+            try: alert.report(_msg(res))
+            except Exception as e: log("ab smoke telegram failed: %r" % e)
         event({"event": "ab smoke", "to": res["verdict"], "why": "%s: %d legs" % (res["trigger"], len(res["legs"]))})
 
 
-def run(trigger="manual"):
-    """Start the full smoke -> (started, why). Busy while it runs (the guard/captest/night wait)."""
+def run(trigger="manual", notify=True):
+    """Start the full smoke -> (started, why). Busy while it runs (the guard/captest/night wait). `notify=False` lets the
+    one-call refresh send a single Telegram with the band scan too."""
     if st["running"]: return False, "busy: %s" % st["running"]
     st.update(running=trigger, result=None, started=stamp(), legs=[], why=trigger)
-    threading.Thread(target=_run, daemon=True).start()
+    threading.Thread(target=_run, args=(notify,), daemon=True).start()
     return True, trigger
 
 

@@ -160,6 +160,10 @@ at `/docs`.
   change + reboot + internet test, then the **best found** config (or the no-lock when nothing clearly beats it). It runs first at the start of the night test and the Saturday day
   test (`AB_SMOKE=1`) and manually (the wife, when critical). Telegram: modem good / provider issue / modem bad; `GET /ab` shows the
   per-leg detail. It is a test, busy (the guard/captest/night wait). Not the automatic A/B.
+- **One-call refresh** (`POST /ab-refresh`, `GET /ab-refresh`, `keeper/abrefresh.py`, 2026-11-21): the full band scan (B1,B3,B7,
+  B8,B20,B28) then the full A/B smoke, then **one** Telegram with both (the smoke's own Telegram is suppressed in the chain); ~25 min;
+  the wife's one request. `GET /ab` embeds the refresh. The band scan refreshes the B1/B8/B20 rows + the NR database; the smoke uses
+  the refreshed low rows and the lock-test A/B scores (A = the max scored, B = the next); the best found restore.
 - **Development mode** (`POST /dev?on=1`, the state `dev`, 2026-11-21): disables the automatic A/B and allows the tests outside their
   windows; the normal service mode is `dev` off. The wife can switch it on and keep working while an issue is fixed later.
 - Band scan bandwidth watch: each band's serving carrier bandwidth (`bw_mhz`, as logged '@N') is compared with its last scan; a change

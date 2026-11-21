@@ -6,7 +6,7 @@ path is missing there. A route with a capability (5th field) is refused with 409
 import json, re, time, urllib.parse
 from http.server import BaseHTTPRequestHandler
 
-from keeper import VERSION, absmoke, acs, alert, bandscan, brain, captest, common, devices, guard, locktest, lowband, selftest, sqm, store
+from keeper import VERSION, abrefresh, absmoke, acs, alert, bandscan, brain, captest, common, devices, guard, locktest, lowband, selftest, sqm, store
 from keeper.common import DATA, event, log, state
 
 UI_NAMES = ("zte_positions", "zte_ant_results", "zte_exp_results", "zte_exp_pending")     # app lists kept in the keeper's database
@@ -65,6 +65,9 @@ ROUTES = [   # method, path, summary, [(param, example, description)], capabilit
     ("post", "/ab-smoke", "Full A/B smoke (with locks): A high (previous good) - B high (another site) - no-lock - A low - B low, each "
      "measured; the original state back; a Telegram with modem good / provider issue / modem bad. The wife runs it when critical",
      [], "lock_test"),
+    ("get", "/ab-refresh", "Read-only: the one-call refresh (band scan -> A/B smoke -> one Telegram) state/result", [], None),
+    ("post", "/ab-refresh", "One call: the full band scan (B1,B3,B7,B8,B20,B28), then the full A/B smoke, then ONE Telegram with both; "
+     "~25 min; the wife can run it", [], "lock_test"),
     ("post", "/dev", "?on=1|0: development mode - the automatic A/B is off and the tests are allowed; the wife can continue working "
      "while the issue is fixed later", [("on", "1", "1 = on, 0 = off")], None),
     ("post", "/night-screen", "Arm (1) or cancel (0) the night screen for the coming night - leave the router + modem on for it "
@@ -245,7 +248,9 @@ class H(BaseHTTPRequestHandler):
             elif path == "/low-band":
                 code, obj = 200, lowband.preview()
             elif path == "/ab":
-                code, obj = 200, dict(absmoke.status(), dev=bool(state().get("dev")))
+                code, obj = 200, dict(absmoke.status(), dev=bool(state().get("dev")), refresh=abrefresh.status())
+            elif path == "/ab-refresh":
+                code, obj = 200, abrefresh.status()
             elif path == "/userdata":
                 if g("name") not in UI_NAMES: raise ValueError("name=" + "|".join(UI_NAMES))
                 last = store.rows(DATA, "ui:" + g("name"), last=1, device="app")     # the app's lists: not per modem
@@ -335,6 +340,9 @@ class H(BaseHTTPRequestHandler):
                 code, res = 202 if ok else 409, {"started": ok, "band" if ok else "why": why}
             elif path == "/ab-smoke":       # full five-switch A/B test, with locks; the wife runs it when critical
                 ok, why = absmoke.run("manual")
+                code, res = 202 if ok else 409, {"started": ok, "why": why}
+            elif path == "/ab-refresh":     # one call: band scan -> smoke -> one Telegram
+                ok, why = abrefresh.run("manual")
                 code, res = 202 if ok else 409, {"started": ok, "why": why}
             elif path == "/dev":            # development mode: the auto A/B off, the tests allowed
                 on = g("on") in ("1", "true", "on", "yes")
