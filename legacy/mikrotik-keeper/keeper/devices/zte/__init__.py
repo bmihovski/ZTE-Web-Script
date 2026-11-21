@@ -8,13 +8,13 @@ start before clearing the locks an interrupted lock test left).
 """
 import re, threading, time
 
-from keeper import acs, brain, captest, common, guard, locktest
+from keeper import acs, brain, captest, common, guard, locktest, morning
 from keeper.common import E, event, log, state
 from keeper.devices.zte import antennas, checkin, locks, ps as ps_mod, settings, watchdog, web
 from keeper.devices.zte.locks import lock_value, locks_apply, nr_value   # noqa: F401 (driver interface)
 
 NAME, MAKER = "ZTE", "ZTE"
-CAN = {"antennas", "sweep", "lock_test", "night", "checkin", "captest"}
+CAN = {"antennas", "sweep", "lock_test", "night", "checkin", "captest", "morning"}
 ready = web.ready                     # driver hook: wait until the CPE web is back (a rebooted ZTE needs minutes)
 LOCKS_REBOOT = True                # a lock is applied only at boot: every lock change (and lock-test step) waits for a BOOT inform
 CLEANUP_WAIT_S = float(E("LOCKTEST_CLEANUP_S", "20"))
@@ -83,8 +83,8 @@ def row(vals):
 
 
 def minute_jobs():
-    """Sample jobs in order: scheduled sweep, lock guard, quality A/B, capacity test, night screen."""
-    return [antennas.maybe_sweep, guard.lock_guard, guard.quality_ab, captest.maybe_test, captest.weekly, locktest.maybe_night, locktest.maybe_day, locktest.remind]
+    """Sample jobs in order: scheduled sweep, lock guard, quality A/B, morning cell check, capacity test, night screen."""
+    return [antennas.maybe_sweep, guard.lock_guard, guard.quality_ab, morning.maybe_morning, captest.maybe_test, captest.weekly, locktest.maybe_night, locktest.maybe_day, locktest.remind]
 
 
 MODEM_FAULT = ("sim_undetected", "sim_destroy", "waitpin", "waitpuk", "waitnck", "undetected")   # modem_main_state = SIM / modem fault

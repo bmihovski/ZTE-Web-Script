@@ -167,6 +167,18 @@ at `/docs`.
   high bands and never the "low" leg). A 5G pair is the cell's best measured anchor (`_nr_for`). It runs first at the start of the
   night test and the Saturday day test (`AB_SMOKE=1`) and manually (the wife, when critical). Telegram: modem good / provider issue /
   modem bad; `GET /ab` shows the per-leg detail. It is a test, busy (the guard/captest/night wait). Not the automatic A/B.
+- **Morning cell check** (`POST /morning?low=1|0`, `GET /morning`, `keeper/morning.py`, `MORNING` 08:00): the daily cell decision.
+  One no-lock leg (full CA), then for B1/B3/B7 a **band-lock discovery** (no reboot): #1 = the band's serving cell, #2 = the best
+  neighbour with a known 5G pair, then the best RSRP; then a **cell lock + probe** (25 s; the cell lock keeps the CA - a band lock
+  collapses it, measured 2026-11-21) for #1 and #2. **5G is a hard gate:** a leg is a candidate only if a sample in its probe window
+  had a real `nr_cell`; only 5G legs are A/B/persisted. A = the best 5G #1, B = the best 5G #2 (a band whose #1 has no 5G contributes
+  its #2 as A, no B); the no-lock is the default on a tie; the best 5G is restored; a band with no 5G is skipped. The probe is
+  download + latency; the restored winner gets the modem's iperf3 upload (1 stream - the MC889 gives no upload with 4). Saturday
+  (`MORNING_LOW_SATURDAY`), or when the high baseline is bad (down < `MORNING_LOW_DOWN` 20 or call-ready < `MORNING_LOW_CALL` 90),
+  B8/B20 are added with their own band-lock discovery (the low cells' PCI changes: they are re-discovered, never cached); the low is
+  a fallback, not a daily candidate (B8 5 MHz / B20 10 MHz cannot match the n78 100 MHz CA: measured 2026-11-21 B8 394+n28 15.3 vs
+  no-lock 28.0; the B20 394 10 MHz did 50.8/28.9 on 2026-11-18). One Telegram; once a day at/after `MORNING`, a missed day as the
+  first thing; busy (the guard/captest/night wait). 8 reboots daily (~25 min), 12 with the low bands (~40 min).
 - **One-call refresh** (`POST /ab-refresh`, `GET /ab-refresh`, `keeper/abrefresh.py`, 2026-11-21): the full band scan (B1,B3,B7,
   B8,B20,B28) then the full A/B smoke, then **one** Telegram with both (the smoke's own Telegram is suppressed in the chain); ~25 min;
   the wife's one request. `GET /ab` embeds the refresh. The band scan refreshes the B1/B8/B20 rows + the NR database; the smoke uses

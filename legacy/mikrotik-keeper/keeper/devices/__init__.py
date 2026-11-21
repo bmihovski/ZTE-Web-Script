@@ -5,7 +5,7 @@ One driver per DEVICE value (`zte`, `mikrotik`), selected once at start by `curr
 | name | what |
 |---|---|
 | `NAME`, `MAKER` | display name; the TR-069 Inform `Manufacturer` it answers to (another CPE pointed here is ignored) |
-| `CAN` | features it supports: `antennas`, `sweep`, `lock_test`, `night`, `checkin`, `scan`, `at` - the API refuses the rest (409) |
+| `CAN` | features it supports: `antennas`, `sweep`, `lock_test`, `night`, `checkin`, `scan`, `at`, `morning` - the API refuses the rest (409) |
 | `READ` | TR-069 parameter paths read every inform |
 | `EXTRA` | sample fields only this device has (`zte_*` / `mikrotik_*` prefix, or a shared name the other can't fill) |
 | `row(vals)` | one read -> one sample dict with the shared fields (`nr_cell`, `lte_cell`, `lte_ca`, ... see `keeper.monitor.SAMPLE_COLS`) |

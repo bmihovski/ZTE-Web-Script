@@ -6,7 +6,7 @@ path is missing there. A route with a capability (5th field) is refused with 409
 import json, re, time, urllib.parse
 from http.server import BaseHTTPRequestHandler
 
-from keeper import VERSION, abrefresh, absmoke, acs, alert, bandscan, brain, captest, common, devices, guard, locktest, lowband, selftest, sqm, store
+from keeper import VERSION, abrefresh, absmoke, acs, alert, bandscan, brain, captest, common, devices, guard, locktest, lowband, morning, selftest, sqm, store
 from keeper.common import DATA, event, log, state
 
 UI_NAMES = ("zte_positions", "zte_ant_results", "zte_exp_results", "zte_exp_pending")     # app lists kept in the keeper's database
@@ -69,6 +69,10 @@ ROUTES = [   # method, path, summary, [(param, example, description)], capabilit
     ("get", "/ab-refresh", "Read-only: the one-call refresh (band scan -> A/B smoke -> one Telegram) state/result", [], None),
     ("post", "/ab-refresh", "One call: the full band scan (B1,B3,B7,B8,B20,B28), then the full A/B smoke, then ONE Telegram with both; "
      "~25 min; the wife can run it", [], "lock_test"),
+    ("get", "/morning", "Read-only: the morning cell check (no-lock + the bands' best two cells, 5G gate, A/B, best 5G) state/result", [], None),
+    ("post", "/morning", "Morning cell check now: no-lock, then B1/B3/B7 (band lock discovery -> the best cell + the best neighbour by "
+     "5G pair, then each cell lock + probe), 5G gate, A/B, best 5G restore, one Telegram; ?low=1 adds B8/B20 (empty = Saturday or a "
+     "bad high baseline)", [("low", "", "1 = add the low bands, 0 = high bands only, empty = auto")], "morning"),
     ("post", "/dev", "?on=1|0: development mode - the automatic A/B is off and the tests are allowed; the wife can continue working "
      "while the issue is fixed later", [("on", "1", "1 = on, 0 = off")], None),
     ("post", "/night-screen", "Arm (1) or cancel (0) the night screen for the coming night - leave the router + modem on for it "
@@ -252,6 +256,8 @@ class H(BaseHTTPRequestHandler):
                 code, obj = 200, dict(absmoke.status(), dev=bool(state().get("dev")), refresh=abrefresh.status())
             elif path == "/ab-refresh":
                 code, obj = 200, abrefresh.status()
+            elif path == "/morning":
+                code, obj = 200, morning.status()
             elif path == "/userdata":
                 if g("name") not in UI_NAMES: raise ValueError("name=" + "|".join(UI_NAMES))
                 last = store.rows(DATA, "ui:" + g("name"), last=1, device="app")     # the app's lists: not per modem
@@ -345,6 +351,10 @@ class H(BaseHTTPRequestHandler):
             elif path == "/ab-refresh":     # one call: band scan -> smoke -> one Telegram
                 ok, why = abrefresh.run("manual")
                 code, res = 202 if ok else 409, {"started": ok, "why": why}
+            elif path == "/morning":        # the morning cell check: no-lock + the bands' best two cells, 5G gate, A/B, best restore
+                low = None if g("low") == "" else g("low") in ("1", "true", "on", "yes")
+                ok, why = morning.run(low=low, trigger="manual")
+                code, res = 202 if ok else 409, {"started": ok, "why": why, "low": low}
             elif path == "/dev":            # development mode: the auto A/B off, the tests allowed
                 on = g("on") in ("1", "true", "on", "yes")
                 state({"dev": on}); log("development mode %s" % ("on" if on else "off"))

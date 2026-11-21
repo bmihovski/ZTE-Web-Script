@@ -13,7 +13,7 @@ the docstrings and this skill in sync.
 
 - `keeper/` — the package (`__main__`, `api`, `acs`, `monitor`, `brain`, `guard`, `locktest`, `store`, `common`,
   `devices/__init__.py`, `devices/mikrotik.py`, `devices/zte/{__init__,web,antennas,locks,checkin,watchdog,settings,ps}.py`;
-  `lowband.py`, `absmoke.py`, `abplan.py`, `abrefresh.py`).
+  `lowband.py`, `absmoke.py`, `abplan.py`, `abrefresh.py`, `morning.py`).
 - `test/scenarios/*.py` — plain assert scripts, each in its own process, run by `test/test_scenarios.py` (pytest). Fake ZTE web +
   CWMP, real ATL dumps in `test/fixtures/`.
 - `tools/deploy.py` — check / backup / deploy / verify / rollback against the router. `./deploy.sh` wraps `deploy`.
@@ -63,6 +63,10 @@ the docstrings and this skill in sync.
   `REFRESH_SCAN_MAX_S` (1800 s; the 6-band worst case is ~1230 s) instead of starting the smoke on the scan's band lock (2026-11-21p).
   Its Telegram (`abrefresh._msg`) names a no-service band (`B28: no service (...)`), never a row of blanks, and prints
   `nr cell missing` when the scan saw no 5G leg (2026-11-21q).
+- **Morning check (`/morning`, `morning.py`, 2026-11-21r):** the 5G gate (a leg with no real `nr_cell` in its probe window is not
+  A/B/persisted), the band-lock discovery (#1 serving, #2 the best neighbour by a known 5G pair then RSRP; the low PCI changes, so
+  re-discover every run), the cell lock keeps the CA (a band lock does not), and the low bands are the fallback (Saturday or a bad
+  baseline), not daily.
 - Patching a function in tests hides its real body; add a real-body test.
 - The ZTE web has ONE session: an open page logs the keeper out; the antenna set retries 3× with a re-login, and the boot apply
   waits for the web (`CPE_READY_*`).
