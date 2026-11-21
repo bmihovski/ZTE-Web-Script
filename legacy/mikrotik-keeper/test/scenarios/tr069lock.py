@@ -72,6 +72,16 @@ ev = [e["event"] for e in store.rows(DATA, "events")]; print(ev)
 assert ev.index("lock format learned") < ev.index("lock format unknown") and ev.count("reboot sent") == 4   # 4 TR-069 reboots
 print("OK test_tr069lock")
 
+# the ZTE watchdog is web-only (the TR-069 tree has no watchdog object, 2026-11-21): read it over the web page, store it, and
+# make a change an event - an enabled watchdog + a lock to a cell the modem cannot attach to is a reboot loop
+from keeper.devices.zte import watchdog as wd
+m.st["watchdog"].update(net_link_detect_enable="1", net_link_detect_url="8.8.8.8", net_link_detect_time_gap="60",
+                        net_link_detect_ping_times="5", net_link_detect_timeout="3", watch_dog_reboot_enable="1")
+v = wd.read(); assert v == {"enabled": True, "host": "8.8.8.8", "pings": 5, "gap_s": 60, "timeout_s": 3, "reboot": True}, v
+assert common.state()["watchdog"]["values"] == v
+m.st["watchdog"]["net_link_detect_enable"] = "0"; v = wd.read(); assert v["enabled"] is False
+ev = [e["event"] for e in store.rows(DATA, "events")]; assert "watchdog enabled" in ev and "watchdog disabled" in ev, ev
+
 from keeper.devices.zte import locks as _locks
 assert _locks.unlock_val({"lock": "{pci},{earfcn},0,0", "unlock": ""}) == "0,0,0,0"      # empty read-back -> write 0,0, not ''
 assert _locks.unlock_val({"lock": "{pci},{earfcn}", "unlock": "0,0,0,0"}) == "0,0,0,0"   # non-empty read-back kept

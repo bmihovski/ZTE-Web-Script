@@ -2,6 +2,7 @@
 import http.client, json, os, re, shutil, subprocess, sys, time
 here = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.abspath(os.path.join(here, "..", ".."))
 DATA = "/tmp/zte-keeper-test-api"; shutil.rmtree(DATA, ignore_errors=True); os.makedirs(DATA)
+os.environ["DATA"] = DATA                                      # the in-process ACSC tests below log too
 sys.path.insert(0, ROOT); from keeper import store
 src = open(os.path.join(ROOT, "keeper", "api.py")).read() + open(os.path.join(ROOT, "keeper", "brain.py")).read()
 handled = set(re.findall(r'path == "(/[\w./-]+)"', src)) | set(re.findall(r'u\[0\] == "(/[\w./-]+)"', src)) | {"/status"}
@@ -36,6 +37,7 @@ try:
     assert "night_plan" in json.loads(get("/lock-tests")[2])                          # the planner's last decision (cells, why, day_only)
     # GET /tr069?path=: one read-only TR-069 read of a name / subtree with the next session (2026-11-21: find the modem's watchdog)
     assert get("/tr069?path=bad")[0] == 400 and get("/tr069?path=Device.")[0] == 400        # no free-form / whole-tree reads
+    assert get("/zte/settings")[0] == 502 and post("/ps-reconnect", "")[0] == 502             # no web at ZTE_HOST=127.0.0.1:9 -> 502
     from keeper import acs; import threading as _th
     out = {}; t_ = _th.Thread(target=lambda: out.update(v=acs.adhoc_read("Device.REBOOTSCHEDULE.", timeout=5))); t_.start()
     while not acs.adhoc["names"]: time.sleep(0.01)
@@ -43,6 +45,38 @@ try:
     for h in acs.hooks["values"]: h({"Device.REBOOTSCHEDULE.enable": "1", "Device.REBOOTSCHEDULE.reboot_hour": "2", "Device.Other.x": "y"})
     t_.join(); assert out["v"] == {"Device.REBOOTSCHEDULE.enable": "1", "Device.REBOOTSCHEDULE.reboot_hour": "2"}, out
     assert not [n for h in acs.hooks["read"] for n in h() if n.startswith("Device.REBOOT")]   # one read only
+    # names=1: GetParameterNames(path, NextLevel=1) - the objects under a path, never the whole tree (top-level discovery 2026-11-21)
+    assert get("/tr069?path=Device.&names=0")[0] == 400 and get("/tr069?path=Device.Info&names=1")[0] == 400
+    out2 = {}; t2 = _th.Thread(target=lambda: out2.update(v=acs.adhoc_names("Device.", timeout=5))); t2.start()
+    while not acs.gp["path"]: time.sleep(0.01)
+    acs.st["step"] = "inform"; body, _ = acs.handle("")
+    assert "<cwmp:GetParameterNames>" in body and "<ParameterPath>Device.</ParameterPath><NextLevel>true</NextLevel>" in body, body
+    acs.handle('<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:cwmp="urn:dslforum-org:cwmp-1-0"><s:Header>'
+               '<cwmp:ID>1</cwmp:ID></s:Header><s:Body><cwmp:GetParameterNamesResponse><ParameterList>'
+               '<ParameterInfoStruct><Name>Device.DeviceInfo.</Name><Writable>0</Writable><IsObject>1</IsObject></ParameterInfoStruct>'
+               '<ParameterInfoStruct><Name>Device.ManagementServer.</Name><Writable>0</Writable><IsObject>1</IsObject></ParameterInfoStruct>'
+               '<ParameterInfoStruct><Name>Device.REBOOTSCHEDULE.</Name><Writable>1</Writable><IsObject>1</IsObject></ParameterInfoStruct>'
+               '</ParameterList></cwmp:GetParameterNamesResponse></s:Body></s:Envelope>')
+    t2.join(); assert out2["v"] == [{"name": "Device.DeviceInfo.", "object": True, "writable": False},
+                                    {"name": "Device.ManagementServer.", "object": True, "writable": False},
+                                    {"name": "Device.REBOOTSCHEDULE.", "object": True, "writable": True}], out2
+    out4 = {}; t4 = _th.Thread(target=lambda: out4.update(v=acs.adhoc_names("Device.", timeout=5, next_level=False))); t4.start()
+    while not acs.gp["path"]: time.sleep(0.01)
+    acs.st["step"] = "inform"; body, _ = acs.handle("")
+    assert "<NextLevel>false</NextLevel>" in body, body                       # names=all: the whole subtree's names, no values
+    acs.handle('<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:cwmp="urn:dslforum-org:cwmp-1-0"><s:Header>'
+               '<cwmp:ID>3</cwmp:ID></s:Header><s:Body><cwmp:GetParameterNamesResponse><ParameterList>'
+               '<ParameterInfoStruct><Name>Device.Watchdog.Enable</Name><Writable>1</Writable><IsObject>0</IsObject></ParameterInfoStruct>'
+               '</ParameterList></cwmp:GetParameterNamesResponse></s:Body></s:Envelope>')
+    t4.join(); assert out4["v"] == [{"name": "Device.Watchdog.Enable", "object": False, "writable": True}], out4
+    # a refused path answers the caller at once (a Fault), not after the 90 s timeout
+    out3 = {}; t3 = _th.Thread(target=lambda: out3.update(v=acs.adhoc_names("Device.NOPE.", timeout=5))); t3.start()
+    while not acs.gp["path"]: time.sleep(0.01)
+    acs.st["step"] = "inform"; acs.handle("")
+    acs.handle('<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:cwmp="urn:dslforum-org:cwmp-1-0"><s:Header>'
+               '<cwmp:ID>2</cwmp:ID></s:Header><s:Body><s:Fault><detail><cwmp:Fault><FaultCode>9005</FaultCode>'
+               '<FaultString>Invalid parameter name</FaultString></cwmp:Fault></detail></s:Fault></s:Body></s:Envelope>')
+    t3.join(); assert out3["v"] is None, out3
     from keeper import common; np0 = common.state().get("night_plan"); s_, t_, b_ = get("/night-plan"); x = json.loads(b_)         # preview: what a night would test now
     assert s_ == 200 and set(x) >= {"cells", "day_only", "night_off", "why", "night_bands"} and common.state().get("night_plan") == np0, x
     r = json.loads(get("/lock-tests")[2])["results"][-1]; assert r["score"] == 70.0 and r["score_parts"]["down"] == 9.3 and r["score_gate"] == "", r

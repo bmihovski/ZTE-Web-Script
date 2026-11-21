@@ -57,9 +57,31 @@ at `/docs`.
   00:50, cell back 08:18, restored 08:24).
 - On the ZTE a lock is applied at boot only: one lock change = one `SetParameterValues` + reboot, and both legs (LTE + 5G) go in
   the same change. The LTE lock value format is learned once (`LockLTECell`), otherwise the web page is the fallback.
+- **The ZTE watchdog is web-only:** TR-069 does not expose it (the whole `Device.` tree, 4,982 names, has no watchdog object;
+  2026-11-21). The web UI's watchdog (ping a host, reboot after N failures) is `net_link_detect_enable/url/time_gap/ping_times/
+  timeout` + `watch_dog_reboot_enable` (set via `WATCH_DOG_SWITCH`). The keeper reads it after every boot in the antenna apply's
+  web session (and `GET /zte/watchdog`), stores it in `state.watchdog`, and logs `watchdog enabled` / `watchdog disabled` on a
+  change. An enabled watchdog + a lock to a cell the modem cannot attach to = a reboot loop (no WAN -> ping fails -> reboot): it
+  explains "endless reboots" that are not the keeper's own, and a lock test run with it on can lose its boot informs.
 - On the ATL a lock is a RouterOS script with `AT+QNWLOCK` (`common/4g` / `common/5g`) and an LTE-interface restart, no CPE
   reboot; the ATL forgets locks on reboot, so the guard sets them again.
 - Lock state lives in `state.json` under `lte_lock` / `nr_lock` (`cell`, `state` pending/active/released, `reason`).
+
+## Web-only settings and fast PS recovery (2026-11-21)
+
+- TR-069 exposes none of the ZTE's connection / PS / thermal / MTU / UPnP / NR-band settings. `GET /zte/settings` reads them over
+  the web (one login; the browser's ZTE page logs out), stores `state.web_settings`, and returns an audit. After every boot the
+  same read rides the antenna apply's web session (with the watchdog read).
+- Audit warnings: PS no-service restart ON, UPnP ON, auto power save ON, roaming ON, MTU != 1500, MSS != 1460, n78 missing from the
+  NR band list, network select != `auto_select`, the watchdog enabled.
+- `POST /ps-reconnect`: `DISCONNECT_NETWORK` -> `ppp_disconnected` -> `CONNECT_NETWORK` -> `ppp_connected`, no CPE reboot. It helps
+  a stuck PS/data session, not a lock to a cell the modem cannot attach to. `brain.offline_decide` tries it first when the modem is
+  registered with signal but has no data connection (`PS_RETRY_MIN` 10, `OUTAGE_PS_MAX_DAY` 3); a failure falls through to the
+  outage reboot logic.
+- Current (2026-11-21): PS no-service restart **ON**, UPnP **ON**, roaming off, MTU 1500 / MSS 1460, network select `auto_select` /
+  `WL_AND_5G`, NR band lock `1,3,7,8,20,28,78` (all bands + n78), thermal empty, watchdog off. The audit flags the first two; the
+  PS no-service restart is a reboot-loop candidate (test it off), UPnP is a LAN exposure. The NR band lock already includes n78; a
+  n78-only lock is a candidate after a controlled test.
 
 ## Lock tests (`POST /lock-test`)
 
@@ -218,9 +240,13 @@ at `/docs`.
 - `ROUTES` in `keeper/api.py` is the single description; `/openapi.json` and `/docs` are generated from it, and the deploy tool
   compares the live document with the tree (`contract_diff`). A handled path missing from `ROUTES` fails `test/scenarios/api.py`.
 - Read: `/status`, `/report?hours`, `/events?n`, `/cells`, `/samples?from&to&cols`, `/export?kind&from&to&device`, `/anchors?rat`,
-  `/lock-tests?rat`, `/antenna-sweeps`, `/db`, `/checks`, `/openapi.json`, `/docs`.
+  `/lock-tests?rat`, `/antenna-sweeps`, `/db`, `/checks`, `/tr069?path` (read-only GetParameterValues of one name/subtree, or
+  `names=1|all` for GetParameterNames one level below / the whole subtree's names - discovers what the firmware exposes without
+  dumping values), `/zte/watchdog` (the web-only watchdog; logs in, so the browser's ZTE page logs out), `/zte/settings` (the
+  web-only settings + audit; logs in too), `/openapi.json`, `/docs`.
 - Writes that reboot the modem: `POST /lte-lock`, `/nr-lock`, `/lock-test`, `/lock-test-stop`, `/lock-test-skip`,
-  `/lock-test-continue`, `/antennas`, `/antenna-sweep`, `/cells/forget`, `/db/prune`. Check `/lock-tests` first (a running test).
+  `/lock-test-continue`. `POST /antennas`, `/antenna-sweep`, `/cells/forget`, `/db/prune` do not reboot; `POST /ps-reconnect`
+  drops the PS data session for seconds (a fast reconnect, not a reboot). Check `/lock-tests` first (a running test).
   `POST /lock-test?cells=` is one cell per entry (`PCI@EARFCN`, `rat=nr`: `PCI@ARFCN`); a typo, a `;` list or an unknown 5G band is
   refused with 400 (never silently dropped).
 - `GET /lock-tests?rat=` returns `running`, `phase`, `plan`, `align`, `rat`, `anchor`, `waiting`, the last 40 results; `rat` and

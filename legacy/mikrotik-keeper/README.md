@@ -28,6 +28,13 @@ The `keeper` package is our own TR-069 ACS (code map: `docs/ARCHITECTURE.md`). T
   everything (use once to take a firmware the log showed: set it, delete `data/state.json`, restart). Seen on 2026-10-26: the operator only reads the inform interval (sets it
   to 3600 - the keeper sets 60 again right after), the location and 18 signal/ID values. No firmware or config push.
 - not available over TR-069: rx0 / rx1 per antenna (so no -140 dBm dropout events) - the userscript still shows them
+- the ZTE **watchdog is web-only** (TR-069's whole `Device.` tree, 4,982 names, has no watchdog object; 2026-11-21): the keeper
+  reads it after every boot (`net_link_detect_*` + `watch_dog_reboot_enable`) and logs `watchdog enabled` / `watchdog disabled`;
+  `GET /zte/watchdog` reads it now (logs in, so the browser's ZTE page logs out). An enabled watchdog + a lock to a cell the modem
+  cannot attach to = a reboot loop - no WAN, the ping fails, it reboots before a proper boot inform
+- the ZTE's **web-only settings** (PS no-service restart, UPnP, power save, roaming, MTU/MSS, thermal, network select, NR band lock)
+  are read after every boot and on `GET /zte/settings` with audit warnings (2026-11-21: PS no-service restart and UPnP are ON);
+  `POST /ps-reconnect` does a fast PS disconnect/connect (no CPE reboot) and is tried before an outage reboot
 - the nightly 02:00 reboot (`Device.REBOOTSCHEDULE`) is left as it is
 - firmware guard: sets `Device.ManagementServer.UpgradesManaged=1` (updates only via this ACS, which never sends any;
   env `LOCK_UPGRADES=0` to skip) and logs a `FOTA state` event whenever the ZTE's own updater leaves `version_idle/fota_idle`.

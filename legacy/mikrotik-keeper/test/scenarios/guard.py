@@ -70,6 +70,16 @@ guard.guard["changed_at"] = 0                                                   
 assert guard.lock_guard(R(nr="636576/534")) is None and common.state()["lte_lock"]["state"] == "active"
 zlocks.seen["raw"] = {"LockLTECell": "", "LockNr5gCell": ""}                                 # active, but the ZTE lost it -> set again
 assert guard.lock_guard(R(nr="636576/534")) == "set"; wait(); assert locks()[-1] == "340@100"
+# 2026-11-21 live loop: the 5G leg idle-released (no5G) and LockNr5gCell reads '' while the lock is still configured. The reconcile
+# must NOT mark it missing and re-apply it (that rebooted the modem every ~5 min); with traffic an empty read-back still reconciles.
+guard.guard["reboots"] = []; guard.guard["changed_at"] = 0
+common.state({"nr_lock": {"cell": "534@636576", "state": "active", "since": T}})
+zlocks.seen["raw"] = {"LockLTECell": "340,100", "LockNr5gCell": ""}; n0 = len(m.st["sets"])
+assert guard.lock_guard(R(nr="no5G", down_bps="1000")) is None
+assert common.state()["nr_lock"]["state"] == "active" and len(m.st["sets"]) == n0          # no set, no reboot
+assert guard.lock_guard(R(nr="no5G", down_bps="900000")) is None
+assert common.state()["nr_lock"]["state"] == "pending"                                     # busy: the empty read-back is a lost lock
+common.state({"nr_lock": None})
 guard.guard["changed_at"] = 0; common.state({"lte_lock": dict(common.state()["lte_lock"], state="pending")}); n0 = len(m.st["sets"])
 zlocks.seen["raw"] = {"LockLTECell": "340,100", "LockNr5gCell": ""}       # after a night screen: pending, but the ZTE has it -> active, no set, no event
 assert guard.lock_guard(R(nr="636576/534")) is None and common.state()["lte_lock"]["state"] == "active" and len(m.st["sets"]) == n0
@@ -83,5 +93,5 @@ ev = [e["event"] for e in store.rows(DATA, "events")]; print(ev)
 assert ev == ["lte lock 434@1550", "lte lock removed", "lock restore pending", "lock restore pending", "lte lock 434@1550",
               "lte lock removed", "lte lock removed", "lte lock 340@100 + 5g lock 534@636576",
               "5g lock removed", "5g lock 534@636576", "5g lock removed", "lte lock removed", "lte lock 340@100 still set", "lte lock 340@100 still set",
-              "lte lock 340@100 missing", "lte lock 340@100", "lte lock removed"], ev
+              "lte lock 340@100 missing", "lte lock 340@100", "nr lock 534@636576 missing", "lte lock removed"], ev
 print("OK test_guard")

@@ -132,6 +132,8 @@ def handle(body):
     dev = devices.current()
     if not body.strip():
         if st["step"] == "inform":
+            if gp["path"]:                                  # a discovery read replaces this session's value read (names only, no values)
+                st["step"] = "names"; return gpn(gp["path"], gp["next"]), False
             st["step"] = "read"
             return gpv(dev.READ + [n for h in hooks["read"] for n in h()]), False
         return None, False
@@ -176,7 +178,12 @@ def handle(body):
             st["step"] = "set"
             return spv(want), False
         return reboot_if_pending()
-    if kind == "GetParameterNamesResponse":                        # the driver's own query (pending_rpc), e.g. the ZTE's TR-143 probe
+    if kind == "GetParameterNamesResponse":                        # the driver's own query (pending_rpc) or GET /tr069?names=1
+        if gp["path"]:
+            ps = find(msg, "ParameterInfoStruct")
+            gp.update(path=None, res=[{"name": text(p, "Name"), "object": text(p, "IsObject") in ("1", "true"),
+                                       "writable": text(p, "Writable") in ("1", "true")} for p in ps])
+            gp["ev"].set()
         dev.on_rpc(kind, msg, st["step"])
         return reboot_if_pending()
     if kind == "SetParameterValuesResponse":
@@ -191,6 +198,8 @@ def handle(body):
         log("CPE fault %s %s (step %s)%s" % (text(msg, "FaultCode"), text(msg, "FaultString"), st["step"],
                                              ": " + "; ".join("%s %s %s" % b for b in bad) if bad else ""))
         dev.on_rpc(kind, msg, st["step"])
+        if gp["path"]:                                            # a refused discovery path: answer the caller now, not in 90 s
+            gp.update(path=None, res=None); gp["ev"].set()
         if st["step"] == "set" and tr["sent"]:                  # our values were refused: no reboot, the caller falls back
             tr["ok"] = False; tr["sent"] = []; brain.ctx["pending"] = None; tr["ev"].set()
         return None, False
@@ -270,7 +279,7 @@ def watchdog():
             brain.note_health()
             dev = devices.current()
             if not guard.offline_release(quiet) and not guard.lte_held() and not common.busy() and hasattr(dev, "offline_health"):
-                brain.offline_decide(quiet, dev.offline_health, dev.offline_reboot)     # no lock: reboot only on the modem's evidence
+                brain.offline_decide(quiet, dev.offline_health, dev.offline_reboot, getattr(dev, "offline_ps", None))     # no lock: reboot only on the modem's evidence, a PS reconnect first
         except Exception as e: log("offline check failed: %r" % e)
         warned = silence(quiet, warned, common.busy())
 
@@ -294,3 +303,15 @@ def _adhoc_values(vals):
 
 
 hooks["read"].append(lambda: list(adhoc["names"])); hooks["values"].append(_adhoc_values)
+
+gp = {"path": None, "next": True, "res": None, "ev": threading.Event()}   # one-off GetParameterNames (discovery, 2026-11-21)
+
+
+def adhoc_names(path, timeout=90, next_level=True):
+    """One read-only GetParameterNames(path, NextLevel=next_level) with the next session -> [{name, object, writable}]; None on
+    timeout or Fault. NextLevel=1 lists one level (cheap); False lists the whole subtree's names (no values).
+    2026-11-21: find what the firmware exposes without dumping values (the watchdog)."""
+    gp.update(path=path, next=bool(next_level), res=None, ev=threading.Event())
+    ok = gp["ev"].wait(timeout)
+    res = gp["res"]; gp["path"] = None
+    return res if ok else None

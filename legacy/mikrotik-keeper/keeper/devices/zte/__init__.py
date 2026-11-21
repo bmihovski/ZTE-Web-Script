@@ -10,7 +10,7 @@ import re, threading, time
 
 from keeper import acs, brain, captest, common, guard, locktest
 from keeper.common import E, event, log, state
-from keeper.devices.zte import antennas, checkin, locks, web
+from keeper.devices.zte import antennas, checkin, locks, ps as ps_mod, settings, watchdog, web
 from keeper.devices.zte.locks import lock_value, locks_apply, nr_value   # noqa: F401 (driver interface)
 
 NAME, MAKER = "ZTE", "ZTE"
@@ -221,6 +221,26 @@ def on_rpc(kind, msg, step):
         log("TR-143 probe (%s): %s" % (TR143, res.get("fault") or "%d names, download test %s" % (res["n"], "yes" if res["supported"] else "no")))
 
 
+def watchdog_read():
+    """Read-only: the ZTE's web-only watchdog setting (TR-069 has none) - GET /zte/watchdog."""
+    return watchdog.read()
+
+
+def settings_read():
+    """Read-only: the ZTE's web-only settings + audit warnings - GET /zte/settings."""
+    return settings.read()
+
+
+def ps_reconnect():
+    """POST /ps-reconnect: fast PS data-session reconnect over the web (no CPE reboot)."""
+    return ps_mod.reconnect()
+
+
+def offline_ps():
+    """brain.offline_decide: try a fast PS reconnect before an outage reboot (the radio stays attached)."""
+    return ps_mod.reconnect()
+
+
 def config():
     """Device part of /status -> config (field names the userscript panel reads)."""
     s = state; eff, src, rec = antennas.effective()
@@ -228,4 +248,5 @@ def config():
             "antennas_env": {"auto": antennas.AUTO, "ant5": antennas.ANT5, "ant6": antennas.ANT6},
             "sweep_days": antennas.SWEEP_DAYS, "sweep_running": antennas.sweep_st["running"], "last_sweep": s().get("last_sweep"),
             "lte_lock_fmt": s().get("lte_lock_fmt"), "zte_locks_raw": locks.seen["raw"], "checkin_days": checkin.CHECKIN_DAYS,
-            "lock_upgrades": LOCK_UPGRADES, "tr143": s().get("tr143")}
+            "lock_upgrades": LOCK_UPGRADES, "tr143": s().get("tr143"), "watchdog": s().get("watchdog"),
+            "web_settings": s().get("web_settings"), "web_warnings": settings.audit()}

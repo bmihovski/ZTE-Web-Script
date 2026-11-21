@@ -8,7 +8,7 @@ Never touches the network mode (Yettel = NSA only), never locks anything on its 
 
 Env: AUTO (off | dryrun | on, default dryrun), MIN_SINR (3), BAD_MIN (15), NO5G_MIN (10), NOSVC_MIN (5), PREFERRED_NR (e.g. 636576/534),
      MAX_REBOOTS_DAY (3), REBOOT_GAP_H (2) - quality reboots; outage reboots (no service / no data / offline) need the modem's own
-     evidence of a fault and use OUTAGE_BACKOFF_MIN (15,30,60,120,240), OUTAGE_MAX_REBOOTS_DAY (6), DATA_DOWN_MIN (10), IDLE_DOWN_BYTES (250000), IDLE_UP_BYTES (62500), BUSY_UP_BYTES (125000) - bytes/s,
+     evidence of a fault and use OUTAGE_BACKOFF_MIN (15,30,60,120,240), OUTAGE_MAX_REBOOTS_DAY (6), DATA_DOWN_MIN (10), PS_RETRY_MIN (10), OUTAGE_PS_MAX_DAY (3), IDLE_DOWN_BYTES (250000), IDLE_UP_BYTES (62500), BUSY_UP_BYTES (125000) - bytes/s,
      LAT_TARGETS (1.1.1.1:443,8.8.8.8:443; off = no probe), CALL_P95_MS (150), CALL_JITTER_MS (30), CALL_LOSS_PCT (3.4 = 1 of 30 probes),
      INTTEST_URL (https://speed.cloudflare.com/__down?bytes=2000000; off = no download), INTTEST_MB (2) - the lock test's load generator,
      ONLINE_STABLE (5) - consecutive successful probes before a lock-test step measures,
@@ -26,9 +26,11 @@ PREFERRED = [c for c in E("PREFERRED_NR", "").split(",") if c]
 MAX_REBOOTS_DAY, REBOOT_GAP = int(E("MAX_REBOOTS_DAY", "3")), float(E("REBOOT_GAP_H", "2")) * 3600
 OUTAGE_BACKOFF = [float(x) * 60 for x in E("OUTAGE_BACKOFF_MIN", "15,30,60,120,240").split(",")]   # gap after the 1st, 2nd, ... outage reboot
 OUTAGE_MAX_DAY = int(E("OUTAGE_MAX_REBOOTS_DAY", "6"))
+PS_RETRY_MIN = float(E("PS_RETRY_MIN", "10"))              # a PS reconnect at most this often (it is much cheaper than a reboot)
+OUTAGE_PS_MAX_DAY = int(E("OUTAGE_PS_MAX_DAY", "3"))       # ... and at most this many a day
 DATA_DOWN_MIN = int(E("DATA_DOWN_MIN", "10"))   # registered with signal but no data connection this long = the modem's fault
 SIM_FAULT = ("none", "blocked", "error")         # TR-069 USIM.Status values that are a SIM fault (Valid / Available are fine)
-outage = {"times": [], "healthy_since": None, "asked": 0.0}   # outage reboots since the link was last healthy for an hour
+outage = {"times": [], "ps": [], "healthy_since": None, "asked": 0.0}   # outage reboots / PS reconnects since the link was last healthy for an hour
 # the ZTE's rate counters (down_bps / up_bps columns) are BYTES per second: the busiest minute read 25,024,504 = 200 Mbit/s, the plan cap.
 # idle: < 2 Mbit/s down and < 0.5 Mbit/s up; busy: >= 1 Mbit/s up (a Teams video call / screen share sends ~1-2.5 Mbit/s)
 IDLE_DOWN, IDLE_UP, BUSY_UP = float(E("IDLE_DOWN_BYTES", "250000")), float(E("IDLE_UP_BYTES", "62500")), float(E("BUSY_UP_BYTES", "125000"))
@@ -423,7 +425,7 @@ def note_health(now=None):
     now = now or time.time(); pts = [x for x in list(lat_buf) if now - x[0] <= 120]
     if pts and sum(x[1] is not None for x in pts) >= 0.8 * len(pts):
         outage["healthy_since"] = outage["healthy_since"] or now
-        if now - outage["healthy_since"] >= 3600: outage["times"] = []
+        if now - outage["healthy_since"] >= 3600: outage["times"] = []; outage["ps"] = []
     else:
         outage["healthy_since"] = None
 
@@ -434,11 +436,13 @@ def _held(now, key, why):
     return "held"
 
 
-def offline_decide(quiet_s, health, reboot, now=None):
+def offline_decide(quiet_s, health, reboot, ps=None, now=None):
     """Watchdog, every minute, no LTE lock held: no inform for DATA_DOWN_MIN and no internet. After a boot without data the ZTE
     never starts TR-069 (its client is bound to the WAN IP - 2026-11-13), so no samples and no decide(): ask the modem itself
     (`health()`: its LAN web page; None = the page does not answer) every 5 min, and reboot (`reboot()`: the web page too) only on
-    its evidence of a fault, with the outage backoff. Returns 'reboot' / 'held' / None."""
+    its evidence of a fault, with the outage backoff. `ps()` (2026-11-21): a fast PS disconnect/connect first when the modem is
+    registered with signal but has no data - no CPE reboot; PS_RETRY_MIN / OUTAGE_PS_MAX_DAY bound it, a failure falls through to
+    the reboot logic. Returns 'reboot' / 'ps' / 'held' / None."""
     now = now or time.time()
     if AUTO == "off" or quiet_s < DATA_DOWN_MIN * 60 or ctx["pending"] or ctx.get("hold") or not no_internet(now): return None
     if now - outage["asked"] < 300: return None
@@ -448,6 +452,18 @@ def offline_decide(quiet_s, health, reboot, now=None):
     dev = device_fault(h)
     if not dev: return _held(now, "offline-provider", "no inform, no internet, no device evidence - the provider's outage? (%s)" % h.get("detail", "no web login"))
     reason = "offline %d min - device: %s (%s)" % (quiet_s // 60, dev, h.get("detail", ""))
+    if ps and dev.startswith("registered with signal but no data"):
+        t = [x for x in outage["ps"] if now - x < 86400]
+        if len(t) < OUTAGE_PS_MAX_DAY and (not t or now - t[-1] >= PS_RETRY_MIN * 60):
+            if AUTO != "on":
+                ACTIONS.append((now, "ps", reason, "dryrun")); common.event({"event": "would ps reconnect (dryrun)", "to": reason}); return "held"
+            outage["ps"] = t + [now]
+            try: res = ps()
+            except Exception as e: res = {"ok": False, "error": repr(e)}
+            if res.get("ok"):
+                ACTIONS.append((now, "ps", reason, "on")); common.log("PS reconnect recovered the link: %s" % reason)
+                common.event({"event": "ps reconnect", "to": reason + " (recovered)"}); return "ps"
+            common.log("PS reconnect failed: %s" % (res.get("error") or res)); common.event({"event": "ps reconnect failed", "why": str(res.get("error") or res)})
     blocked = outage_gate(now)
     if blocked: return _held(now, "offline-" + dev + blocked.split(" (")[0], "%s - %s" % (reason, blocked))
     if AUTO != "on":

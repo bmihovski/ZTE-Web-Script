@@ -94,11 +94,15 @@ def lock_do(changes, why, count=True):
 LOCK_RECONCILE_SETTLE = float(E("LOCK_RECONCILE_SETTLE_S", "120"))   # after a keeper lock change the modem reboots; its lock read-back is stale until ~this long
 
 
-def lock_reconcile(now):
+def lock_reconcile(now, row=None):
     """The keeper's lock state must match what the modem really has (a failed write, a power cut, a lock changed by hand):
-    released / pending but the modem already has it -> active (no reboot); active but the modem has no lock -> pending."""
+    released / pending but the modem already has it -> active (no reboot); active but the modem has no lock -> pending.
+    `row` (the current sample) keeps the NSA idle release from looking like a lost 5G lock: the ZTE drops the 5G leg when the link
+    is idle and its `LockNr5gCell` read-back is empty then, while the lock is still configured (2026-11-21: a reboot every 5 min)."""
     dev = devices.current()
     for key in KEYS.values():
+        if key == "nr_lock" and row and row.get("nr_cell") == "no5G" and brain.idle(row):
+            continue                                  # idle without 5G is normal in NSA: the lock is not lost, do not re-apply (one reboot each time)
         w = state().get(key); lv = dev.lock_value(key) if w else None
         has = holds(lv[1], w["cell"]) if lv else None
         if has is None: continue
@@ -117,7 +121,7 @@ def lock_reconcile(now):
 def lock_guard(row, now=None):
     """Called with every sample: release a lost lock, restore / set one when idle. Returns 'release' / 'restore' / 'set' / None."""
     now = now or time.time()
-    if not common.busy(): lock_reconcile(now)
+    if not common.busy(): lock_reconcile(now, row)
     want = {k: state().get(key) for k, key in KEYS.items()}
     if not any(want.values()) or common.busy(): return None
     idle = brain.idle(row)

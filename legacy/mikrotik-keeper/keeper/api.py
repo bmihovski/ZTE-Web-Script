@@ -25,8 +25,15 @@ ROUTES = [   # method, path, summary, [(param, example, description)], capabilit
     ("get", "/anchors", "Lock-test ranking (latest result per cell) and the unlocked baseline, per RAT", [("rat", "lte", "lte | nr (default lte)")], None),
     ("get", "/lock-tests", "Lock test now or last (step, phase, plan, RAT, pinned anchor) + the last 40 results", [("rat", "", "lte | nr (default: all results)")], None),
     ("get", "/antenna-sweeps", "The last 40 rows of keeper antenna sweeps", [], None),
-    ("get", "/tr069", "Read-only: one TR-069 read of a parameter or a subtree (a path ending in '.') with the modem's next session (<= 90 s)",
-     [("path", "Device.REBOOTSCHEDULE.", "Device.<object>... - not the whole tree")], None),
+    ("get", "/tr069", "Read-only: one TR-069 read of a parameter or a subtree (a path ending in '.') with the modem's next session (<= 90 s); "
+     "names=1 lists the immediate children of a path, names=all the whole subtree's names (GetParameterNames - discovery, no values)",
+     [("path", "Device.REBOOTSCHEDULE.", "Device.[<object>.]... (with names=1/all: Device. also allowed)"), ("names", "0", "1 = one level, all = the whole subtree")], None),
+    ("get", "/zte/watchdog", "Read-only: the ZTE's web-only watchdog (ping host, failed pings, gap, timeout, reboot on failure) - TR-069 does "
+     "not expose it; logs in, so the browser's ZTE page logs out", [], "antennas"),
+    ("get", "/zte/settings", "Read-only: the ZTE's web-only settings (connection mode, roaming, PS no-service restart, power save, MTU/MSS, "
+     "thermal, UPnP, NR band lock, network select) + audit warnings; logs in, so the browser's ZTE page logs out", [], "antennas"),
+    ("post", "/ps-reconnect", "Fast PS data-session reconnect over the ZTE web page (disconnect + connect; no CPE reboot) - a less "
+     "disruptive recovery than a reboot", [], "antennas"),
     ("get", "/night-plan", "Preview: the night planner on the stored data now (cells a night would test, day-only cells, ARFCNs off at night, why) - nothing stored", [], None),
     ("get", "/band-scans", "Band scan now (the band being scanned) + the last 60 rows: serving cell, RSRP/RSRQ/SINR, neighbours per band", [], None),
     ("post", "/lte-lock", "Keep an LTE cell locked (guarded: released when lost, restored when back) or remove it", [("cell", "340@100", "PCI@EARFCN or none")], None),
@@ -201,11 +208,22 @@ class H(BaseHTTPRequestHandler):
                                   "night_plan": state().get("night_plan")}
             elif path == "/antenna-sweeps":
                 code, obj = 200, store.rows(DATA, "antenna_sweeps", last=40)
-            elif path == "/tr069":                             # read-only: GetParameterValues of one name / subtree, never a write
+            elif path == "/tr069":                             # read-only: GetParameterValues of one name / subtree, or GetParameterNames of one level
                 pth = g("path")
-                if not re.match(r"^Device\.[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*\.?$", pth or ""): raise ValueError("path=Device.<object>[.<name>][.]")
-                v = acs.adhoc_read(pth)
-                code, obj = (200, {"path": pth, "n": len(v), "values": v}) if v is not None else (504, {"error": "no read of %s within 90 s (no session, or the modem refused the path)" % pth})
+                if g("names") in ("1", "all"):
+                    if not re.match(r"^Device\.([A-Za-z0-9_-]+\.)*$", pth or ""): raise ValueError("names=1|all: path=Device.[<object>.]")
+                    ns = acs.adhoc_names(pth, next_level=g("names") == "1")
+                    code, obj = (200, {"path": pth, "n": len(ns), "names": ns}) if ns is not None else (504, {"error": "no names for %s within 90 s (no session, or the modem refused the path)" % pth})
+                else:
+                    if not re.match(r"^Device\.[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*\.?$", pth or ""): raise ValueError("path=Device.<object>[.<name>][.]")
+                    v = acs.adhoc_read(pth)
+                    code, obj = (200, {"path": pth, "n": len(v), "values": v}) if v is not None else (504, {"error": "no read of %s within 90 s (no session, or the modem refused the path)" % pth})
+            elif path == "/zte/watchdog":                      # the web-only watchdog: TR-069 has no such object (2026-11-21)
+                res = dev.watchdog_read()
+                code, obj = (200, res) if "error" not in res else (502, res)
+            elif path == "/zte/settings":                      # the web-only settings + audit (2026-11-21)
+                res = dev.settings_read()
+                code, obj = (200, res) if "error" not in res else (502, res)
             elif path == "/night-plan":
                 code, obj = 200, locktest.night_candidates(time.time(), preview=True)
             elif path == "/band-scans":
@@ -289,6 +307,8 @@ class H(BaseHTTPRequestHandler):
                 if not ("none" in q or (want["auto"] in ("0", "1") and want["ant5"] in ("1", "4") and want["ant6"] in ("1", "4"))):
                     raise ValueError("auto=0|1, ant5=1|4, ant6=1|4 (1 omni, 4 dir) or none")
                 res = {"antennas": dev.antennas.keep(None if "none" in q else want)}
+            elif path == "/ps-reconnect":     # fast PS data-session reconnect over the web (no CPE reboot); 2026-11-21
+                res = dev.ps_reconnect(); code = 200 if res.get("ok") else 502
             elif path == "/band-scan":       # ?bands=8,1,3 - no reboot; refused (409) while an LTE cell lock is held / a job runs
                 ok, why = bandscan.start(g("bands").split(","))
                 code, res = 202 if ok else 409, {"started": ok, "bands" if ok else "why": why}

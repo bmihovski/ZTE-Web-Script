@@ -20,6 +20,8 @@ import threading, time
 
 from keeper import brain, common, locktest
 from keeper.common import E, event, log, record, stamp, state
+from keeper.devices.zte import settings as ws
+from keeper.devices.zte import watchdog as wd
 from keeper.devices.zte.web import Web, web_lock, ready
 
 AUTO, ANT5, ANT6 = E("ANT_AUTO", "0"), E("ANT5", "1"), E("ANT6", "4")
@@ -80,6 +82,10 @@ def apply():
     err = w.login()
     if err: return err
     try:
+        try: wd.read_with(w)                         # the web-only watchdog (TR-069 has none): stored + logged, never fails the apply
+        except Exception as e: log("watchdog read failed: %r" % e)
+        try: ws.read_with(w)                         # the web-only settings (audit): same session, cheap
+        except Exception as e: log("web settings read failed: %r" % e)
         bad = w.set_ant(a["auto"], a["ant5"], a["ant6"])
     finally:
         w.logout()

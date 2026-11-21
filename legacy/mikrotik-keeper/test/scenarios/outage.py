@@ -81,6 +81,16 @@ brain.outage.update(times=[], asked=0); brain.ctx["last_hint"].clear()
 assert brain.offline_decide(11 * 60, lambda: None, reboot) == "held" and "web page does not answer" in last_ev()["to"], last_ev()
 m.st["ppp_up_at"] = 0; brain.outage.update(times=[], asked=0)
 assert brain.offline_decide(11 * 60, z.offline_health, reboot) == "held" and calls == [1, 1]                  # all healthy on the modem: provider/router side
+# PS reconnect first (2026-11-21): registered+signal, no data -> a web disconnect/connect, no CPE reboot; a failure falls through
+offline(); m.script.clear(); m.st["ppp_up_at"] = time.time() + 9999
+brain.outage.update(times=[], ps=[], asked=0); brain.ctx.update(pending=None); brain.ctx["last_hint"].clear()
+calls.clear(); ps_calls = []
+def fake_ps(): ps_calls.append(1); return {"ok": True, "down": True, "up": True, "seconds": 3}
+assert brain.offline_decide(11 * 60, z.offline_health, reboot, ps=fake_ps) == "ps" and ps_calls == [1] and not calls
+assert last_ev()["event"] == "ps reconnect" and "recovered" in last_ev()["to"], last_ev()
+offline(); brain.outage.update(times=[], ps=[], asked=0); brain.ctx["last_hint"].clear(); calls.clear()
+assert brain.offline_decide(11 * 60, z.offline_health, reboot, ps=lambda: {"ok": False, "error": "x"}) == "reboot" and calls == [1]
+m.st["ppp_up_at"] = 0
 brain.lat_buf.clear(); brain.outage["asked"] = 0
 for i in range(60): brain.lat_buf.append((time.time() - 120 + 2 * i, 20.0, "1.1.1.1"))
 assert brain.offline_decide(11 * 60, z.offline_health, reboot) is None                                        # internet works: not offline

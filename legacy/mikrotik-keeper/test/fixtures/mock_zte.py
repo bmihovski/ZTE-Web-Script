@@ -3,13 +3,18 @@ import hashlib, http.server, json, threading, time, urllib.parse, sys
 S = lambda x: hashlib.sha256(x.encode()).hexdigest().upper()
 PW = "secret"
 st = {"boot": time.time() - 120, "sessions": set(), "sets": [], "LD": "LD1234", "RD": "RD5678", "logins": 0, "bad_ad": 0, "no_referer": 0, "ppp_up_at": 0,
-      "refuse": set()}   # goformIds the fake ZTE refuses (the browser page took the session, like the real one)
+      "refuse": set(),   # goformIds the fake ZTE refuses (the browser page took the session, like the real one)
+      "watchdog": {"net_link_detect_enable": "0", "net_link_detect_url": "", "net_link_detect_time_gap": "0",
+                   "net_link_detect_ping_times": "0", "net_link_detect_timeout": "0", "watch_dog_reboot_enable": "0"},
+      "web_settings": {}}   # web-only settings (2026-11-21), filled by a scenario
 script = []   # (from_s, fields) timeline relative to start
 T0 = time.time()
 def fields():
     el = time.time() - T0; f = {"network_type": "ENDC", "nr5g_pci": "216", "nr5g_action_channel": "636576", "Z5g_SINR": "9.5", "Z5g_rsrp": "-79",
         "5g_rx0_rsrp": "-83", "5g_rx1_rsrp": "-88", "lte_pci": "154", "wan_active_channel": "3350", "lte_snr": "1.4", "nr5g_cell_lock": "", "Z5g_rssi": "-74.0", "lte_rssi": "-55",
         "modem_main_state": "modem_init_complete", "network_provider": "Yettel BG", "lte_rsrp": "-90"}
+    f.update(st["watchdog"])
+    f.update(st["web_settings"])
     for t, upd in script:
         if el >= t: f.update(upd)
     return f
@@ -45,6 +50,12 @@ class H(http.server.BaseHTTPRequestHandler):
             return self.reply({"result": "3"})
         if self.sid() not in st["sessions"]: return self.reply({"result": "failure"})
         if d["goformId"] in st["refuse"]: return self.reply({"result": "failure"})   # refused: the mode did not change (not recorded as set)
+        if d["goformId"] == "DISCONNECT_NETWORK":
+            st["ppp_up_at"] = time.time() + 3600; st["sets"].append((round(time.time() - T0, 1), d["goformId"], "", ""))
+            return self.reply({"result": "success"})
+        if d["goformId"] == "CONNECT_NETWORK":
+            st["ppp_up_at"] = 0; st["sets"].append((round(time.time() - T0, 1), d["goformId"], "", ""))
+            return self.reply({"result": "success"})
         st["sets"].append((round(time.time() - T0, 1), d["goformId"], d.get("antenna_name", ""), d.get("state", d.get("ant_switch_enable", "%s@%s" % (d.get("lte_pci_lock"), d.get("lte_earfcn_lock")) if "lte_pci_lock" in d else d.get("nr5g_cell_lock", "")))))
         self.reply({"result": "success"})
 def browser_login_at(sec):   # someone logs in on the router web page -> the keeper's session ends

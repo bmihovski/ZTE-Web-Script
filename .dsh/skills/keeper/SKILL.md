@@ -12,7 +12,7 @@ the docstrings and this skill in sync.
 ## Layout
 
 - `keeper/` — the package (`__main__`, `api`, `acs`, `monitor`, `brain`, `guard`, `locktest`, `store`, `common`,
-  `devices/__init__.py`, `devices/mikrotik.py`, `devices/zte/{__init__,web,antennas,locks,checkin}.py`).
+  `devices/__init__.py`, `devices/mikrotik.py`, `devices/zte/{__init__,web,antennas,locks,checkin,watchdog,settings,ps}.py`).
 - `test/scenarios/*.py` — plain assert scripts, each in its own process, run by `test/test_scenarios.py` (pytest). Fake ZTE web +
   CWMP, real ATL dumps in `test/fixtures/`.
 - `tools/deploy.py` — check / backup / deploy / verify / rollback against the router. `./deploy.sh` wraps `deploy`.
@@ -60,6 +60,14 @@ the docstrings and this skill in sync.
 - A reboot sends several informs; one apply per boot (generation checked after the wait, stale workers stand down).
 - No BOOT inform after a lock = the step was never locked (the ZTE applies a lock only at boot): it is recorded `not measured: no
   boot inform within N s` and skipped, not measured for 12 min on a dead link.
+- **The ZTE watchdog is web-only:** no TR-069 object (the whole `Device.` tree, 4,982 names, has none; 2026-11-21). An enabled
+  watchdog (ping host, reboot after N failures) + a lock to a cell the modem cannot attach to = a reboot loop that looks like
+  "no boot inform". `GET /zte/watchdog` reads it (web login; also read after every boot and stored in `state.watchdog`); an
+  `watchdog enabled` / `watchdog disabled` event marks a change.
+- **The web-only PS no-service restart is ON** (`ps_no_service_restart_flag=1`, 2026-11-21): it can restart the modem when service
+  is lost - a reboot-loop candidate independent of the watchdog. `GET /zte/settings` audits it (with UPnP, power save, MTU/MSS,
+  roaming, the NR band list); `POST /ps-reconnect` is the keeper's own fast disconnect/connect (no reboot) and is tried before an
+  outage reboot (`PS_RETRY_MIN` 10, `OUTAGE_PS_MAX_DAY` 3).
 - An NSA 5G cell is reachable only under some LTE anchors (747 needs 1550/434, not 340@100): check `/cells` (`anchors`,
   `best_anchor`) before calling a cell unreachable; `POST /cells/refill?days=7` rebuilds the mapping from the samples.
 - A lock test removes its lock at the end; the per-cell mode therefore needs `nr_lock` active (AUTO=on applied it, or you did).
@@ -79,6 +87,8 @@ the docstrings and this skill in sync.
 
 ```
 curl -s http://keeper.lan:7557/status | python3 -m json.tool
+curl -s http://keeper.lan:7557/zte/settings | python3 -m json.tool
+curl -s -X POST http://keeper.lan:7557/ps-reconnect
 curl -s 'http://keeper.lan:7557/lock-tests?rat=nr' | python3 -m json.tool
 python3 tools/deploy.py status|verify|logs -n 20
 python3 tools/deploy.py check|backup|deploy|validate|rollback backups/<time>
