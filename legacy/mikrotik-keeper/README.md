@@ -32,6 +32,9 @@ The `keeper` package is our own TR-069 ACS (code map: `docs/ARCHITECTURE.md`). T
   reads it after every boot (`net_link_detect_*` + `watch_dog_reboot_enable`) and logs `watchdog enabled` / `watchdog disabled`;
   `GET /zte/watchdog` reads it now (logs in, so the browser's ZTE page logs out). An enabled watchdog + a lock to a cell the modem
   cannot attach to = a reboot loop - no WAN, the ping fails, it reboots before a proper boot inform
+- `POST /band-scan` visits LTE bands over TR-069 (no reboot), wakes the network's own 5G pair per band with a short load test and
+  records the pair + the band's internet quality; it refuses while an LTE **or NR** cell lock is held, and feeds the night / A-B
+  candidates (including the low bands B20/B28 for bad weather)
 - the ZTE's **web-only settings** (PS no-service restart, UPnP, power save, roaming, MTU/MSS, thermal, network select, NR band lock)
   are read after every boot and on `GET /zte/settings` with audit warnings (2026-11-21: PS no-service restart and UPnP are ON);
   `POST /ps-reconnect` does a fast PS disconnect/connect (no CPE reboot) and is tried before an outage reboot

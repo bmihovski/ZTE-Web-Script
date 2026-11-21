@@ -43,7 +43,7 @@ are powered off at night except an armed test night (`/night-screen?arm=1`, Frid
    the ZTE web page, not read: it would log the helper out). Per cell: median RSRP, presence % (minutes seen / minutes sampled).
    Re-queue a tested cell when its median RSRP rises >= 6 dB over its value at the last test, or after 30 days; drop it after 3 days
    unseen (PCI removed).
-2. **Night window = LOCK_PAUSE (00:50-08:00)**: the number of cells = what fits (baseline + per cell ~18 min incl. boot, settle,
+2. **Night window = LOCK_PAUSE (current 23:30-08:00; the env's window)**: the number of cells = what fits (baseline + per cell ~18 min incl. boot, settle,
    measure, throughput; the 08:00 restore keeps a margin).
 3. **Only ARFCNs present at night**, judged from night samples (2026-11-18: 100/B1 absent from 01:00; 1550, 3350, 6400 present).
    A cell needs high night presence (2026-11-18: 493/202/236@1550 were picked from daytime RSRP, present 1-12 % at night - each lock
@@ -69,6 +69,9 @@ INVALID for 5G: the 5G lock on 534 (n78) stayed active (LOCK_PAUSE frees only LT
 per step comes with item 4).
 
 ## Log
+- 2026-11-21 (`2026-11-21h`): a band scan records the network's own 5G pair + call-ready/loss/p95/jitter per band (a short load test
+  raises the NSA 5G leg), feeds the (5G cell, anchor) NR database, and the night plan's band-scan `why` shows the call-ready. The scan
+  now refuses an active/pending NR lock: a pinned cell hides the network's pair and a band change can lose it -> a reboot.
 - 2026-11-21 night (`2026-11-20j`): Boyan saw 5G lock 534@636576 "active" all night - LOCK_PAUSE released only LTE (the steps free 5G
   per step, the band scan + the gaps ran on 534); 227@1550 (02:06) and 202@3350 (02:44) "no boot inform within 420 s"; then 3 min
   until the next lock write fell back to the web page (TR-069 cannot reach an offline modem). `2026-11-21a` (test first): the pause

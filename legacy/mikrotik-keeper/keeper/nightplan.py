@@ -60,9 +60,11 @@ def plan(samples, tests, scans, now, win, lock=None, dead=()):
         for k, v in cs.items(): seen_n[k] += 1; v is not None and rsrp_n[k].append(v); last[k] = max(last.get(k, 0), _ts(r))
     for r in day:
         for k, v in _cells(r).items(): seen_d[k] += 1; v is not None and rsrp_d[k].append(v); last[k] = max(last.get(k, 0), _ts(r))
-    scan_n = {}
+    scan_n, scan_q = {}, {}
     for s in scans:                                   # a band scan at night = the cell is there at night (bands never in the CA)
         if not _in(s["time"][11:16], win): continue
+        q = _f(s.get("call_ok"))                       # the band's internet call-ready % (2026-11-21: quality, not just radio)
+        if s.get("serving") and q is not None: scan_q[s["serving"]] = q
         for t in ("%s:%s" % (s.get("serving"), s.get("rsrp")) + " " + (s.get("neighbours") or "")).split():
             k, _, v = t.partition(":"); v = _f(v)
             if "/" in k and v is not None and v >= SCAN_MIN_DBM: scan_n[k] = max(scan_n.get(k, -999), v); last[k] = max(last.get(k, 0), _ts(s))
@@ -89,7 +91,8 @@ def plan(samples, tests, scans, now, win, lock=None, dead=()):
             t = full.get(sp)
             if t and not (r_n is not None and _f(t.get("anchor_rsrp_p50")) is not None and r_n >= _f(t["anchor_rsrp_p50"]) + RETEST_DB): continue
             cand.append((r_n if r_n is not None else -999, sp))
-            why[sp] = "night %g dBm, %s" % (r_n, "%.0f %% of night samples" % pct if pct >= CELL_PCT else "band scan (ARFCN %s)" % k.split("/")[0])
+            why[sp] = "night %g dBm, %s" % (r_n, "%.0f %% of night samples" % pct if pct >= CELL_PCT else
+                                              "band scan (ARFCN %s%s)" % (k.split("/")[0], (", call-ready %.0f%%" % scan_q[k]) if k in scan_q else ""))
         elif (k.split("/")[0] not in on and sp not in full and day and 100.0 * seen_d[k] / len(day) >= CELL_PCT and rsrp_d[k]
               and statistics.median(rsrp_d[k]) >= best_d[k.split("/")[0]] - WEAK_DB):    # day-only: its ARFCN is off at night (2026-11-19: 206 cells)
             day_only.append((statistics.median(rsrp_d[k]), sp))

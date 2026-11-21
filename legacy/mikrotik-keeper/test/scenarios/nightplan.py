@@ -39,6 +39,10 @@ noise = scans + [{"time": "2026-11-18 01:12:00", "band": "1", "serving": "100/39
 pn = npl.plan(S, tests, noise, NOW, WIN, lock="340@100")
 assert "100" in pn["night_off"] and "393@100" not in pn["cells"] and pn["day_only"] == ["264@100"], pn
 assert p["why"]["394@6400"].startswith("night -81 dBm, 95 %") and p["why"]["112@3774"].startswith("night -79 dBm, band scan"), p["why"]
+# 2026-11-21: a band scan's internet quality rides the why; the low bands (B20/B28) are the bad-weather fallbacks, not a radio-only pick
+low = scans + [{"time": "2026-11-18 02:10:00", "band": "20", "serving": "6400/77", "rsrp": "-84", "call_ok": "67", "neighbours": ""}]
+pl = npl.plan(S, tests, low, NOW, WIN, lock="340@100")
+assert "77@6400" in pl["cells"] and "call-ready 67%" in pl["why"]["77@6400"], pl
 p2 = npl.plan(S, tests[1:2] + [dict(tests[1], lock="434@1550", anchor_rsrp_p50="-95", time="2026-11-18 03:00:00")], [], NOW, WIN, lock=None, dead={"394@6400"})
 assert "434@1550" in p2["cells"] and "394@6400" not in p2["cells"], p2["cells"]          # +8 dB since its test -> retest; dead -> out
 old = [dict(r, time=r["time"].replace("2026-11-1", "2026-11-0")) for r in S if r["time"] < "2026-11-17"]           # only seen 10+ days ago

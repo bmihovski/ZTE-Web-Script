@@ -210,4 +210,12 @@ assert locktest.maybe_night(idle, T5 + 60) and calls == [["8"]]; time.sleep(0.2)
 bandscan.start, locktest.lock_test = bs0, lt1; locktest.BANDSCAN_NIGHT = []; locktest.NIGHT_ALWAYS = False
 assert locktest.remind in zdev.minute_jobs()
 
+# 2026-11-21: the low bands are the bad-weather fallbacks; NIGHT_BANDS must be able to keep a B20/B8 band-scan cell (the old
+# 1,3,7 env dropped them). The plan's test window is LOCK_PAUSE's end, not NIGHT_SCREEN's start window.
+store.add(DATA, "band_scans", {"time": ts_(T230 - 300), "band": "20", "serving": "6400/112", "rsrp": "-74", "neighbours": ""})
+locktest.NIGHT_BANDS = ["20"]; assert "112@6400" in locktest.night_candidates(T230), locktest.night_candidates(T230)
+locktest.NIGHT_BANDS = ["1", "3", "7"]; assert "112@6400" not in locktest.night_candidates(T230)
+locktest.NIGHT_BANDS = []
+guard.LOCK_PAUSE = "23:30-08:00"; assert locktest.night_window() == ("23:30", "08:00")
+guard.LOCK_PAUSE = ""; assert locktest.night_window() == ("02:00", "05:00")   # the default NIGHT (the test env)
 print("OK test_night")

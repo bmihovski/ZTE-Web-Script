@@ -23,8 +23,8 @@ at `/docs`.
   scans the keeper for the patterns that caused the 2026-11-03 bugs: a live `brain.HIST` deque iteration, a live `REG[...]` dict
   iteration, a wall-clock wait (`time.time()` in a `while ... - t0`), a loss average with `or 0` for missing probes, and a sweep
   `except` without a logout. Add a pattern there (with a test) whenever a new class of bug is found.
-- **No network-mode changes.** Yettel is NSA only; never `Only_5G`, never `net_select`. Locks are a human decision; the keeper
-  recommends them, then guards the lock you chose.
+- **No network-mode changes.** Yettel is NSA only; never `Only_5G`, never `net_select`. A lock is either your choice or a measured
+  clear winner auto-applied with `AUTO=on` (never a cell picked by signal alone); the keeper guards the lock you chose.
 - **A 5G cell is only reachable under some LTE anchors.** NSA serves the 5G leg only when the LTE anchor it is combined with
   carries it (measured: `636576/747` appears under `1550/434`, not under `100/340`; the 2026-10-27 434@1550 test served 747 and 127,
   the 340@100 tests saw no 747). So the keeper learns the **(5G cell, LTE anchor) pairs** from the samples: per 5G cell, every
@@ -51,12 +51,17 @@ at `/docs`.
 
 - `POST /lte-lock?cell=PCI@EARFCN|none` (guarded LTE anchor) and `POST /nr-lock?cell=PCI@ARFCN|none` (guarded 5G cell). The guard
   releases a lock when its cell is lost, restores it when it is back (idle only, `LOCK_RETRY_H`), and caps lock reboots
-  (`LOCK_MAX_REBOOTS_DAY`). `LOCK_PAUSE` releases the LTE lock - and your 5G lock in the same write (2026-11-21: the night sees the network's own NSA pairs) - before a nightly window and restores both together after (the operator switches
-  the B1 cell off at night). A released lock whose cell is not back yet logs `lock restore pending` (event + log, at most once an
-  hour), so the events explain a long wait instead of staying silent between the release and the restore (2026-11-03: released
+  (`LOCK_MAX_REBOOTS_DAY`). `LOCK_PAUSE` (current `23:30-08:00`; the operator switches B1/ARFCN 100 off at 23:30) releases the LTE
+  lock - and your 5G lock in the same write (2026-11-21: the night sees the network's own NSA pairs) - before the window and
+  restores both together after it. A released lock whose cell is not back yet logs `lock restore pending` (event + log, at most once
+  an hour), so the events explain a long wait instead of staying silent between the release and the restore (2026-11-03: released
   00:50, cell back 08:18, restored 08:24).
 - On the ZTE a lock is applied at boot only: one lock change = one `SetParameterValues` + reboot, and both legs (LTE + 5G) go in
   the same change. The LTE lock value format is learned once (`LockLTECell`), otherwise the web page is the fallback.
+- **The NSA idle release is not a lost lock.** When the link is idle the ZTE releases the 5G leg (`5G 534 -> no5G`) and its
+  `LockNr5gCell` read-back is empty while the lock is still configured; `lock_reconcile` skips an idle `no5G` read-back. With traffic
+  an empty read-back is a real lost lock and the guard sets it again (2026-11-21: the old code re-applied it and rebooted the modem
+  every ~5 min; the boot inform carried `M Reboot`).
 - **The ZTE watchdog is web-only:** TR-069 does not expose it (the whole `Device.` tree, 4,982 names, has no watchdog object;
   2026-11-21). The web UI's watchdog (ping a host, reboot after N failures) is `net_link_detect_enable/url/time_gap/ping_times/
   timeout` + `watch_dog_reboot_enable` (set via `WATCH_DOG_SWITCH`). The keeper reads it after every boot in the antenna apply's
@@ -82,6 +87,9 @@ at `/docs`.
   `WL_AND_5G`, NR band lock `1,3,7,8,20,28,78` (all bands + n78), thermal empty, watchdog off. The audit flags the first two; the
   PS no-service restart is a reboot-loop candidate (test it off), UPnP is a LAN exposure. The NR band lock already includes n78; a
   n78-only lock is a candidate after a controlled test.
+- The PS no-service restart is a **restart source independent of the watchdog**: with it ON, a lock to a cell the modem cannot attach
+  to (no service) can restart the data session or reboot before a boot inform; the 2026-11-21 04:00-06:30 `not measured: no boot
+  inform` steps are consistent with it. The keeper does not change it (a human decision); the audit flags it.
 
 ## Lock tests (`POST /lock-test`)
 
@@ -125,13 +133,35 @@ at `/docs`.
   upload 10 (0-30), call-ready 20, loss 15 (0-5 %), p95 10 (20-200 ms), jitter 10 (0-50 ms), 5G 10 (n78 10 / n28 5 / none; from `nr_arfcn` +
   `nr_iperf` = the 5G cells while the step's iperf ran); gates: on the locked cell >= 80 %, a stable anchor. Computed when read.
 - **Band scan** (`POST /band-scan?bands=8,1,...`, `keeper/bandscan.py`): per band `LockLTEBand` = that band over TR-069 (no reboot),
-  `BANDSCAN_WAIT_S` (90) of samples (until one is on the band, at most 2x), a `band_scans` row (serving cell + median RSRP/RSRQ/SINR,
-  every neighbour's best RSRP) + an event; the full list back at the end. Only without an LTE cell lock; busy meanwhile (the guard waits).
+  `BANDSCAN_WAIT_S` (90) of samples (until one is on the band, at most 2x), then `BANDSCAN_TEST_S` (25) of load (an internet test) to
+  raise the NSA 5G leg; a `band_scans` row (serving cell + median RSRP/RSRQ/SINR, neighbours, the network's own 5G cell + ARFCN/SINR/
+  RSRP, and the band's call-ready/loss/p95/jitter/down) + an event; the (5G cell, anchor) pair goes into the NR database (night / A-B
+  candidates, incl. the low bands B20/B28). Only without an LTE cell lock **and no NR cell lock**: an active/pending 5G lock is
+  refused (it pins the scan's 5G leg and a band change can lose it -> the guard re-applies it with a reboot); busy meanwhile.
 - **Night planner** (`keeper/nightplan.py`, 2026-11-18): the night screen's cells = present at NIGHT (>= 50 % of the night
-  samples for the ARFCN and the cell, or a night band scan), best night RSRP first, < ARFCN best - `NIGHT_WEAK_DB` (10) out, a FULL
-  test (iperf + nr_iperf) in `NIGHT_RETEST_DAYS` (30) skips unless +6 dB since, unseen 3 days out; as many as fit before the night
-  window (LOCK_PAUSE) ends - `NIGHT_MAX` 0 = no cap - and a step that would end after it is not started. Each test night starts
-  with a band scan (`BANDSCAN_NIGHT`). `NIGHT_BANDS` ('' = all, "1,3,7" or "B1,B3") filters bands. The plan: `/lock-tests` -> `night_plan`; `GET /night-plan` = a preview now (nothing stored).
+  samples for the ARFCN and the cell, or a night band scan), best night RSRP first, < ARFCN best - `NIGHT_WEAK_DB` (10) out, a band
+  scan's `why` carries its call-ready (2026-11-21), a FULL
+  test (iperf + nr_iperf) in `nightplan.RETEST_DAYS` (30) skips unless +6 dB since, unseen 3 days out; as many as fit before the test
+  window (`LOCK_PAUSE`, current 23:30-08:00; `NIGHT_SCREEN` 01:30-05:00 only starts the screen) ends - `NIGHT_MAX` 0 = no cap - and
+  a step that would end after it is not started. `NIGHT_CELLS` (current empty) is a home set re-checked on `NIGHT_RETEST_DAYS` (7);
+  the planner's cells are the rest. Each test night starts with a band scan (`BANDSCAN_NIGHT`, current `1,3,7,8,20`; B28 has no
+  service here). `NIGHT_BANDS` ('' = all; current `1,3,7,8,20,28`) filters the planner's cells: the low bands are included so a
+  bad-weather B20/B8/B28 fallback is tested, not only the main bands. The plan: `/lock-tests` -> `night_plan`; `GET /night-plan` =
+  a preview now (nothing stored).
+- **Low-band A/B phase 1** (`GET /low-band`, `POST /low-band-trial?band=8|20`, `keeper/lowband.py`, 2026-11-21): the low bands
+  (`LOW_BANDS` 8,20; B28 has no service here) and the network's n28 5G under them (156510/534 under 3774/394 / 6400/112) are the
+  bad-weather fallback. The preview compares the last band-scan row per low band (serving, pair, call-ready/loss/p95/jitter/down)
+  with the current high-band no-lock quality using `brain.clearly_better`; a trial is a one-band band scan (`LockLTEBand`, no reboot,
+  no cell lock; the network's low-band cell + n28; the internet test; the full list back), only unlocked. Phase 2 (not yet): the
+  automatic two-tier A/B - the high-band no-lock is the default; a low quality triggers the low-band band-lock trial; a clear win
+  keeps the low-band no-lock; the high band returns when it recovers.
+- **A/B smoke** (`POST /ab-smoke`, `GET /ab`, `keeper/absmoke.py`, `AB_SMOKE=1`, 2026-11-21): the full five-switch test, **with
+  locks** - A high (previous good) -> B high (another site, daytime) -> no-lock -> A low (B8 pair) -> B low (B20 pair), each one lock
+  change + reboot + internet test, then the **best found** config (or the no-lock when nothing clearly beats it). It runs first at the start of the night test and the Saturday day
+  test (`AB_SMOKE=1`) and manually (the wife, when critical). Telegram: modem good / provider issue / modem bad; `GET /ab` shows the
+  per-leg detail. It is a test, busy (the guard/captest/night wait). Not the automatic A/B.
+- **Development mode** (`POST /dev?on=1`, the state `dev`, 2026-11-21): disables the automatic A/B and allows the tests outside their
+  windows; the normal service mode is `dev` off. The wife can switch it on and keep working while an issue is fixed later.
 - Band scan bandwidth watch: each band's serving carrier bandwidth (`bw_mhz`, as logged '@N') is compared with its last scan; a change
   -> one Telegram note (the refarm signal: B8 5 -> 10 MHz after the 3G release). Unknown bandwidth or a first scan: no note.
 - Saturday day test (`DAY_TEST` "Sat 08:30-11:30", '' = off; not before 08:00 - the night-off cells are back ~08:00-08:10): once a
@@ -144,12 +174,12 @@ at `/docs`.
   one of the last `AB_QUIET_MIN` (5) samples carries >= `AB_CALL_BYTES` (4000 B/s) in the same direction - a
   Teams / Zoom call is steady (~5-12 kB/s, also down when muted), update / mail / browsing bursts are not (2026-11-20: up p50 0.6
   kB/s, steady >= 4 kB/s in 8.5 % of 5-min windows). The current minute must be idle as well. A missed trial is fine; a dropped call is not.
-- **Night screen** (LTE only): only on a night **armed** from the ZTE helper (`POST /night-screen?arm=1`, persisted as `night_armed`
-  = the night's morning date; you leave the router + modem on - they are off the other nights) or every night with `NIGHT_ALWAYS=1`
-  (research). Weekly Telegram reminder: from `NIGHT_REMIND_DAY` (Fri) at `NIGHT_REMIND` (21:30) once each evening until Arm is
-  pressed (that ends the week even if the run fails; cancelling brings it back), then quiet until the next Friday; never in research. In `NIGHT_SCREEN` (02:00-05:00; an optional weekday narrows it further), after `NIGHT_IDLE_MIN` (30) idle minutes with a verified clock, once a
-  night: re-tests the current lock (or the unlocked baseline) + `NIGHT_CELLS` + up to `NIGHT_MAX` strong untested cells (registry, main
-  bands, not tested in `NIGHT_RETEST_DAYS`, not "dead"), then puts the lock straight back. Traffic stops it. Night rows (`mode` night) are
+- **Night screen** (LTE only): current **research** runs every night (`NIGHT_ALWAYS=1`, `NIGHT_SCREEN=01:30-05:00`; the tests may run
+  until the `LOCK_PAUSE` end, 08:00). The weekly path (arm from the ZTE helper, `POST /night-screen?arm=1`, persisted as
+  `night_armed`; Friday 21:30 reminder until armed) is dormant while research runs and is for when research ends (the router + modem
+  are then off the other nights). In the `NIGHT_SCREEN` start window (01:30-05:00; an optional weekday narrows it further), after
+  `NIGHT_IDLE_MIN` (30) idle minutes with a verified clock, once a night: re-tests the current lock (or the unlocked baseline) +
+  `NIGHT_CELLS` + the planner's strong untested cells (not "dead"), then puts the lock straight back. Traffic stops it. Night rows (`mode` night) are
   an unloaded network: kept for the finding, never in the daytime ranking, never auto-applied. The finding is RECOMMEND when a cell beats
   the baseline, INFO when none did, WARN when the baseline was not measured (a missing baseline is no reference, so no verdict); cells the
   screen could not measure are named, not shown with empty numbers. Rows are kept (lock tests are not pruned automatically); `/lock-tests`
@@ -182,7 +212,8 @@ at `/docs`.
   `POST /antennas` and the auto-apply both go through `antennas.keep`, whose log / `antennas kept` event says who kept the mode
   (`set from the panel` vs `auto-applied 5G lock <cell> and its measured mode`).
 - The scheduled/manual antenna sweep (`POST /antenna-sweep`) is a different thing: 4 modes by median 5G SINR, kept with `AUTO=on`
-  only if `SWEEP_MIN_GAIN_DB` better. The lock test's sweep is the internet-tested one above.
+  only if `SWEEP_MIN_GAIN_DB` better. Current `SWEEP_DAYS=0`: on demand only (the env default is 7). The lock test's sweep is the
+  internet-tested one above.
 
 ## Capacity tests and the shaper (SQM)
 
@@ -200,6 +231,8 @@ at `/docs`.
   (0.92 x it); ONE low test changes nothing but asks for a confirmation test `CAPTEST_CONFIRM_S` (600 s) later - inside the 1-h gap,
   within the daily budget, after 10 idle minutes, never in LOCK_PAUSE (2026-11-20 sweep: one peak-hour test swings +-25 %).
   the plan) and its test at +10 %. Extra tests (setup change, deep cuts, useless cuts, climb): `CAPTEST_TRIGGER_MAX` 6 a day, >= 1 h apart.
+  Current `CAPTEST_SLOTS=08:30,12:30,18:30,21:30` (no night slot while the night screen runs); `SQM_MAX_DOWN/UP=185/28`,
+  `SQM_MIN_DOWN=35`, the plan 200/30.
   Never a triggered test inside `LOCK_PAUSE` (the released lock is no setup change; the empty night network is no ceiling).
 - **Tests** = the modem's own iperf3 (TR-143 cannot measure on the MC889 B07): download 4 streams, upload 1 stream (the MC889 gives no
   upload result with 4). Scheduled at `CAPTEST_SLOTS` incl. night slots, only after 10 idle minutes, never while busy (lock test,
@@ -288,3 +321,9 @@ at `/docs`.
 - TLS for the internet test: the container needs `ca-certificates` (`start.sh` adds it); a failed download is non-fatal and shows in
   `inttest`.
 - The API returns the last 40 rows for `/lock-tests` and `/antenna-sweeps`; the panel's tables scroll.
+- A band scan needs **no LTE and no NR cell lock**: with the 5G cell pinned the scan sees the lock, not the network's own pair, and a
+  band change can lose it -> the guard re-applies it with a reboot. The scan wakes the 5G leg with a short load test and records the
+  pair + call-ready; `NIGHT_BANDS` must include the low bands (current 1,3,7,8,20,28) or the night plan filters them out.
+- `NIGHT_RETEST_DAYS` (7) is the home-set re-check; `nightplan.RETEST_DAYS` (30) is the full-test skip. They are different knobs.
+- The PS no-service restart is ON and is a restart source independent of the watchdog; the audit (`/zte/settings`) flags it; the
+  watchdog and PS restart can both reboot the modem when a lock loses service.

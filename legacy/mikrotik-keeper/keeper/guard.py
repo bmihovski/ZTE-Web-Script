@@ -8,8 +8,9 @@ State per lock in the state file: `{"cell": "340@100", "state": "pending|active|
 Env: LOCK_NOSERVICE_MIN (3), LOCK_BAD_MIN (10), NR_LOCK_LOST_MIN (10), LOCK_RETRY_H (1), NR_BACK_MIN (3), LOCK_MAX_REBOOTS_DAY (4),
 OFFLINE_RELEASE_MIN (8: no inform + no internet with an LTE lock -> released on the web page, see offline_release),
 QUALITY_AB (1) / AB_BAD_PCT (70) / AB_WINDOW_MIN (30) / AB_TRIAL_MIN (20) / AB_KEEP_H (3): bad calls with good signal on an idle link -> try unlocked once a day (quality_ab),
-LOCK_PAUSE ("00:50-06:10": the LTE lock is released before this window and restored after it, once its cell is back - for a cell the
-operator switches off at night; measured 2026-10-28 / 29: B1 340@100 gone ~00:59-01:03 until ~06:00, a 3-min outage each night).
+LOCK_PAUSE (e.g. "23:30-08:00": the LTE lock is released before this window and restored after it, once its cell is back - for a
+cell the operator switches off at night; measured 2026-10-28 / 29: B1 340@100 gone ~00:59-01:03 until ~06:00, a 3-min outage each
+night). The env's window is authoritative; 23:30-08:00 is the current one.
 """
 import re, threading, time
 
@@ -281,7 +282,7 @@ def quality_ab(row, now=None):
         event({"event": "lte lock A/B", "to": "locks restored", "why": txt + " - neither another site nor the modem's own choice helps:"
                " the provider's side, nothing to fix from here"})
         return "restored"
-    if not QUALITY_AB or ab.get("day") == day or common.busy() or not common.clock_ok() or pause_end(now): return None
+    if not QUALITY_AB or state().get("dev") or ab.get("day") == day or common.busy() or not common.clock_ok() or pause_end(now): return None
     w = state().get("lte_lock")
     if not w or w.get("state") != "active" or (brain.f(row.get("uptime_s")) or 0) < 600: return None
     if len([t for t in guard["reboots"] if now - t < 86400]) >= LOCK_MAX_REBOOTS_DAY: return None      # the restore needs one

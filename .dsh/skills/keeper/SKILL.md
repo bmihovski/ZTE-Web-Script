@@ -12,7 +12,7 @@ the docstrings and this skill in sync.
 ## Layout
 
 - `keeper/` — the package (`__main__`, `api`, `acs`, `monitor`, `brain`, `guard`, `locktest`, `store`, `common`,
-  `devices/__init__.py`, `devices/mikrotik.py`, `devices/zte/{__init__,web,antennas,locks,checkin,watchdog,settings,ps}.py`).
+  `devices/__init__.py`, `devices/mikrotik.py`, `devices/zte/{__init__,web,antennas,locks,checkin,watchdog,settings,ps}.py`; `lowband.py`, `absmoke.py`).
 - `test/scenarios/*.py` — plain assert scripts, each in its own process, run by `test/test_scenarios.py` (pytest). Fake ZTE web +
   CWMP, real ATL dumps in `test/fixtures/`.
 - `tools/deploy.py` — check / backup / deploy / verify / rollback against the router. `./deploy.sh` wraps `deploy`.
@@ -64,6 +64,9 @@ the docstrings and this skill in sync.
   watchdog (ping host, reboot after N failures) + a lock to a cell the modem cannot attach to = a reboot loop that looks like
   "no boot inform". `GET /zte/watchdog` reads it (web login; also read after every boot and stored in `state.watchdog`); an
   `watchdog enabled` / `watchdog disabled` event marks a change.
+- A band scan needs **no LTE and no NR cell lock** (it refuses an active/pending 5G lock): with the 5G cell pinned the scan sees the
+  lock instead of the network's own pair, and a band change can lose it -> the guard re-applies it with a reboot. The scan wakes the
+  5G leg with a short load test (`BANDSCAN_TEST_S`) and records the pair + call-ready; B20/B28 are the bad-weather candidates.
 - **The web-only PS no-service restart is ON** (`ps_no_service_restart_flag=1`, 2026-11-21): it can restart the modem when service
   is lost - a reboot-loop candidate independent of the watchdog. `GET /zte/settings` audits it (with UPnP, power save, MTU/MSS,
   roaming, the NR band list); `POST /ps-reconnect` is the keeper's own fast disconnect/connect (no reboot) and is tried before an
@@ -88,6 +91,8 @@ the docstrings and this skill in sync.
 ```
 curl -s http://keeper.lan:7557/status | python3 -m json.tool
 curl -s http://keeper.lan:7557/zte/settings | python3 -m json.tool
+curl -s http://keeper.lan:7557/low-band | python3 -m json.tool
+curl -s http://keeper.lan:7557/ab | python3 -m json.tool
 curl -s -X POST http://keeper.lan:7557/ps-reconnect
 curl -s 'http://keeper.lan:7557/lock-tests?rat=nr' | python3 -m json.tool
 python3 tools/deploy.py status|verify|logs -n 20

@@ -38,6 +38,10 @@ try:
     # GET /tr069?path=: one read-only TR-069 read of a name / subtree with the next session (2026-11-21: find the modem's watchdog)
     assert get("/tr069?path=bad")[0] == 400 and get("/tr069?path=Device.")[0] == 400        # no free-form / whole-tree reads
     assert get("/zte/settings")[0] == 502 and post("/ps-reconnect", "")[0] == 502             # no web at ZTE_HOST=127.0.0.1:9 -> 502
+    assert get("/low-band")[0] == 200 and post("/low-band-trial?band=28", "")[0] == 400        # phase 1: B28 is not in LOW_BANDS
+    assert get("/ab")[0] == 200 and post("/dev?on=1", "")[0] == 200 and post("/dev?on=0", "")[0] == 200
+    import keeper.api as apimod
+    assert any(r[1] == "/ab-smoke" for r in apimod.ROUTES)                                     # the real five-switch run is absmoke.py's scenario
     from keeper import acs; import threading as _th
     out = {}; t_ = _th.Thread(target=lambda: out.update(v=acs.adhoc_read("Device.REBOOTSCHEDULE.", timeout=5))); t_.start()
     while not acs.adhoc["names"]: time.sleep(0.01)

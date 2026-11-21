@@ -25,7 +25,9 @@ reference); a 5G-free or switching baseline is measured (it is the reference). A
 Env: LOCKTEST_SETTLE_S (180), LOCKTEST_MEASURE_MIN (12), LOCKTEST_BOOT_WAIT_S (420), LOCKTEST_ALIGN_TIMEOUT_MIN (90),
 LOCKTEST_READY_TIMEOUT_S (180 - wait for the CPE web), LOCKTEST_ONLINE_TIMEOUT_S (180 - wait for stable probes),
 LOCKTEST_MAX_ANCHOR_SWITCHES (0), LOCKTEST_MIN_ANCHOR_PCT (80), LOCKTEST_MAX_GAP_MIN (3),
-NIGHT_SCREEN ('[Day[-Day] ]02:00-05:00', off; 'Sat 02:00-05:00' = only Friday night), NIGHT_MAX (3), NIGHT_IDLE_MIN (30), NIGHT_RETEST_DAYS (7), NIGHT_CELLS (always re-check, e.g. 340@3350).
+NIGHT_SCREEN ('[Day[-Day] ]HH:MM-HH:MM' start window, default 02:00-05:00, current 01:30-05:00; 'Sat 02:00-05:00' = only Friday
+night), NIGHT_MAX (0 = no cap), NIGHT_IDLE_MIN (30), NIGHT_RETEST_DAYS (7, the home set's re-check; the planner's full-test skip is
+nightplan.RETEST_DAYS 30), NIGHT_CELLS (always re-check, current empty).
 NIGHT_NOINFORM_SKIP (2) / NIGHT_NOINFORM_DAYS (3): after N night no-informs skip the cell for D days (CETIN powers it down overnight).
 """
 import collections, re, threading, time
@@ -54,6 +56,7 @@ BANDSCAN_NIGHT = [b for b in E("BANDSCAN_NIGHT", "1,3,7,8,20").replace(" ", "").
 IPERF_TAIL_S = 90.0   # a sample is the minute's average: the one after the run's own iperf still carries it (2026-11-20 02:27:06)
 BOOT_QUIET_S = float(E("NIGHT_BOOT_QUIET_S", "300"))   # traffic in the first 5 min after a step's reboot is the modem's own reconnect
 NIGHT_ALWAYS = E("NIGHT_ALWAYS", "0") == "1"      # research: every night in the window; else only a night armed from the ZTE helper
+AB_SMOKE = E("AB_SMOKE", "0") == "1"          # the full five-switch A/B smoke at the start of the night/day test
 REMIND_AT, REMIND_DAY = E("NIGHT_REMIND", "21:30"), E("NIGHT_REMIND_DAY", "Fri")   # weekly reminder from this day + time until armed ('' = off)
 DAY_TEST = E("DAY_TEST", "Sat 08:30-11:30")   # day-only cells + daytime confirmation; after 08:00 the night-off cells are back ('' = off)
 DAY_IDLE_MIN = int(E("DAY_IDLE_MIN", "10"))
@@ -657,9 +660,13 @@ def maybe_night(row, now=None):
         log("night screen: traffic - stopping"); lt_cut("stop"); return False
     if NIGHT in ("", "off") or common.busy() or not common.clock_ok(): return False     # old clock after a power cut: not night yet
     day = time.strftime("%Y-%m-%d", time.localtime(now))
-    if not in_night(now) or state().get("night_last") == day or not armed(now): return False
+    if (not in_night(now) and not state().get("dev")) or state().get("night_last") == day or not armed(now): return False
     last = list(brain.HIST)[-NIGHT_IDLE_MIN:]
     if len(last) < NIGHT_IDLE_MIN or not all(brain.idle(r) for r in last): return False
+    if AB_SMOKE and state().get("night_smoke") != day:       # the A/B smoke is the first thing: prove the switching works
+        from keeper import absmoke
+        state({"night_smoke": day}); ok, why = absmoke.run("night")
+        log("night screen: A/B smoke first: %s" % why); return ok
     if BANDSCAN_NIGHT and state().get("night_scan") != day:   # first a band scan: cells never in the CA (B8 112@3774) reach the plan
         from keeper import bandscan
         ok, why = bandscan.start(BANDSCAN_NIGHT); state({"night_scan": day})          # once a night, also when refused (a cell lock held)
@@ -690,11 +697,15 @@ def maybe_day(row, now=None):
     5 points of its baseline (an empty network at night; confirmed under daytime load). A normal day test: the 5G lock stays, the
     hard stop at the window's end. True when it started."""
     now = now or time.time()
-    if not DAY_TEST or common.busy() or lt.get("running") or not common.clock_ok() or not in_window(DAY_TEST, now): return False
+    if not DAY_TEST or common.busy() or lt.get("running") or not common.clock_ok() or (not in_window(DAY_TEST, now) and not state().get("dev")): return False
     day = time.strftime("%Y-%m-%d", time.localtime(now))
     if state().get("day_last") == day: return False
     last = list(brain.HIST)[-DAY_IDLE_MIN:]
     if len(last) < DAY_IDLE_MIN or not all(brain.idle(r) for r in last): return False
+    if AB_SMOKE and state().get("day_smoke") != day:         # the A/B smoke is the first thing of the day test
+        from keeper import absmoke
+        state({"day_smoke": day}); ok, why = absmoke.run("day")
+        log("day test: A/B smoke first: %s" % why); return ok
     from keeper import nightplan
     state({"day_last": day})
     w = state().get("lte_lock") or {}

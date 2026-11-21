@@ -166,6 +166,16 @@ There is no second channel (no TR-064, no SSH/Telnet on the LAN).
    `upnpEnabled=1`, `net_select_mode=auto_select`, `net_select=WL_AND_5G`, `nr5g_band_lock=1,3,7,8,20,28,78`,
    `ppp_status=ppp_connected`, `modem_main_state=modem_init_complete`. The audit flags the **PS no-service restart** (a reboot-loop
    candidate) and **UPnP** (LAN exposure); both are still ON - decide whether to turn them off (test the PS restart off first).
+5. Band scan (2026-11-21h): an active/pending NR cell lock is **refused** - the scan needs the network's own 5G pair, and a band change
+   can lose a pinned cell (the guard would re-apply it with a reboot). Per band, after the LTE settle, a short load test
+   (`BANDSCAN_TEST_S` 25) raises the NSA 5G leg; the row now carries the 5G cell/ARFCN/SINR/RSRP and call-ready/loss/p95/jitter/down,
+   and the (5G cell, anchor) pair goes into the NR database. The night plan's band-scan `why` shows the call-ready; B20/B28 are the
+   bad-weather candidates.
+
+   The 08:55:52 `534 -> no5G` / 08:56:52 `no5G -> 534` pair is the normal NSA idle release + re-add (the log says "link idle: normal
+   in NSA"), not a lost lock. The band scan at 08:57 was started while the NR lock was still active (the old `start()` checked only
+   the LTE lock), so its per-band 5G view was the pinned cell. The new guard refuses that; the per-band load test makes the pair
+   visible even when an idle link would show `no5G`.
 
 ## 9. Evidence (key commands)
 
