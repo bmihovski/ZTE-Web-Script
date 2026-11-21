@@ -172,6 +172,9 @@ The keeper measures, analyses and decides; the userscript only shows the results
   and anchor capacity. The finding recommends the winner only if it clearly beats the unlocked baseline (the same margins as the
   antenna mode; LTE: call-ready +1 %, 5G SINR +2 dB or anchor SINR +3 dB); a baseline whose newest row was not measured (a skipped
   step) is no baseline - then nothing is auto-applied, only recommended. Unstable 5G rows (`unstable` 1) are not ranked at all.
+  Each returned row (and the baseline) also carries its lock-test score, computed when read (`score`, `score_parts`,
+  `score_partial`, `score_gate`); a **partial** score (an old row without iperf) is `None` there, because it measured only part of
+  the weight - the A/B smoke's high pair ranks by this score (A = the max, B = the next).
   A finished 5G test auto-applies its winner when `AUTO=on` - the **pair**: the 5G cell and the LTE anchor it was measured with (an
   NSA cell is served only under some anchors) - and keeps the winning step's antenna mode, so the next boot re-applies all three. When signal and internet disagree, the Telegram message names the cell signal alone would have picked.
 - **Antenna mode to keep** (`POST /antennas?auto=0&ant5=4&ant6=4`, `?none` = back to the env; panel: "keep it in the keeper" under the

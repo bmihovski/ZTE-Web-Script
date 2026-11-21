@@ -22,7 +22,7 @@ ROUTES = [   # method, path, summary, [(param, example, description)], capabilit
     ("get", "/export", "CSV download for your own analysis",
      [("kind", "samples", " | ".join(KINDS)), ("from", "2026-10-28", "from time"), ("to", "2026-10-29", "to time"),
       ("device", "zte", "zte | mikrotik | * (default: the active DEVICE)")], None),
-    ("get", "/anchors", "Lock-test ranking (latest result per cell) and the unlocked baseline, per RAT", [("rat", "lte", "lte | nr (default lte)")], None),
+    ("get", "/anchors", "Lock-test ranking (latest result per cell) with its lock-test score, and the unlocked baseline, per RAT", [("rat", "lte", "lte | nr (default lte)")], None),
     ("get", "/lock-tests", "Lock test now or last (step, phase, plan, RAT, pinned anchor) + the last 40 results", [("rat", "", "lte | nr (default: all results)")], None),
     ("get", "/antenna-sweeps", "The last 40 rows of keeper antenna sweeps", [], None),
     ("get", "/tr069", "Read-only: one TR-069 read of a parameter or a subtree (a path ending in '.') with the modem's next session (<= 90 s); "
@@ -62,8 +62,9 @@ ROUTES = [   # method, path, summary, [(param, example, description)], capabilit
     ("post", "/low-band-trial", "Low-band A/B phase 1: start a one-band band scan (LOW_BANDS 8,20; LockLTEBand, no reboot, no cell lock; "
      "the network's low-band cell + n28; the internet test; full band list back). Only unlocked",
      [("band", "8", "LTE band number (LOW_BANDS)")], "lock_test"),
-    ("post", "/ab-smoke", "Full A/B smoke (with locks): A high (previous good) - B high (another site) - no-lock - A low - B low, each "
-     "measured; the original state back; a Telegram with modem good / provider issue / modem bad. The wife runs it when critical",
+    ("post", "/ab-smoke", "Full A/B smoke (with locks): A high (the max complete lock-test score) - B high (the next) - no-lock - "
+     "A low (the newest B8 band scan + its n28 pair) - B low (the newest B20 row), each measured; the BEST found config is restored "
+     "(no-lock only when it is best/equal); a Telegram with modem good / provider issue / modem bad. The wife runs it when critical",
      [], "lock_test"),
     ("get", "/ab-refresh", "Read-only: the one-call refresh (band scan -> A/B smoke -> one Telegram) state/result", [], None),
     ("post", "/ab-refresh", "One call: the full band scan (B1,B3,B7,B8,B20,B28), then the full A/B smoke, then ONE Telegram with both; "

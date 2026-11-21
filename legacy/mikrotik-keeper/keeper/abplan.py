@@ -5,11 +5,11 @@ top + the first of the next score (if any); a single cell total -> A only, no B 
 **max scored** option, never the previous lock or a fixed order.
 
 High: the lock-tested anchors from `brain.anchor_ranking()` (nightly + daily; the band-scan cells have no lock-test score and are
-excluded here - the daily/B1 promotion is a separate step). Low: the band scans (the serving cell + its n28 pair), scored by the
-call-ready (the single value the user asked for); ties keep both.
+excluded here - the daily/B1 promotion is a separate step). Low: the **newest band scan of each low band** (`LOW_BANDS` 8,20; the
+serving cell + its n28 pair), scored by the call-ready (the single value the user asked for); ties keep both. The same band scan
+also writes B1/B3/B7 - those are high bands and must never become the "low" leg.
 """
-from keeper import brain, store
-from keeper.common import DATA
+from keeper import brain, lowband
 
 
 def _pair(d):
@@ -33,9 +33,9 @@ def high():
 
 
 def low():
-    """The A/B low pairs from the band scans (serving + n28), the max call-ready first; ties keep both."""
+    """The A/B low pairs: the newest band scan per low band (B8/B20, `lowband.latest()`), the max call-ready first; ties keep both."""
     d = {}
-    for r in store.rows(DATA, "band_scans"):
+    for r in lowband.latest():
         s, n = r.get("serving") or "", r.get("nr_cell") or ""
         if "/" not in s: continue
         try: q = float(r.get("call_ok"))

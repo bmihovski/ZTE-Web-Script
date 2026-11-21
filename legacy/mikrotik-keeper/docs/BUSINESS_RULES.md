@@ -123,8 +123,10 @@ at `/docs`.
   reference); a 5G-free or switching baseline is measured (it is the reference). A baseline row without a measurement is not a
   baseline: the ranking drops it, so nothing is auto-applied against it.
 - **Ranking** (`GET /anchors?rat=lte|nr`): the latest result per candidate, only if it stayed on the cell (on-target ≥ 80 %) and is
-  not unstable; the 5G ranking is quality-first, the LTE ranking keeps call-ready, no-5G, signal, capacity. `failed` = off-target /
-  not seen; `unstable` = the unstable list.
+  not unstable; the 5G ranking is quality-first, the LTE ranking keeps call-ready, no-5G, signal, capacity. Each returned row (and
+  the baseline) also carries the lock-test score computed when read (`score`, `score_parts`, `score_partial`, `score_gate`); `score`
+  is None when the row is partial (a metric - e.g. iperf - was not measured) or gated, because a partial score is no A/B score (the
+  A/B high pair ranks by it). `failed` = off-target / not seen; `unstable` = the unstable list.
 - **Lock-test rows** also carry `boot_s` (lock -> boot inform) and `down_mbps` / `up_mbps` (the modem's iperf3 after the measuring
   window, still locked; `LOCKTEST_IPERF=0` off; never a ceiling). `POST /lock-test?...&night=1` = a hand-picked night screen (LTE). Traffic stops a night run only after `NIGHT_BOOT_QUIET_S` (300) of modem uptime - before that it is the
   modem's own reconnect (2026-11-18 08:56: a B8 step was stopped 3 s after its boot). Night LTE steps free the 5G lock in the same write
@@ -156,14 +158,25 @@ at `/docs`.
   automatic two-tier A/B - the high-band no-lock is the default; a low quality triggers the low-band band-lock trial; a clear win
   keeps the low-band no-lock; the high band returns when it recovers.
 - **A/B smoke** (`POST /ab-smoke`, `GET /ab`, `keeper/absmoke.py`, `AB_SMOKE=1`, 2026-11-21): the full five-switch test, **with
-  locks** - A high (previous good) -> B high (another site, daytime) -> no-lock -> A low (B8 pair) -> B low (B20 pair), each one lock
-  change + reboot + internet test, then the **best found** config (or the no-lock when nothing clearly beats it). It runs first at the start of the night test and the Saturday day
-  test (`AB_SMOKE=1`) and manually (the wife, when critical). Telegram: modem good / provider issue / modem bad; `GET /ab` shows the
-  per-leg detail. It is a test, busy (the guard/captest/night wait). Not the automatic A/B.
+  locks** - A high -> B high -> no-lock -> A low -> B low, each one lock change + reboot + internet test, then the **best found**
+  config (or the no-lock when nothing clearly beats it). `keeper/abplan.py`: high = the lock-test anchors of `brain.anchor_ranking()`,
+  ranked by their score (A = the max, B = the next; a tie keeps both; a single cell -> A only); only a **complete** score competes -
+  a partial row (an old row without iperf) has `score None` until a new lock test, and a band-scan-only cell has no score at all
+  (B1 `340@100` stays out of the high pair until the daily/Saturday test promotes it). Low = the **newest band scan of each low
+  band** (`LOW_BANDS` 8,20) + its n28 pair, ranked by call-ready, ties keep both (B8 then B20; the same scan's B1/B3/B7 rows are
+  high bands and never the "low" leg). A 5G pair is the cell's best measured anchor (`_nr_for`). It runs first at the start of the
+  night test and the Saturday day test (`AB_SMOKE=1`) and manually (the wife, when critical). Telegram: modem good / provider issue /
+  modem bad; `GET /ab` shows the per-leg detail. It is a test, busy (the guard/captest/night wait). Not the automatic A/B.
 - **One-call refresh** (`POST /ab-refresh`, `GET /ab-refresh`, `keeper/abrefresh.py`, 2026-11-21): the full band scan (B1,B3,B7,
   B8,B20,B28) then the full A/B smoke, then **one** Telegram with both (the smoke's own Telegram is suppressed in the chain); ~25 min;
   the wife's one request. `GET /ab` embeds the refresh. The band scan refreshes the B1/B8/B20 rows + the NR database; the smoke uses
-  the refreshed low rows and the lock-test A/B scores (A = the max scored, B = the next); the best found restore.
+  the refreshed rows and the lock-test A/B scores (A = the max scored, B = the next); the low pair is the newest **B8 and B20** row
+  (the scan also writes B1/B3/B7, which are high bands and not low candidates); the best found restore. The chain does the band scan
+  first and only then the smoke (the stage is `band scan` -> `smoke` -> `done`); it waits per stage and **aborts** instead of
+  starting the next one when a stage is still running after its ceiling (`REFRESH_SCAN_MAX_S` 1800 - above the 6-band worst case
+  6 x (2 x `BANDSCAN_WAIT_S` + `BANDSCAN_TEST_S`) ~ 1230 s; `REFRESH_SMOKE_MAX_S` 2400), so the smoke never takes a cell lock on
+  top of the scan's band lock. The Telegram never prints a row of blanks: a band with no sample is named as such (`B28: no service
+  (no sample on the band)`), and a band whose scan saw no 5G leg says `nr cell missing` instead of an empty `+ ,` (2026-11-21q).
 - **Development mode** (`POST /dev?on=1`, the state `dev`, 2026-11-21): disables the automatic A/B and allows the tests outside their
   windows; the normal service mode is `dev` off. The wife can switch it on and keep working while an issue is fixed later.
 - Band scan bandwidth watch: each band's serving carrier bandwidth (`bw_mhz`, as logged '@N') is compared with its last scan; a change

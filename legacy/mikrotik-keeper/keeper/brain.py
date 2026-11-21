@@ -844,8 +844,11 @@ def nr_capacity(r):
 
 def anchor_ranking(rat="lte"):
     """latest lock-test result per candidate of one RAT (lte: anchors, nr: 5G cells), ranked for calls: call-ready %, then no 5G
-    drops, 5G SINR, capacity. A candidate only counts if the modem really stayed on it (>= 80 % of the minutes); the baseline is None
-    when its newest row was not measured (a skipped step is no reference) or was unstable."""
+    drops, 5G SINR, capacity. Each returned row also carries its lock-test score (`score` / `score_parts` / `score_partial` /
+    `score_gate`, computed when read) - the A/B high pair ranks by it. A **partial** score (an old row without iperf) is None here:
+    it measured only part of the weight, so it is no A/B score (a new lock test promotes it). A candidate only counts if the modem
+    really stayed on it (>= 80 % of the minutes); the baseline is None when its newest row was not measured (a skipped step is no
+    reference) or was unstable."""
     if not reg_st["dir"]: return {"rat": rat, "baseline": None, "ranked": [], "failed": [], "unstable": []}
     rows = store.rows(reg_st["dir"], "lock_tests")
     latest = {}
@@ -865,8 +868,12 @@ def anchor_ranking(rat="lte"):
     unstable = lambda r: str(r.get("unstable")) == "1"      # the 5G leg follows its LTE anchor: not a result when the anchor was unstable
     base = latest.get("none")
     if base and (unstable(base) or f(base.get("call_ok_pct")) is None): base = None   # skipped / not measured: not a reference
-    ok = [dict(r, capacity=cap(r)) for k, r in latest.items() if k != "none" and not unstable(r) and (f(r.get("on_target_pct")) or 0) >= 80]
-    return {"rat": rat, "baseline": dict(base, capacity=cap(base)) if base else None, "ranked": sorted(ok, key=key, reverse=True),
+    def scored(r):                    # the weight score rides on the ranking: abplan.high() ranks by it (never by a missing key)
+        s = lt_score(r)
+        return dict(r, capacity=cap(r), score=None if s["partial"] else s["score"], score_parts=s["parts"],
+                    score_partial=s["partial"], score_gate=s["gate"])
+    ok = [scored(r) for k, r in latest.items() if k != "none" and not unstable(r) and (f(r.get("on_target_pct")) or 0) >= 80]
+    return {"rat": rat, "baseline": scored(base) if base else None, "ranked": sorted(ok, key=key, reverse=True),
             "failed": [k for k, r in latest.items() if k != "none" and not unstable(r) and (f(r.get("on_target_pct")) or 0) < 80],
             "unstable": sorted(k for k, r in latest.items() if unstable(r))}
 

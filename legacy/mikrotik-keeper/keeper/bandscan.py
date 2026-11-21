@@ -124,5 +124,6 @@ def start(bands):
     if w.get("state") in ("active", "pending"):
         return False, "an NR cell lock is %s (%s): remove it first (the band scan needs the network's own 5G pair)" % (w.get("state"), w.get("cell"))
     if st["running"] or common.busy(): return False, "busy: %s" % (st["running"] or common.busy())
+    st["running"] = bands[0]                    # set before the thread: the caller/chain sees the scan immediately (no start race)
     threading.Thread(target=lambda: scan(bands), daemon=True).start()
     return True, ", ".join("B" + b for b in bands)

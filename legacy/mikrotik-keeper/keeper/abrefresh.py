@@ -11,22 +11,37 @@ from keeper import absmoke, alert, bandscan, store
 from keeper.common import DATA, E, event, log, state, stamp
 
 SCAN_BANDS = [b for b in E("REFRESH_BANDS", "1,3,7,8,20,28").replace(" ", "").split(",") if b]
+SCAN_MAX_S = float(E("REFRESH_SCAN_MAX_S", "1800"))     # the 6-band scan's worst case ~ 6 x (2 x BANDSCAN_WAIT_S + BANDSCAN_TEST_S)
+SMOKE_MAX_S = float(E("REFRESH_SMOKE_MAX_S", "2400"))   # five legs + the best-found restore
 st = {"running": None, "stage": "", "started": None, "result": None, "why": ""}
+
+
+def _wait(stage, running, limit):
+    """Wait for one stage; a stage still running after its ceiling aborts the chain (never start the next one on its lock)."""
+    t0 = time.monotonic()
+    while running() and time.monotonic() - t0 < limit: time.sleep(2)
+    if running(): raise RuntimeError("%s still running after %d s: not starting the next stage" % (stage, limit))
 
 
 def _bands():
     rows = store.rows(DATA, "band_scans"); out = []
     for b in SCAN_BANDS:
         r = next((x for x in reversed(rows) if str(x.get("band")) == b), None)
-        if r: out.append({k: r.get(k) for k in ("band", "serving", "nr_cell", "nr_arfcn", "call_ok", "lat_p95", "jitter_ms", "down_mbps")})
+        if r: out.append({k: r.get(k) for k in ("band", "serving", "nr_cell", "nr_arfcn", "call_ok", "lat_p95", "jitter_ms", "down_mbps", "note")})
     return out
 
 
 def _msg(res):
     lines = ["A/B refresh (%s): band scan + smoke" % res.get("trigger")]
     for b in res.get("band_scan") or []:
+        if not b.get("serving"):                       # no data on the band: say why, never print a row of blanks
+            note = b.get("note") or "no service"
+            pre = "no service on B%s" % b.get("band")
+            if note.startswith(pre): note = "no service" + note[len(pre):]
+            lines.append("B%s: %s" % (b.get("band"), note)); continue
         lines.append("B%s: %s + %s, call %s, p95 %s, jitter %s, %s Mbit/s" % (
-            b.get("band"), b.get("serving"), b.get("nr_cell"), b.get("call_ok"), b.get("lat_p95"), b.get("jitter_ms"), b.get("down_mbps")))
+            b.get("band"), b.get("serving"), b.get("nr_cell") or "nr cell missing", b.get("call_ok"), b.get("lat_p95"),
+            b.get("jitter_ms"), b.get("down_mbps")))
     sm = res.get("smoke") or {}
     if sm:
         lines.append("smoke: %s" % sm.get("verdict"))
@@ -53,11 +68,11 @@ def _run():
     try:
         ok, why = bandscan.start(list(SCAN_BANDS))
         if not ok: raise RuntimeError("band scan refused: %s" % why)
-        while bandscan.st.get("running") and time.monotonic() - t0 < 1200: time.sleep(2)     # the scan's own thread; ceiling only
+        _wait("band scan", lambda: bandscan.st.get("running"), SCAN_MAX_S)
         st["stage"] = "smoke"
         ok, why = absmoke.run("refresh", notify=False)
         if not ok: raise RuntimeError("smoke refused: %s" % why)
-        while absmoke.st.get("running") and time.monotonic() - t0 < 2400: time.sleep(2)
+        _wait("smoke", lambda: absmoke.st.get("running"), SMOKE_MAX_S)
         sm = absmoke.st.get("result") or {}
     except Exception as e:
         st["why"] = "%s failed: %r" % (st["why"], e); log("ab refresh failed: %r" % e)
