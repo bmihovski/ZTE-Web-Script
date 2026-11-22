@@ -56,7 +56,8 @@ the docstrings and this skill in sync.
 ## Traps
 
 - **A/B smoke diagnoses and restores:** `POST /ab-smoke` runs the current pair, selected alternatives and an unlocked control.
-  `GET /ab` exposes progress. `POST /ab-smoke-stop` interrupts measurement and restores after an in-flight reboot.
+  `GET /ab` exposes serving and locked cells, the proposed legs and progress. The panel shows these above the SQM section.
+  `POST /ab-smoke-stop` interrupts measurement and restores after an in-flight reboot.
   Report inconclusive when there is no fresh evidence. The smoke never commits a new winner. A persisted restoration request
   survives an interrupted run. A/B alternatives need a complete current-method score, or an observed n28 pair for a low scan.
 - **Power-off workflow:** scheduled night tests, weekly arming, and Saturday confirmation are retired. The cold-boot clock

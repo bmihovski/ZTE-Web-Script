@@ -7,7 +7,7 @@
  * 
  */
 
-console.log("Loading ZTE Script v" + "2026-11-22-#33");
+console.log("Loading ZTE Script v" + "2026-11-22-#34");
 
 siginfo =
     "wan_active_band,wan_active_channel,wan_lte_ca,wan_apn,wan_ipaddr," +
@@ -2169,6 +2169,37 @@ function keeper_poll()
 /* ---- capacity & shaper: the limit now and why, the learned ceilings, the tests; manual tests to check the line ---- */
 var keeper_cap_note = "", keeper_cap_last_time = null;     // the manual test's progress / result line; the newest test's time
 var keeper_ab_timer, keeper_ab_request = 0;
+function keeper_ab_render(d)
+{
+    var active = d.active;
+    if (active) {
+        var serving = "LTE " + (active.lte || "unavailable") + " · 5G " + (active.nr || "idle or unavailable");
+        var locks = "LTE " + (active.lte_lock === "none" ? "unlocked" : active.lte_lock) +
+            " · 5G " + (active.nr_lock === "none" ? "unlocked" : active.nr_lock);
+        $("#keeper_ab_active").text(active.profile + " · Serving " + serving + " · Active locks " + locks);
+    } else {
+        $("#keeper_ab_active").text("Active profile unavailable");
+    }
+    var labels = ["current lock", "A high", "B high", "no lock", "A low", "B low"];
+    var plan = d.plan || [];
+    var rows = labels.flatMap(function(label) {
+        var leg = plan.find(function(x) { return x.leg === label; });
+        if (leg) {
+            var availability = "Planned";
+            if ((d.progress || {}).leg === label && (d.progress || {}).phase !== "restoring") availability = "Running";
+            else if (label === "current lock" && active && active.profile === "Current lock") {
+                availability = active.lte === leg.lte && (leg.nr === "none" || active.nr === leg.nr) ? "In use" : "Managed";
+            }
+            return [{profile: label, lte: leg.lte === "none" ? "Unlocked" : leg.lte,
+                nr: leg.nr === "none" ? "Automatic" : leg.nr, availability: availability}];
+        }
+        if (label === "current lock" || label === "no lock") return [];
+        return [{profile: label, availability: !d.plan ? "Unavailable" :
+            (d.running && !plan.length ? "Planning" : label.endsWith("low") ? "Needs a B8/B20 scan with n28" : "Needs an eligible loaded lock test")}];
+    });
+    $("#keeper_ab_plan").html(keeper_table(rows, ["profile", "lte", "nr", "availability"]));
+}
+
 function keeper_ab_poll()
 {
     window.clearTimeout(keeper_ab_timer);
@@ -2176,6 +2207,7 @@ function keeper_ab_poll()
     var request = ++keeper_ab_request;
     keeper_get("/ab").then(function(d) {
         if (request !== keeper_ab_request) return;
+        keeper_ab_render(d);
         var p = d.progress || {}, last = d.result || {}, running = Boolean(d.running);
         var phase = p.phase || "starting";
         var progress = (p.step ? "Step " + p.step + " of " + p.total + " · " + p.leg + " · " : "") + phase;
@@ -2184,12 +2216,18 @@ function keeper_ab_poll()
         $("#keeper_ab_status").text(text);
         $("#keeper_ab_start").prop("disabled", running || Boolean(d.restore_pending));
         $("#keeper_ab_stop").prop("disabled", !running || Boolean(d.stopping) || phase === "restoring");
-        $("#keeper_ab_legs").html(keeper_table(running ? (p.legs || []) : (last.legs || []),
+        var results = running ? (p.legs || []) : (last.legs || []);
+        $("#keeper_ab_results").prop("hidden", !results.length);
+        $("#keeper_ab_results_title").text(running ? "Completed legs" : "Last smoke result");
+        $("#keeper_ab_legs").html(keeper_table(results,
             ["leg", "lte", "nr", "observed_lte", "observed_nr", "down_mbps", "loss_pct", "lat_p95", "error"]));
         if (running || d.restore_pending) keeper_ab_timer = window.setTimeout(keeper_ab_poll, 3000);
     }).catch(function() {
         if (request !== keeper_ab_request) return;
         $("#keeper_ab_status").text("Smoke status unavailable");
+        $("#keeper_ab_active").text("Active profile unavailable");
+        $("#keeper_ab_plan").empty();
+        $("#keeper_ab_results").prop("hidden", true);
         $("#keeper_ab_start, #keeper_ab_stop").prop("disabled", true);
         keeper_ab_timer = window.setTimeout(keeper_ab_poll, 5000);
     });
@@ -3792,18 +3830,27 @@ function inject_html()
                 <a onclick="keeper_poll()">Refresh</a> | <a onclick="keeper_set_url()">Keeper URL</a> |
                 <a onclick="window.open(KEEPER_URL + '/report?hours=24')">Full report (JSON)</a>
                 <div id="keeper_status" style="margin:4px 0">loading...</div>
-                <div style="font-size:11px">Findings (last 24 h, goal: call-ready all the time) - the keeper decides reboots itself (within limits); locks stay your decision:</div>
+                <section style="border:1px solid #8887;border-radius:6px;padding:8px;margin:10px 0">
+                    <h4 style="margin:0 0 6px">A/B smoke</h4>
+                    <div id="keeper_ab_active" style="margin-bottom:6px">Checking active profile</div>
+                    <div class="keeper_scroll"><table class="tools_table" id="keeper_ab_plan"></table></div>
+                    <div style="margin:6px 0">
+                        <button id="keeper_ab_start" onclick="keeper_ab_action(false)" disabled>Run</button>
+                        <button id="keeper_ab_stop" onclick="keeper_ab_action(true)" disabled>Stop</button>
+                        <span id="keeper_ab_status" role="status">Checking availability</span>
+                        <span id="keeper_ab_note" role="status"></span>
+                    </div>
+                    <div id="keeper_ab_results" hidden>
+                        <b id="keeper_ab_results_title">Last smoke result</b>
+                        <div class="keeper_scroll"><table class="tools_table" id="keeper_ab_legs"></table></div>
+                    </div>
+                </section>
+                <h4 style="margin:10px 0 4px">Findings · last 24 h</h4>
                 <ul id="keeper_findings" style="margin:2px 0 6px 18px"></ul>
-                <div style="font-size:11px">Capacity &amp; shaper (SQM): the limit now, why, and where its ceiling comes from -
+                <h4 style="margin:10px 0 4px">Capacity &amp; shaper (SQM)</h4>
+                <div style="font-size:11px">
                     <a onclick="keeper_captest('count')">Test now (counts)</a> | <a onclick="keeper_captest('down')">Download check</a> |
                     <a onclick="keeper_captest('up')">Upload check</a> (checks never change a ceiling):</div>
-                <div style="margin:6px 0"><b>A/B smoke</b>
-                    <button id="keeper_ab_start" onclick="keeper_ab_action(false)" disabled>Run</button>
-                    <button id="keeper_ab_stop" onclick="keeper_ab_action(true)" disabled>Stop</button>
-                    <span id="keeper_ab_status" role="status">Checking availability</span>
-                    <span id="keeper_ab_note" role="status"></span>
-                </div>
-                <div class="keeper_scroll"><table class="tools_table" id="keeper_ab_legs"></table></div>
                 <div id="keeper_cap_note" style="margin:4px 0"></div>
                 <div id="keeper_cap_sum" style="margin:4px 0"></div>
                 <div style="font-size:11px">Ceilings per period (0.92 x the median of the last 5 counted tests, 2 needed; env = SQM_MAX_*; the shaper may climb above while the latency stays clean):</div>

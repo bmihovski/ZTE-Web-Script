@@ -19,7 +19,7 @@ for i in range(300): brain.add(row(i, *(("636576/534", "7") if i < 180 else ("63
 rep = brain.report(24)
 print(json.dumps(rep["findings"], indent=1))
 assert rep["samples"] == 300 and rep["switches"] == 1
-assert any("LTE lock 340@1550" in x for x in rep["findings"]), rep["findings"]
+assert any(x.startswith("INFO: Radio-only LTE lock test candidate 340@1550.") for x in rep["findings"]), rep["findings"]
 assert any("5G 636576/786" in x and "NR lock 534" in x for x in rep["findings"]), rep["findings"]
 c = {x["cell"]: x for x in rep["cells"]}; assert c["636576/786"]["sinr_p50"] == -1 and c["636576/534"]["minutes"] == 180
 anchor = rep["lte_carriers"][0]; assert anchor["carrier"] == "B7 3350/340" and anchor["anchor_pct"] == 100 and anchor["sinr_p50"] == 2
@@ -136,12 +136,12 @@ fs = rep["findings"]; print(fs)
 assert any(x.startswith("INFO: B20 (800 MHz, 10 MHz wide): 6400/112 is 8 dB stronger than the used 6400/121") and "low band" in x for x in fs), fs
 assert not any("stronger than the anchor" in x for x in fs)                 # no RSRP comparison across bands any more
 rec = next(x for x in fs if "LTE lock" in x); print(rec)
-assert rec.endswith("A/B test LTE lock 340@1550 (the test also shows whether CA stays)") and "~16.4 Mbit/s" in rec and "B20 6400/121 800 MHz 10 MHz-wide SINR 6.0 (~13.9 Mbit/s per layer, low band" in rec, rec
+assert rec.startswith("INFO: Radio-only LTE lock test candidate 340@1550.") and "~16.4 Mbit/s" in rec, rec
 import tempfile; _d = tempfile.mkdtemp(); _old = brain.reg_st["dir"]; brain.reg_st["dir"] = _d           # already lock-tested -> not recommended again
 open(_d + "/lock_tests.csv", "w").write("time,lock,on_target_pct,anchor_sinr_p50,call_ok_pct\n2026-10-27 15:18:15,340@1550,100.0,-1.0,100.0\n")
 open(_d + "/lock_tests.csv", "a").write("2026-10-27 18:40:00,340@100;340@3350,100.0,9.0,100.0\n")
 assert [r["lock"] for r in brain.anchor_ranking()["ranked"]] == ["340@1550"]                     # list rows are not results
-assert not any("A/B test LTE lock 340@1550" in x for x in brain.report(24)["findings"])
+assert not any("LTE lock test candidate 340@1550" in x for x in brain.report(24)["findings"])
 _d = tempfile.mkdtemp(); brain.reg_st["dir"] = _d                                              # old CSV files are imported into the store once
 open(_d + "/lock_tests.csv", "w").write("time,lock,on_target_pct,anchor_sinr_p50,nr_sinr_p50,no5g_min,call_ok_pct\n"
     "1,434@1550,100,-1,8,0,100\n2,340@100,100,5,7,0,100\n")                                   # measured 2026-10-27: both legs decide

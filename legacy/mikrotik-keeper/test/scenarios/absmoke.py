@@ -34,6 +34,13 @@ assert absmoke._nr_for("66@1550", {"nr_cell": "156510/534"}) == "534@636576"
 assert absmoke._nr_for("999@999", {"nr_cell": "156510/534"}) == "none"             # no pair history on this anchor
 absmoke.abplan.high = lambda: ["340@100", "66@1550"]
 absmoke.abplan.low = lambda: [("394@3774", "534@156510"), ("112@6400", "534@156510")]
+preview = absmoke.status()
+assert preview["active"] == {"profile": "Current lock", "lte_lock": "340@100", "nr_lock": "534@636576",
+                             "lte": "340@100", "nr": "534@636576"}, preview
+assert [(x["leg"], x["lte"], x["nr"]) for x in preview["plan"]] == [
+    ("current lock", "340@100", "534@636576"), ("A high", "66@1550", "534@636576"),
+    ("no lock", "none", "none"), ("A low", "394@3774", "534@156510"), ("B low", "112@6400", "534@156510")]
+assert not calls and not preview["running"]
 seq = [dict(down_mbps=30, call_ok=1, loss_pct=0, lat_p95=20, jitter_ms=3),   # A high: p95 20 beats the no-lock 30
        dict(down_mbps=20, call_ok=1, loss_pct=0, lat_p95=30, jitter_ms=5),
        dict(down_mbps=25, call_ok=1, loss_pct=0, lat_p95=30, jitter_ms=5),   # no lock
@@ -74,6 +81,9 @@ assert absmoke.run("cancel test")[0]
 assert entered.wait(5)
 p = absmoke.status()["progress"]
 assert p["phase"] == "measuring" and p["step"] == 2 and p["total"] == 5, p
+active = absmoke.status()
+assert active["active"]["profile"] == "Smoke in progress" and active["active"]["lte"] == "66@1550", active
+assert active["plan"] == preview["plan"], active
 assert absmoke.stop()
 deadline = time.monotonic() + 10
 while absmoke.status()["running"] and time.monotonic() < deadline: time.sleep(0.05)

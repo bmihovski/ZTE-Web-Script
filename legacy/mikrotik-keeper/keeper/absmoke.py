@@ -6,7 +6,7 @@ from keeper import VERSION, abplan, acs, alert, brain, common, devices, guard
 from keeper.common import E, event, log, stamp, state
 
 BOOT_S = float(E("AB_SMOKE_BOOT_S", "180"))
-st = {"running": None, "progress": None, "result": None, "cancel": None, "retry_at": 0.0}
+st = {"running": None, "progress": None, "plan": None, "result": None, "cancel": None, "retry_at": 0.0}
 common.register_busy("ab smoke", lambda: bool(st["running"]))
 
 
@@ -128,6 +128,11 @@ def _msg(result):
     return "\n".join(lines)
 
 
+def _managed_pair(saved):
+    locks = (saved.get(k) or {} for k in ("lte_lock", "nr_lock"))
+    return tuple(lock["cell"] if lock.get("state") == "active" else "none" for lock in locks)
+
+
 def _plan(original):
     lte, nr = original
     plan = [("current lock", lte, nr)] if (lte, nr) != ("none", "none") else []
@@ -157,6 +162,7 @@ def _run(original, notify):
     changed = False
     try:
         plan = _plan(original)
+        st["plan"] = plan
         for step, (name, lte, nr) in enumerate(plan, 1):
             if stop.is_set(): break
             switch = changed or (lte, nr) != original
@@ -191,7 +197,7 @@ def _run(original, notify):
             event({"event": "ab smoke", "to": res["verdict"], "why": "%s: %d legs" % (trigger, len(legs))})
         finally:
             with common.test_start_lock:
-                st.update(running=None, progress=None, cancel=None)
+                st.update(running=None, progress=None, plan=None, cancel=None)
 
 
 def run(trigger="manual", notify=True):
@@ -206,8 +212,8 @@ def run(trigger="manual", notify=True):
         locks = [saved.get(k) or {} for k in ("lte_lock", "nr_lock")]
         if any(lock.get("state") == "pending" for lock in locks):
             return False, "managed locks are pending"
-        original = tuple(lock["cell"] if lock.get("state") == "active" else "none" for lock in locks)
-        st.update(running=trigger, progress={"phase": "planning", "legs": []}, result=None, cancel=threading.Event())
+        original = _managed_pair(saved)
+        st.update(running=trigger, progress={"phase": "planning", "legs": []}, plan=None, result=None, cancel=threading.Event())
         threading.Thread(target=_run, args=(original, notify), daemon=True).start()
     return True, trigger
 
@@ -239,6 +245,23 @@ def recover(row):
 def status():
     current = st.copy()
     saved = state()
-    return {"running": current["running"], "progress": current["progress"],
+    managed = _managed_pair(saved)
+    quality = saved.get("quality_ab") or {}
+    sample = _last_sample()
+    if current["running"]:
+        profile = "Smoke in progress"
+    elif quality.get("phase") in ("trial", "keep"):
+        profile = "Automatic quality A/B · " + ("alternate site" if quality.get("arm") == "site" else "unlocked")
+    elif managed != ("none", "none"):
+        profile = "Current lock"
+    elif any((saved.get(k) or {}).get("state") == "pending" for k in ("lte_lock", "nr_lock")):
+        profile = "Lock pending"
+    else:
+        profile = "Unlocked"
+    active = {"profile": profile, "lte_lock": managed[0], "nr_lock": managed[1],
+              "lte": _spec(sample.get("lte_cell")), "nr": _spec(sample.get("nr_cell"))}
+    plan = (current["plan"] or []) if current["running"] else _plan(managed)
+    return {"running": current["running"], "progress": current["progress"], "active": active,
+            "plan": [dict(leg=name, lte=lte, nr=nr) for name, lte, nr in plan],
             "stopping": bool(current["cancel"] and current["cancel"].is_set()),
             "restore_pending": bool(saved.get("ab_smoke_restore")), "result": current["result"] or saved.get("ab_smoke")}

@@ -1172,10 +1172,9 @@ def findings(rep):
         if cand:
             b = max(cand, key=lambda x: (x["capacity"], x["rsrp_p50"] or -999, x["mhz"] or 0))   # ties: stronger, then higher band
             ch, pci = b["carrier"].split(" ")[1].split("/")
-            def d(x): return "%s %s MHz %s MHz-wide SINR %s (~%s Mbit/s per layer%s)" % (x["carrier"], x["mhz"], x["bw_mhz"], x["sinr_p50"], x["capacity"],
-                                                                               ", low band: shared by more users" if (x["mhz"] or 9999) < 1000 else "")
-            fs.append("RECOMMEND: LTE anchor %s is weak; on the same aggregation: %s -> A/B test LTE lock %s@%s (the test also shows whether CA stays)"
-                      % (d(anchor), "; ".join(d(x) for x in sorted(car, key=lambda x: -(x["capacity"] or 0)) if x is not anchor), pci, ch))
+            fs.append("INFO: Radio-only LTE lock test candidate %s@%s. The estimated capacity is ~%s Mbit/s per layer on %s "
+                      "and ~%s Mbit/s per layer on the usual anchor %s. A loaded comparison would establish internet quality."
+                      % (pci, ch, b["capacity"], b["carrier"], anchor["capacity"], anchor["carrier"]))
     cells = [x for x in rep.get("cells", []) if x["cell"] != "no5G" and x["sinr_p50"] is not None]
     if len(cells) > 1:
         best = max(cells, key=lambda x: x["sinr_p50"])

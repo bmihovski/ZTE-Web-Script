@@ -245,7 +245,8 @@ The keeper measures, analyses and decides; the userscript only shows the results
   samples on first start, kept for good. Findings: `NEW:` a strong cell that appeared after watching started, `GONE:` a long-seen
   cell missing for > 24 h -> re-run the lock test. `POST /cells/forget?cells=500/341,3150/341` drops cells that don't belong to this device's registry. Your own `data/sites.json` (optional, reference only) adds site name, distance
   and bearing from the ZTE to the cells whose site the ZTE reported.
-- **A/B smoke** in the Keeper panel compares the current locked uplink, measured alternatives, and the unlocked modem.
+- **A/B smoke** in the Keeper panel shows the serving cells, active locks and proposed profiles before Run. The test compares the
+  current locked uplink, measured alternatives, and the unlocked modem.
   Use **Run** when diagnosing a problem and **Stop** to restore the managed locks after any pending reboot. The panel shows
   progress, measured legs, and the diagnosis. It also reports when there is insufficient evidence to identify the failure.
 - **Overnight operation.** It is safe to power off the router and modem when service is unneeded. There is no scheduled night

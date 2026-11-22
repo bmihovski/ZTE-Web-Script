@@ -167,8 +167,9 @@ at `/docs`.
   no cell lock; the network's low-band cell + n28; the internet test; the full list back), only unlocked. Phase 2 (not yet): the
   automatic two-tier A/B - the high-band no-lock is the default; a low quality triggers the low-band band-lock trial; a clear win
   keeps the low-band no-lock; the high band returns when it recovers.
-- **A/B smoke** is the on-demand diagnostic in the Keeper panel. Start with `POST /ab-smoke`, read phases, completed legs and
-  the last result with `GET /ab`, and stop with `POST /ab-smoke-stop`. The current managed pair is tested first without a reboot.
+- **A/B smoke** has its own section in the Keeper panel. `GET /ab` shows the active profile, serving cells, active locks,
+  eligible legs in PCI@channel format, and the run or last result. Start with `POST /ab-smoke` and stop with `POST /ab-smoke-stop`.
+  A radio-only LTE finding in the 24 h report identifies a test candidate. A loaded comparison establishes internet quality. The current managed pair is tested first without a reboot.
   The plan includes an unlocked baseline, other anchors with a complete daytime transfer score from the current measurement method,
   and low bands with an observed n28 pair. An unproven LTE anchor lets NR attach naturally. A changed lock requires a BOOT inform,
   a fresh serving-cell observation and fresh probes. A working alternate after the current configuration fails points to the
