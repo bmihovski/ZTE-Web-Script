@@ -40,6 +40,8 @@ LT_BOOT_WAIT_S = float(E("LOCKTEST_BOOT_WAIT_S", "180"))   # the boot inform com
 LT_ALIGN_TIMEOUT_MIN = float(E("LOCKTEST_ALIGN_TIMEOUT_MIN", "90"))
 LT_READY_TIMEOUT_S = float(E("LOCKTEST_READY_TIMEOUT_S", "180"))     # wait for the CPE web after a reboot (a ZTE needs minutes)
 LT_ONLINE_TIMEOUT_S = float(E("LOCKTEST_ONLINE_TIMEOUT_S", "180"))   # wait for stable probes before measuring
+LT_CA_WAIT_S = float(E("LOCKTEST_CA_WAIT_S", "60"))     # 2026-11-22v: after the settle, wait for the CA (>= 2 carriers) to form
+LT_RAISE_S = float(E("LOCKTEST_RAISE_S", "15"))         # the short download that raises the NSA 5G leg before the full load test
 
 # an unstable LTE anchor makes the 5G leg unstable: any serving-cell switch (0 = tolerated), < 80 % of the minutes on the pinned
 # anchor, or a > 3 min gap without data (management lost) flags the step `unstable` - kept in the results, never ranked.
@@ -49,7 +51,7 @@ LT_MAX_GAP_MIN = float(E("LOCKTEST_MAX_GAP_MIN", "3"))
 LT_COLS = ["time", "rat", "lock", "minutes", "on_target_pct", "anchor", "site", "pin", "anchor_pct", "anchor_switches", "gap_min", "unstable",
            "anchor_sinr_p50", "anchor_sinr_p10", "anchor_rsrp_p50", "anchor_rsrq_p50", "ca", "nr_cells", "nr_arfcn", "nr_sinr_p50", "nr_rsrp_p50",
            "nr_ca", "no5g_min", "call_ok_pct", "lat_p95", "jitter_ms", "loss_pct", "antennas", "ant5", "ant6", "note", "heading", "mode", "run",
-           "boot_s", "down_mbps", "up_mbps", "nr_iperf"]     # nr_iperf: the 5G cells (ARFCN/PCI:samples) while the iperf ran     # boot: lock -> boot inform (s); the modem's iperf3 while locked (2026-11-18)
+           "boot_s", "down_mbps", "up_mbps", "nr_iperf", "load_s", "load_method"]
 LT_IPERF = E("LOCKTEST_IPERF", "1") == "1"
 NIGHT = E("NIGHT_SCREEN", "02:00-05:00")
 BANDSCAN_NIGHT = [b for b in E("BANDSCAN_NIGHT", "1,3,7,8,20").replace(" ", "").split(",") if b]   # a test night starts with a band scan ('' = off); no B28: no service here, 3 min offline (2026-11-18)
@@ -112,6 +114,22 @@ def anchor_for(rat, spec=""):
         c = r.get("lte_cell") or ""
         if re.fullmatch(r"\d{1,6}/\d{1,3}", c): return "%s@%s" % (c.split("/")[1], c.split("/")[0])
     raise ValueError("no LTE anchor known - pass anchor=PCI@EARFCN (a 5G test compares the cells on one anchor)")
+
+
+def _wait_ca(since=None, target=None):
+    """Wait up to LT_CA_WAIT_S for the locked anchor's CA to form (a sample with >= 2 carriers) - "settle for the CA" (2026-11-22v).
+    A single-carrier cell never shows one: it is not an error, only a note. True when the CA was seen."""
+    targets = guard.lock_target(target) if target and target != "none" else None
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < LT_CA_WAIT_S:
+        h = list(brain.HIST)
+        if h:
+            row = h[-1]
+            if ((since is None or brain.ts(row) >= since) and (targets is None or row.get("lte_cell") in targets)
+                    and len(brain.parse_ca(row.get("lte_ca") or "")) >= 2):
+                return True
+        time.sleep(2)
+    return False
 
 
 def lt_eval(lock, rows, note="", rat="lte", antennas="", pin=None, ant5="", ant6=""):
@@ -206,6 +224,7 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
     night=True (LTE only): plan[0] is the current lock (baseline), rows are mode "night" and the lock is put back at the end."""
     if lt["running"]: return
     dev = devices.current()
+    lte_loaded = rat == "lte" and not night and LT_IPERF and common.DEVICE == "zte"
     pin = anchor if rat == "nr" else None                      # explicit anchor: one anchor for every cell
     base_pin = pin or (brain.anchor_for_cells([c for c in plan if c != "none"]) if rat == "nr" else None)
     fallback = None                                            # neither explicit nor known: the keeper's LTE lock / serving cell
@@ -310,8 +329,47 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
                 if LT_ONLINE_TIMEOUT_S > 0 and not brain.wait_online(LT_ONLINE_TIMEOUT_S):   # the link is back: measure from now
                     note = "; ".join(x for x in (note, "the link was not online within %d s" % LT_ONLINE_TIMEOUT_S) if x)
                     event({"event": "lock test %s: link not back" % lock, "why": "no successful probe within %d s" % LT_ONLINE_TIMEOUT_S})
-                phase("%s: measuring until %s" % (lock, hm(LT_MEASURE_MIN * 60)), True)
-                start = time.time(); lt_wait(LT_MEASURE_MIN * 60)
+                # 2026-11-22v (the user's strategy): the step measures the connection UNDER the full load - settle for the CA, raise
+                # the NSA 5G leg with a short download, run the full down/up and take call-ready / p95 / jitter / loss from that
+                # window. The idle minutes after it stay the anchor-stability evidence (on-target, switches, gap). An idle window is
+                # best-case: a low band with a good signal reads perfect quality and a bad internet (seen 2026-11-21: B8/B20 scored
+                # 59-68 on idle p95 ~40 while the loaded leg was p95 139 / jitter 69 / call 0).
+                start = time.time(); loaded = {}; dn = up = nr_ip = None
+                if LT_IPERF:
+                    if LT_CA_WAIT_S > 0 and not _wait_ca(since=locked if lte_loaded else None, target=lock if lte_loaded else None):
+                        note = "; ".join(x for x in (note, "no CA within %d s" % LT_CA_WAIT_S) if x)
+                    from keeper import captest
+                    lt["iperf"] = True                                # the test's own traffic (raise + load): never a call-risk alarm
+                    h0 = list(brain.HIST); mark = h0[-1] if h0 else None    # the last sample before the raise
+                    load_windows = []
+                    try:
+                        if LT_RAISE_S > 0:
+                            try: brain.internet_test(seconds=LT_RAISE_S)   # download-only: the 5G leg attaches if the anchor carries it
+                            except Exception as e: log("lock test %s: raise download failed: %r" % (lock, e))
+                        t_load = time.time()
+                        try:
+                            if lte_loaded:
+                                dn, up, how = captest.measure(load_windows=load_windows)
+                            else:
+                                dn, up, how = captest.measure()
+                            log("lock test %s: loaded iperf3 down %s / up %s Mbit/s (%s)" % (lock, dn, up, how))
+                        except Exception as e: log("lock test %s: iperf3 failed: %r" % (lock, e))
+                    finally: lt["iperf"] = False; lt["iperf_end"] = time.monotonic()
+                    if lte_loaded:
+                        if len(load_windows) == 2:
+                            loaded = brain.probe_windows(load_windows, min_points=2)
+                        loaded["load_s"] = round(sum(end - start for start, end in load_windows), 1) if load_windows else ""
+                        if brain.f(loaded.get("call_ok_pct")) is None:
+                            note = "; ".join(x for x in (note, "incomplete down/up load probes") if x)
+                    else:
+                        loaded = brain.probe_window(t_load, time.time())
+                        loaded["load_s"] = round(time.time() - t_load, 1)
+                    h = list(brain.HIST); i = next((k for k in range(len(h) - 1, -1, -1) if h[k] is mark), -1)
+                    c = collections.Counter(r.get("nr_cell") or "no5G" for r in h[i + 1:])   # the samples of the raise + load only
+                    nr_ip = " ".join("%s:%d" % kv for kv in c.most_common()) or None
+                remain = LT_MEASURE_MIN * 60 - (time.time() - start)
+                phase("%s: measuring until %s%s" % (lock, hm(max(0, remain)), "" if not LT_IPERF else " (idle after the load)"), True)
+                if remain > 0: lt_wait(remain)
             except Cut:                                # skip / stop from the panel or API: record what we have
                 lt["waiting"] = False; what = "skipped" if lt["cut"] == "skip" else "stopped"
                 since = start or locked                # skipped before measuring: keep what was seen while you aligned
@@ -324,18 +382,12 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
                 if what == "stopped": break
                 continue
             rows = [r for r in list(brain.HIST) if brain.ts(r) >= start]
-            dn = up = nr_ip = None
-            if LT_IPERF and rows and not lt["cut"]:      # still locked: the modem's own throughput (its traffic is not "yours")
-                from keeper import captest
-                lt["iperf"] = True; h0 = list(brain.HIST); mark = h0[-1] if h0 else None    # the last sample before the iperf
-                try: dn, up, how = captest.measure(); log("lock test %s: iperf3 down %s / up %s Mbit/s (%s)" % (lock, dn, up, how))
-                except Exception as e: log("lock test %s: iperf3 failed: %r" % (lock, e))
-                finally: lt["iperf"] = False; lt["iperf_end"] = time.monotonic()
-                h = list(brain.HIST); i = next((k for k in range(len(h) - 1, -1, -1) if h[k] is mark), -1)
-                c = collections.Counter(r.get("nr_cell") or "no5G" for r in h[i + 1:])          # NSA adds the 5G leg on traffic
-                nr_ip = " ".join("%s:%d" % kv for kv in c.most_common()) or None
             res = lt_eval(lock, rows, note or ("" if rows else "no samples (no service on this cell?)"), rat, ant, step_pin, a5, a6)
-            res.update(heading=heading, mode=step_mode(night, align, heading, rat), run=lt["run"], boot_s=boot_s, down_mbps=dn, up_mbps=up, nr_iperf=nr_ip)
+            if lte_loaded or loaded.get("call_ok_pct") not in ("", None):  # an incomplete LTE transfer cannot inherit idle quality
+                res.update(call_ok_pct=loaded.get("call_ok_pct"), lat_p95=loaded.get("lat_p95"), jitter_ms=loaded.get("jitter_ms"),
+                           loss_pct=loaded.get("loss_pct"))
+            res.update(heading=heading, mode=step_mode(night, align, heading, rat), run=lt["run"], boot_s=boot_s, down_mbps=dn, up_mbps=up,
+                       nr_iperf=nr_ip, load_s=loaded.get("load_s", ""), load_method=brain.LTE_LOAD_METHOD if lte_loaded else "")
             record("lock_tests", LT_COLS, res); lt["done"].append(res)
             if res["anchor"] and lock != "none" and not night and rat == "lte":          # night values (unloaded) don't go into the registry
                 try:                                     # bookkeeping only - never stops the test
@@ -462,13 +514,21 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
                 else:
                     alert.report("%s 5G lock test finished - nothing measured / ranked" % common.device_name())
             else:                                                               # daytime LTE test = real load: auto-apply the winner when AUTO=on
-                best, base, gain = brain.anchor_best()
-                if not best:
+                if lte_loaded:
+                    best, base, gain = brain.loaded_anchor_result(lt["done"])
+                else:
+                    best, base, gain = brain.anchor_best()
+                if lte_loaded and (not best or not base):
+                    alert.report("%s daytime lock test: incomplete loaded baseline or candidate, no lock decision" % common.device_name())
+                elif not best:
                     failed = brain.anchor_ranking("lte").get("failed") or []
                     if failed: alert.report("%s daytime lock test: no candidate result (not on the tested cell: %s)" % (common.device_name(), ", ".join(failed)))
                     else: alert.report("%s daytime lock test finished - nothing measured" % common.device_name())
-                if best:
-                    dd = lambda r: "%s: call-ready %s%%, 5G SINR %s, anchor SINR %s" % (r["lock"], na(r.get("call_ok_pct")), na(r.get("nr_sinr_p50")), na(r.get("anchor_sinr_p50")))
+                if best and (base or not lte_loaded):
+                    def dd(r):
+                        if lte_loaded:
+                            return "%s: score %s, call-ready %s%%, p95 %s ms" % (r["lock"], r["score"], r["call_ok_pct"], r["lat_p95"])
+                        return "%s: call-ready %s%%, 5G SINR %s, anchor SINR %s" % (r["lock"], na(r.get("call_ok_pct")), na(r.get("nr_sinr_p50")), na(r.get("anchor_sinr_p50")))
                     cur = (state().get("lte_lock") or {}).get("cell")
                     try: fresh = abs(time.time() - time.mktime(time.strptime(best.get("time", ""), "%Y-%m-%d %H:%M:%S"))) < 3 * 3600
                     except (ValueError, TypeError): fresh = False

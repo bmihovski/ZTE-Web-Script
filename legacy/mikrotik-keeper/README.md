@@ -96,6 +96,11 @@ The keeper measures, analyses and decides; the userscript only shows the results
 - **LTE cells**: ranking of every LTE cell in the neighbour list (band, RSRP, how often seen, used in CA or not); a finding lists
   stronger cells the ZTE doesn't use (lock-test candidates). No LTE antenna control exists - the antenna 5/6 modes are n78 only,
   TR-069 has no antenna settings; LTE is steered with the LTE cell / band lock.
+- **Morning cell check** (`GET /morning`, `POST /morning`): test the unlocked baseline, then each band's serving cell and up to two
+  ranked backups. A backup with a measured good NSA pair gets priority, with RSRP ordering the other neighbours. Only try the next
+  backup if the first fails to measure with 5G. Repeat reachability failures temporarily suppress that LTE cell.
+  `POST /morning?apply=0&low=1` compares the discovered high and low bands with full down/up load and restores the managed locks.
+  `GET /morning` exposes the comparison under `trial`.
 - **Antenna sweep** (`devices/zte/antennas.py`): the 4 modes of antennas 5/6 (omni/dir), each 10 s settle + 20 readings on the ZTE web page;
   winner = best median 5G SINR on the cell most modes saw (RSRP breaks ties), only if >= `SWEEP_MIN_GAIN_DB` (1) better than the
   current mode. (The 5G lock test's own sweep differs: it internet-tests every mode and the quality decides - see the lock test.) `AUTO=on`: the winner is kept (state.json) and set after every boot; dryrun: recommends and puts the current mode back.
@@ -110,7 +115,12 @@ The keeper measures, analyses and decides; the userscript only shows the results
   the 5G leg changes between the candidates; both
   legs go into one lock (one reboot on the ZTE). On the ZTE: lock + reboot (`LTE_LOCK_CELL_SET` / `NR5G_LOCK_CELL_SET` /
   `REBOOT_DEVICE` on the web page), wait for the boot inform; on the ATL: one RouterOS script, no reboot (the interface restart).
-  `LOCKTEST_SETTLE_S` (180) settle, `LOCKTEST_MEASURE_MIN` (12) of samples -> `GET /lock-tests`: share of minutes on the locked cell (`on_target_pct`), anchor SINR/RSRP/RSRQ, CA combination, which 5G
+  `LOCKTEST_SETTLE_S` (180) settle, then **the user's measurement strategy (2026-11-22v):** wait for the CA (`LOCKTEST_CA_WAIT_S` 60),
+  raise the NSA 5G leg with a short download (`LOCKTEST_RAISE_S` 15), and run the full down/up (the modem's iperf3) **while the
+  latency probe measures**. Daytime ZTE LTE tests collect call-ready, p95, jitter and loss during the two estimated transfer
+  intervals (`load_s`). The best complete score can apply a lock if it leads the unlocked baseline by at least five points and
+  internet quality holds up. The later `LOCKTEST_MEASURE_MIN` samples provide stability evidence. `GET /lock-tests` shows the
+  share of minutes on the locked cell (`on_target_pct`), anchor SINR/RSRP/RSRQ, CA combination, which 5G
   cells came with it and their SINR/RSRP/CA, call-ready %, latency, jitter. Rows carry `rat` (lte / nr), `nr_arfcn` (the ARFCN the 5G
   leg was on, so even the unlocked baseline has a capacity) and `antennas` (the mode the step measured with). A step without samples
   keeps its values empty (`minutes` 0, no loss / SINR), and `GET /lock-tests` reports the running or **last** test (`rat`, `anchor`,
@@ -226,7 +236,9 @@ The keeper measures, analyses and decides; the userscript only shows the results
 - **Cell registry** (`cells.json`, `GET /cells`): every LTE cell the ZTE measures (RSRP), and when used: SINR, bandwidth, minutes in
   CA / as anchor, the real site (eNB/cell from the ZTE), lock-test result; 5G cells served (minutes, SINR, RSRP) **and the LTE
   anchors each 5G cell was served with** (`anchors`, best first, with minutes / call-ready / p95 / jitter; `best_anchor` = the pair
-  with the best measured quality — an NSA 5G cell can be reachable only under some anchors, e.g. 747 needs 1550/434). Rebuild the
+  with the best measured quality — an NSA 5G cell can be reachable only under some anchors, e.g. 747 needs 1550/434). The pair
+  keys are `earfcn/pci` (`1550/434`, the sample format); a lock spec (`434@1550`) is converted with `brain.anchor_key()` for a
+  lookup. Rebuild the
   mapping from the samples with `POST /cells/refill?days=7`. The 5G cells' sites come from your `sites.json` notes (`cells` entries
   with `rat:"NR"` + `pci`): `/cells` shows each cell's site / distance / bearing and each (cell, anchor) pair's same-site / distance /
   bearing difference. Built from the

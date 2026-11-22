@@ -147,8 +147,8 @@ acs.handle(ENV % ('<soap:Fault><faultcode>Client</faultcode><faultstring>CWMP fa
 assert acs.tr["refused"] == [(I3 + "Omit", "9007", "Invalid parameter value")] and acs.tr["ok"] is False, acs.tr["refused"]
 # stale result before our start (2026-11-13 22:40): the old Complete / 144 / 22:17 must never be taken
 OLD = {I3 + "Enable": "0", I3 + "Status": "Complete", I3 + "DownlinkSpeed": "144Mbits/sec", I3 + "DownlinkLastTest": "13/11/2026 22/17"}
-out2 = {}
-th = _th.Thread(target=lambda: out2.update(r=c._iperf_once("37.19.203.1:5201", 10, 4, True)), daemon=True); c.st["running"] = True; th.start()
+out2 = {}; load_windows = []
+th = _th.Thread(target=lambda: out2.update(r=c._iperf_once("37.19.203.1:5201", 10, 4, True, load_windows)), daemon=True); c.st["running"] = True; th.start()
 for i in range(100):
     if acs.tr["writes"]: break
     time.sleep(0.02)
@@ -159,6 +159,7 @@ for i in range(100):
     time.sleep(0.02)
 acs.handle(gpvr(dict(iv, **OLD)))                                                                        # Enable session: still old
 assert not c.st["ev"].is_set(), "a stale result ended the wait"
+assert not load_windows
 acs.handle(ENV % "<cwmp:SetParameterValuesResponse><Status>0</Status></cwmp:SetParameterValuesResponse>")
 for i in range(100):
     if c.st.get("ip3_started"): break
@@ -167,6 +168,7 @@ acs.handle(gpvr(dict(iv, **OLD)))                                               
 assert not c.st["ev"].is_set(), "an unchanged result after the start ended the wait"
 acs.handle(gpvr(dict(iv, **dict(OLD, **{I3 + "DownlinkSpeed": "151Mbits/sec", I3 + "DownlinkLastTest": "13/11/2026 22/43"}))))   # new minute
 th.join(5); assert out2["r"][0] == 151.0, out2
+assert len(load_windows) == 1 and 0 < load_windows[0][1] - load_windows[0][0] <= 10, load_windows
 c.st["running"] = False
 assert c.ceilings([{"slot": "21:30", "down": 144.0, "down_how": "x, 4 streams 10 s", "server": "iperf3 a"}] * 2, "21:30") == {}   # pre-v2: no
 # scheduled run: download then the upload on the same server; the upload is shown but sets no ceiling (CAPTEST_UP=0)
@@ -197,6 +199,24 @@ N = time.mktime((2026, 11, 14, 1, 45, 0, 0, 0, -1)); common.state({"captest_done
 for i in range(12): brain.HIST.append({"down_bps": "0", "up_bps": "0"})
 started = []; real_ip = c.run_iperf; c.run_iperf = lambda *a: started.append(a)
 assert not c.maybe_test({"uptime_s": "300"}, N)                                          # 5 min after the 00:50 pause reboot: wait
+# The morning job can reserve the modem between the capacity job's initial check and its final claim.
+race, ready = [], _th.Event()
+owner = {"running": False}
+common.register_busy("morning fixture", lambda: owner["running"])
+due = c.due
+def signal_due(*args):
+    ready.set()
+    return due(*args)
+c.due = signal_due
+with common.test_start_lock:
+    worker = _th.Thread(target=lambda: race.append(c.maybe_test({"uptime_s": "3000"}, N)), daemon=True)
+    worker.start()
+    assert ready.wait(2)
+    owner["running"] = True
+worker.join(5)
+c.due = due
+owner["running"] = False
+assert race == [False] and not started and not common.state()["captest_done"], race
 assert c.maybe_test({"uptime_s": "3000"}, N) and started[-1][5] == "01:30"
 c.st["running"] = False
 # triggered tests (idle only): the setup changed and held 15 min, or the shaper asked; >= 1 h apart, none just before a slot, max a day
@@ -271,10 +291,37 @@ for part in ("2 tests (1 extra) - down 150-160 (median 155), up 25-27 (median 26
 assert c.weekly({}, W + 3600) is False                                                   # once a week
 # measure(): down + up by the modem now for a lock-test step - never a ceiling, never in the history; busy while it runs
 h0 = list(common.state().get("captest_hist") or []); seen = []
-c._iperf_once = lambda srv, secs, conn, rev: (seen.append((srv, conn, rev, c.st["running"])), (None, "x 10 s", []) if srv == "a:1" and rev else ((140.0 if rev else 24.0), "ok 10 s", []))[1]
+c._iperf_once = lambda srv, secs, conn, rev, **kw: (seen.append((srv, conn, rev, c.st["running"])), (None, "x 10 s", []) if srv == "a:1" and rev else ((140.0 if rev else 24.0), "ok 10 s", []))[1]
 c.IPERFS = ["a:1", "b:2"]
 assert c.measure() == (140.0, 24.0, "down b:2, up a:1") and not c.st["running"], seen
 assert [x[:3] for x in seen] == [("a:1", c.CONN, True), ("b:2", c.CONN, True), ("a:1", c.UP_CONN, False)] and all(x[3] for x in seen), seen
 assert (common.state().get("captest_hist") or []) == h0
 c.st["running"] = True; assert c.measure() == (None, None, "a capacity test is running"); c.st["running"] = False
+
+# Router-side load is separate from the modem's own iperf. A fast LAN transfer postpones the due slot.
+saved_url = sqm.URL
+sqm.URL = "http://router.invalid"
+sqm.recent_rate = lambda: {"down": 9.0, "up": 0.1}
+common.state({"captest_done": {}})
+brain.HIST.extend([{"down_bps": "100", "up_bps": "100"}] * c.IDLE_MIN)
+assert not c.maybe_test(R("3350/340"), time.mktime((2026, 11, 15, 12, 35, 0, 0, 0, -1)))
+assert common.state()["captest_done"] == {}
+
+# A download starts after the preflight but before iperf publishes a result. It must never enter ceiling history.
+c._iperf_once = real1
+rates = iter([{"down": 0.1, "up": 0.1}, {"down": 16.0, "up": 0.1}])
+sqm.wan_rate = lambda: next(rates)
+settings, start_iperf = c.write_settings, c.start_iperf
+c.write_settings = lambda params: (True, [])
+def completes():
+    c.st["vals"] = {"DownlinkSpeed": "100 Mbits/sec"}
+    c.st["ev"].set()
+    return True, "test acknowledged"
+c.start_iperf = completes
+before = list(common.state()["captest_hist"])
+c.st["running"] = True
+c.run_iperf(D, ["a:1"], 10, 4, True, "07:30", protect=True)
+assert common.state()["captest_hist"] == before
+assert "16" in c.info(D)["traffic_skip"]["reason"] and not c.st["running"]
+c.write_settings, c.start_iperf, sqm.URL = settings, start_iperf, saved_url
 print("OK test_captest")

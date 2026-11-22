@@ -395,6 +395,7 @@ def run_verdict(rows, rat="nr", run=None, lock=None):
     runs = [r for r in rows if r.get("rat", "lte") == rat and r.get("run")]
     run = run or (max(r["run"] for r in runs) if runs else "")
     steps = [r for r in runs if r["run"] == run and ";" not in (r.get("lock") or "")]
+    loaded_lte = rat == "lte" and any(r.get("load_method") == "iperf_phases" for r in steps)
     latest = {}
     for r in steps: latest[r["lock"]] = r                    # one row per step; a repeated lock keeps the last
     base = latest.get("none")
@@ -408,12 +409,28 @@ def run_verdict(rows, rat="nr", run=None, lock=None):
         elif not _num(r.get("minutes")): status = "not measured"
         elif (_num(r.get("on_target_pct")) or 0) < 80: status = "off target"
         else: status = "ranked"; ranked.append(r)
+        if loaded_lte and status == "ranked" and (r.get("score_partial") or r.get("score_gate")):
+            status = "incomplete load"
         out["steps"].append({"lock": spec, "status": status, "minutes": r.get("minutes"), "on_target_pct": r.get("on_target_pct"),
                              "call_ok_pct": r.get("call_ok_pct"), "loss_pct": r.get("loss_pct"), "lat_p95": r.get("lat_p95"),
                              "jitter_ms": r.get("jitter_ms"), "sinr": r.get("nr_sinr_p50"), "rsrp": r.get("nr_rsrp_p50"),
-                             "pin": r.get("pin") or "", "antennas": r.get("antennas"), "note": r.get("note")})
+                             "pin": r.get("pin") or "", "antennas": r.get("antennas"), "note": r.get("note"),
+                             "score": r.get("score") if loaded_lte else None})
     if base: out["baseline"] = {k: base.get(k) for k in ("minutes", "on_target_pct", "call_ok_pct", "loss_pct", "lat_p95",
                                                          "jitter_ms", "nr_sinr_p50", "nr_rsrp_p50", "antennas", "note")}
+    if loaded_lte:
+        if BASE not in sys.path:
+            sys.path.insert(0, BASE)
+        from keeper import brain
+        best, measured_base, gain = brain.loaded_anchor_result(latest.values())
+        if not measured_base:
+            out["why"] = "the run has no complete loaded baseline"
+        elif not best:
+            out["why"] = "the run has no on-target candidate with complete load measurements"
+        else:
+            out["baseline"]["score"] = measured_base["score"]
+            out.update(best=best["lock"], gain=gain, verdict=("keep" if best["lock"] == lock else "apply") if gain else "no-lock")
+        return out
     if not run: out["why"] = "no lock-test run found for rat=%s" % rat
     elif base is None: out["why"] = "the run's baseline was not measured"
     elif not ranked: out["why"] = "no candidate stayed on its cell (ranked)"
@@ -437,11 +454,15 @@ def verdict_text(v, lock=None, auto=""):
         lines.append("  baseline none: %s min, call %s %%, loss %s, p95 %s, jitter %s, SINR %s, RSRP %s | %s" % (
             b["minutes"], b["call_ok_pct"], b["loss_pct"], b["lat_p95"], b["jitter_ms"], b["nr_sinr_p50"], b["nr_rsrp_p50"],
             b["antennas"] or "-"))
+        if b.get("score") is not None:
+            lines[-1] += " | score %s" % b["score"]
     for s in v["steps"]:
         lines.append("  %s: %s, %s min, on %s %%, call %s %%, loss %s, p95 %s, jitter %s, SINR %s | %s%s%s" % (
             s["lock"], s["status"], s["minutes"], s["on_target_pct"], s["call_ok_pct"], s["loss_pct"], s["lat_p95"],
             s["jitter_ms"], s["sinr"], s["antennas"] or "-", (" | " + s["note"][:120]) if s["note"] else "",
             (" | known under %s, %s min" % (s["known_anchor"], s["known_min"])) if s.get("known_anchor") else ""))
+        if s.get("score") is not None:
+            lines[-1] += " | score %s" % s["score"]
     if v["verdict"] == "no-result":
         lines.append("  -> NO USABLE RESULT: " + v["why"])
     elif v["best"]:

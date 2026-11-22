@@ -21,7 +21,7 @@ WAIT_S = float(E("BANDSCAN_WAIT_S", "90"))
 TEST_S = float(E("BANDSCAN_TEST_S", "25"))         # per band: a short load test raises the NSA 5G leg; the probe gives the quality
 COLS = ["time", "band", "serving", "serving_band", "rsrp", "rsrq", "sinr", "neighbours", "samples", "note", "run", "bw_mhz",
         "nr_cell", "nr_arfcn", "nr_sinr", "nr_rsrp", "call_ok", "lat_p95", "jitter_ms", "loss_pct", "down_mbps"]
-st = {"running": None}
+st = {"running": None, "run": ""}
 common.register_busy("band scan", lambda: bool(st["running"]))
 
 
@@ -68,11 +68,12 @@ def summarize(band, rows, net=None):
     return out
 
 
-def scan(bands):
+def scan(bands, run=None):
     """Thread: per band one write (no reboot), its samples for WAIT_S (until one is on the band, at most 2x), a short load test
     (raises the 5G leg; the probe measures the band's internet quality), a record + an event, the (5G cell, anchor) pair into the NR
-    database; at the end ONE write of the full list back (also after an error)."""
-    run = stamp()
+    database; at the end ONE write of the full list back (also after an error). `run` is the stamp every row carries (start() sets it
+    synchronously, so a caller can select exactly this scan's rows)."""
+    run = run or st.get("run") or stamp()
     try:
         for b in bands:
             st["running"] = b; t0 = time.time()
@@ -124,6 +125,6 @@ def start(bands):
     if w.get("state") in ("active", "pending"):
         return False, "an NR cell lock is %s (%s): remove it first (the band scan needs the network's own 5G pair)" % (w.get("state"), w.get("cell"))
     if st["running"] or common.busy(): return False, "busy: %s" % (st["running"] or common.busy())
-    st["running"] = bands[0]                    # set before the thread: the caller/chain sees the scan immediately (no start race)
+    st["run"] = stamp(); st["running"] = bands[0]   # set before the thread: the caller/chain sees the scan's run + state at once
     threading.Thread(target=lambda: scan(bands), daemon=True).start()
     return True, ", ".join("B" + b for b in bands)

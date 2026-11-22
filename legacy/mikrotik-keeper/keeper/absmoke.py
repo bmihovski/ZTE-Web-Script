@@ -56,11 +56,11 @@ def _leg(name, lte, nr, seconds=25):
 
 def _nr_for(anchor, row):
     """The best measured 5G pair for this LTE anchor (the NR database), else the current sample's 5G."""
-    best = None
+    best = None; key = brain.anchor_key(anchor)          # the pair keys are earfcn/pci ("1550/434"), the spec is pci@earfcn
     for cell, e in (brain.REG.get("nr") or {}).items():
-        a = (e.get("anchors") or {}).get(anchor)
+        a = (e.get("anchors") or {}).get(key)
         if a:
-            q = brain.pair_quality(a, anchor)
+            q = brain.pair_quality(a, key)
             if best is None or q > best[0]: best = (q, cell)
     return _spec(best[1]) if best else (_spec(row.get("nr_cell")) or "none")
 
@@ -124,7 +124,6 @@ def _run(notify=True):
                    "nr_lock": ({"cell": n, "state": "active", "reason": "ab smoke: the best found"} if n != "none" else None)})
             dev.locks_apply(l, n); _wait_link(120)
         except Exception as e: log("ab smoke restore failed: %r" % e)
-        st["running"] = None
         res = {"trigger": st["why"], "time": stamp(), "started": st["started"], "seconds": round(time.time() - t0, 1),
                "legs": list(st["legs"]), "restored": {"lte": l, "nr": n}}
         res.update(_classify(res["legs"]))
@@ -133,6 +132,8 @@ def _run(notify=True):
             try: alert.report(_msg(res))
             except Exception as e: log("ab smoke telegram failed: %r" % e)
         event({"event": "ab smoke", "to": res["verdict"], "why": "%s: %d legs" % (res["trigger"], len(res["legs"]))})
+        st["running"] = None        # LAST: a waiter that sees running=None must already find the result + the Telegram (the refresh
+                                    # chain reads st["result"] right after the wait, and a test/GET must not see a done-but-empty run)
 
 
 def run(trigger="manual", notify=True):

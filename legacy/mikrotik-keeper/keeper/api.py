@@ -69,10 +69,12 @@ ROUTES = [   # method, path, summary, [(param, example, description)], capabilit
     ("get", "/ab-refresh", "Read-only: the one-call refresh (band scan -> A/B smoke -> one Telegram) state/result", [], None),
     ("post", "/ab-refresh", "One call: the full band scan (B1,B3,B7,B8,B20,B28), then the full A/B smoke, then ONE Telegram with both; "
      "~25 min; the wife can run it", [], "lock_test"),
-    ("get", "/morning", "Read-only: the morning cell check (no-lock + the bands' best two cells, 5G gate, A/B, best 5G) state/result", [], None),
-    ("post", "/morning", "Morning cell check now: no-lock, then B1/B3/B7 (band lock discovery -> the best cell + the best neighbour by "
-     "5G pair, then each cell lock + probe), 5G gate, A/B, best 5G restore, one Telegram; ?low=1 adds B8/B20 (empty = Saturday or a "
-     "bad high baseline)", [("low", "", "1 = add the low bands, 0 = high bands only, empty = auto")], "morning"),
+    ("get", "/morning", "Read-only: morning cell check state, latest regular result and latest loaded comparison", [], None),
+    ("post", "/morning", "Morning cell check now: no-lock, then B1/B3/B7 (serving cell and ranked backups by 5G pair quality or RSRP; "
+     "try the next backup only if the first cannot measure), 5G gate, A/B, best 5G restore, one Telegram; ?low=1 adds B8/B20 (empty = Saturday or a "
+     "bad high baseline)", [("low", "", "1 = test B20 and B8, 0 = high bands only, empty = auto"),
+     ("apply", "1", "0 = compare under full down/up load and restore the keeper-managed locks; 1 = regular check"),
+     ("bands", "", "Optional comma-separated bands for a focused comparison with apply=0")], "morning"),
     ("post", "/dev", "?on=1|0: development mode - the automatic A/B is off and the tests are allowed; the wife can continue working "
      "while the issue is fixed later", [("on", "1", "1 = on, 0 = off")], None),
     ("post", "/night-screen", "Arm (1) or cancel (0) the night screen for the coming night - leave the router + modem on for it "
@@ -223,7 +225,10 @@ class H(BaseHTTPRequestHandler):
                 if rat not in ("", "lte", "nr"): raise ValueError("rat=lte|nr")
                 rows = store.rows(DATA, "lock_tests")
                 if rat: rows = [r for r in rows if r.get("rat", "lte") == rat]
-                sc = lambda r: (lambda x: dict(r, score=x["score"], score_parts=x["parts"], score_partial=x["partial"], score_gate=x["gate"]))(brain.lt_score(r))
+                def sc(r):
+                    x = brain.lt_score(r)
+                    score = None if r.get("load_method") == brain.LTE_LOAD_METHOD and x["partial"] else x["score"]
+                    return dict(r, score=score, score_parts=x["parts"], score_partial=x["partial"], score_gate=x["gate"])
                 rows = [sc(r) for r in rows[-40:]]                          # the weighted score, computed when read (new weights re-score)
                 code, obj = 200, {"running": lt["running"], "phase": lt.get("phase", ""), "plan": lt["plan"], "align": lt["align"],
                                   "rat": lt.get("rat"), "anchor": lt.get("anchor"), "waiting": lt["waiting"], "results": rows,
@@ -351,10 +356,19 @@ class H(BaseHTTPRequestHandler):
             elif path == "/ab-refresh":     # one call: band scan -> smoke -> one Telegram
                 ok, why = abrefresh.run("manual")
                 code, res = 202 if ok else 409, {"started": ok, "why": why}
-            elif path == "/morning":        # the morning cell check: no-lock + the bands' best two cells, 5G gate, A/B, best restore
+            elif path == "/morning":        # no-lock, serving cells and backup attempts, 5G gate, best restore
+                if g("apply", "1") not in ("0", "1"): raise ValueError("apply=0|1")
                 low = None if g("low") == "" else g("low") in ("1", "true", "on", "yes")
-                ok, why = morning.run(low=low, trigger="manual")
-                code, res = 202 if ok else 409, {"started": ok, "why": why, "low": low}
+                apply = g("apply", "1") == "1"
+                bands = [x.strip() for x in g("bands").split(",")] if g("bands") else None
+                if bands:
+                    if apply or any(b not in morning.BANDS + morning.LOW for b in bands):
+                        raise ValueError("bands= requires apply=0 and configured LTE bands")
+                    if any(b in morning.LOW for b in bands):
+                        if low is False: raise ValueError("low=0 excludes low bands")
+                        low = True
+                ok, why = morning.run(low=low, trigger="manual" if apply else "comparison", apply=apply, notify=apply, bands=bands)
+                code, res = 202 if ok else 409, {"started": ok, "why": why, "low": low, "apply": apply, "bands": bands}
             elif path == "/dev":            # development mode: the auto A/B off, the tests allowed
                 on = g("on") in ("1", "true", "on", "yes")
                 state({"dev": on}); log("development mode %s" % ("on" if on else "off"))

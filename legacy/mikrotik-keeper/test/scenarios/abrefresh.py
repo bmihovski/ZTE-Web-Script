@@ -12,9 +12,10 @@ for b, s, n, c, p, j, d, note in (("1", "100/340", "636576/534", "100.0", "40.9"
                                   ("20", "6400/112", "", "100.0", "68.4", "28.3", "8.31", ""),          # the scan saw no 5G leg
                                   ("28", "", "", "", "", "", "", "no service on B28 (no sample on the band)")):
     store.add(DATA, "band_scans", {"band": b, "serving": s, "nr_cell": n, "nr_arfcn": n.split("/")[0], "call_ok": c,
-                                   "lat_p95": p, "jitter_ms": j, "down_mbps": d, "note": note})
+                                   "lat_p95": p, "jitter_ms": j, "down_mbps": d, "note": note, "run": "r-test"})
 def bs(bands):
-    bandscan.st.update(running="1"); threading.Timer(0.5, lambda: bandscan.st.update(running=None)).start(); return True, "1"
+    bandscan.st.update(running="1", run="r-test")           # the run stamp the scan's rows carry (start() sets it synchronously)
+    threading.Timer(0.5, lambda: bandscan.st.update(running=None)).start(); return True, "1"
 bandscan.start = bs
 def sm(trigger="manual", notify=True):
     absmoke.st.update(running="refresh")
@@ -42,7 +43,7 @@ assert abrefresh.status()["stage"] == "done"
 # a stage that never finishes: the chain must abort, not start the smoke on the band scan's band lock
 calls = []
 def bs_stuck(bands):
-    bandscan.st.update(running="B1")                       # the scan starts and never clears its flag
+    bandscan.st.update(running="B1", run="r-stuck")        # the scan starts and never clears its flag; it writes no row
     return True, "B1"
 bandscan.start = bs_stuck
 absmoke.run = lambda trigger="manual", notify=True: (calls.append(trigger), (True, trigger))[1]
@@ -58,5 +59,7 @@ assert abrefresh.st["running"] is None, abrefresh.st
 res = abrefresh.st["result"]
 assert calls == [], calls                                  # the smoke was NOT started on the scan's band lock
 assert not res["smoke"] and "still running after" in res["trigger"], res
+assert res["band_scan"] == [], res["band_scan"]            # an aborted scan: no older scan's rows presented as this run's
+assert "B1:" not in rep[0] and "B8:" not in rep[0], rep[0]
 assert len(rep) == 1 and "still running after" in rep[0], rep
 print("OK abrefresh")

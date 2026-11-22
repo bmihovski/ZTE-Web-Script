@@ -16,9 +16,15 @@ z = devices.current(); calls = []
 z.locks_apply = lambda l, n: (calls.append((l, n)), "tr069")[1]
 z.ready = lambda timeout=0: True
 brain.wait_online = lambda timeout=0: True
-brain.REG["nr"] = {"636576/534": {"anchors": {"1550@434": {"time": ts}, "340@100": {"time": ts}}}}
+# the pair database in its REAL key format (earfcn/pci: "1550/66"), not the lock spec ("66@1550"): the A/B high leg must get
+# the anchor's measured 5G pair, never the pre-run sample's cell (the fallback here is the n28 cell 534@156510)
+brain.REG["nr"] = {"636576/534": {"anchors": {"1550/66": {"min": 100}, "100/340": {"min": 100}}},
+                   "156510/534": {"anchors": {"3774/394": {"min": 100}}}}
 brain.pair_quality = lambda p, a: 1
-absmoke.abplan.high = lambda: ["340@100", "1550@434"]
+assert absmoke._nr_for("340@100", {"nr_cell": "156510/534"}) == "534@636576", absmoke._nr_for("340@100", {"nr_cell": "156510/534"})
+assert absmoke._nr_for("66@1550", {"nr_cell": "156510/534"}) == "534@636576"
+assert absmoke._nr_for("999@999", {"nr_cell": "156510/534"}) == "534@156510"      # no pair history: the sample's 5G is the fallback
+absmoke.abplan.high = lambda: ["340@100", "66@1550"]
 absmoke.abplan.low = lambda: [("394@3774", "534@156510"), ("112@6400", "534@156510")]
 seq = [dict(down_mbps=30, call_ok=1, loss_pct=0, lat_p95=20, jitter_ms=3),   # A high: p95 20 beats the no-lock 30
        dict(down_mbps=20, call_ok=1, loss_pct=0, lat_p95=30, jitter_ms=5),
@@ -27,7 +33,10 @@ seq = [dict(down_mbps=30, call_ok=1, loss_pct=0, lat_p95=20, jitter_ms=3),   # A
        dict(down_mbps=8, call_ok=0, loss_pct=1, lat_p95=40, jitter_ms=8)]
 brain.internet_test = lambda seconds=25: seq.pop(0)
 brain.row_health = lambda row: {"sim": True, "registered": True, "signal": True, "data": True}
-rep = []; alert.report = lambda m: rep.append(m)
+rep = []
+def _rep(m):                       # a slow Telegram send: with `running` cleared before the result/Telegram, a waiter would see a
+    time.sleep(0.3); rep.append(m) # done run with an empty rep (the 2026-11-22 docker race this pins)
+alert.report = _rep
 ok, why = absmoke.run("test"); assert ok, why
 deadline = time.time() + 10
 while absmoke.st["running"] and time.time() < deadline: time.sleep(0.05)
@@ -35,7 +44,7 @@ assert absmoke.st["running"] is None, absmoke.st
 res = absmoke.st["result"]; print(res)
 legs = [x["leg"] for x in res["legs"]]
 assert legs == ["A high", "B high", "no lock", "A low", "B low"], legs
-assert calls == [("340@100", "534@636576"), ("1550@434", "534@636576"), ("none", "none"),
+assert calls == [("340@100", "534@636576"), ("66@1550", "534@636576"), ("none", "none"),
                  ("394@3774", "534@156510"), ("112@6400", "534@156510"), ("340@100", "534@636576")], calls   # A = the max scored, B = the next; best found the A high
 assert res["verdict"] == "modem good" and res["any_internet"], res
 assert rep and "modem good" in rep[0], rep

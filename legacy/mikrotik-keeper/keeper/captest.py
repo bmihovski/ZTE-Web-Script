@@ -289,14 +289,84 @@ def on_values(vals):
         st["vals"] = vals; st["ev"].set()
 
 
-def _one(base, params):
+class LocalTraffic(RuntimeError):
+    """The router detected competing traffic or could not verify the test was quiet."""
+
+
+def _traffic_reason(rate):
+    if not rate:
+        return ""
+    down, up = rate["down"], rate["up"]
+    if down * 125000 > brain.IDLE_DOWN or up * 125000 > brain.IDLE_UP:
+        return "local traffic %.2f down / %.2f up Mbit/s" % (down, up)
+    return ""
+
+
+def _require_quiet():
+    if not sqm.URL:
+        return
+    try:
+        reason = _traffic_reason(sqm.wan_rate())
+    except (OSError, RuntimeError, ValueError, IndexError, KeyError, TypeError):
+        raise LocalTraffic("router WAN traffic unavailable") from None
+    if reason:
+        raise LocalTraffic(reason)
+
+
+def wait_lan_quiet(timeout=90):
+    """Wait for three quiet WAN readings before an observation retries a discarded transfer."""
+    deadline = time.monotonic() + timeout
+    good = 0
+    while time.monotonic() < deadline:
+        try:
+            _require_quiet()
+            good += 1
+            if good == 3:
+                return True
+        except LocalTraffic:
+            good = 0
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(5, remaining))
+    return False
+
+
+def _await_result(timeout, protect=False):
+    if not protect or not sqm.URL:
+        return st["ev"].wait(timeout)
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            _require_quiet()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return st["ev"].is_set()
+            if st["ev"].wait(min(2, remaining)):
+                _require_quiet()
+                return True
+    except LocalTraffic:
+        # Keep the device reserved until this transfer has finished. The caller discards its result.
+        st["ev"].wait(max(0, deadline - time.monotonic()))
+        raise
+
+
+def _traffic_skip(now, slot, error):
+    skip = {"time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)), "slot": slot, "reason": str(error)}
+    state({"captest_traffic_skip": skip})
+    log("capacity test %s skipped: %s" % (slot, error))
+    event({"event": "capacity test skipped", "to": slot, "why": str(error)})
+
+
+def _one(base, params, protect=False):
     """Arm one TR-143 test and wait for its result: (Mbit/s or None, why)."""
+    if protect:
+        _require_quiet()
     st.update(base=base, seen_requested=False, vals=None, armed=time.time(), first=True, stale_rom=None); st["ev"].clear()
     ok = acs.tr069_set(params)                                  # the session that carries it first reads the previous test's result
     if not ok and any("NumberOfConnections" in p[0] for p in params):                    # an older object: one connection
         st["first"] = True; ok = acs.tr069_set([p for p in params if "NumberOfConnections" not in p[0]])
     if not ok: return None, "the modem refused the test parameters"
-    if not st["ev"].wait(RESULT_WAIT_S): return None, "no result within %d s" % RESULT_WAIT_S
+    if not _await_result(RESULT_WAIT_S, protect): return None, "no result within %d s" % RESULT_WAIT_S
     st.setdefault("raw", {})[base] = {k[len(base):]: v for k, v in st["vals"].items() if k.startswith(base) and "." not in k[len(base):]}
     return result(st["vals"], base)
 
@@ -305,12 +375,13 @@ def run(slot, now=None, forced=False, url=None, conn=None, secs=None):
     """Thread: download then upload test in `slot`, record the result, move the ceilings."""
     now = now or time.time(); st["raw"] = {}
     try:
+        opts = {"protect": True} if not forced and sqm.URL else {}
         srv = pick(servers(now)) or {"host": HOST, "id": "fallback", "name": HOST}
-        down, dwhy = _one(DL, down_params(srv["host"], url, conn, secs))
+        down, dwhy = _one(DL, down_params(srv["host"], url, conn, secs), **opts)
         off = "CAPTEST_UP=0, the ceiling is SQM_MAX_UP" if not UP else (state().get("captest_up") or {}).get("off")
         if off: up, uwhy = None, "upload test off (%s)" % off
         else:
-            up, uwhy = _one(UL, up_params(srv))
+            up, uwhy = _one(UL, up_params(srv), **opts)
             if up is None and (uwhy.startswith("Error_") or "refused" in uwhy):   # 2026-11-13: Ookla drops HTTP PUT (TR-143's method)
                 state({"captest_up": {"off": uwhy, "time": time.strftime("%Y-%m-%d %H:%M:%S")}})
                 event({"event": "capacity ceiling", "to": "upload test off", "why": "the modem's TR-143 upload failed (%s) - Ookla's"
@@ -326,6 +397,8 @@ def run(slot, now=None, forced=False, url=None, conn=None, secs=None):
         moved = [d for d in after if not before.get(d) or abs(after[d] - before[d]) > 0.1 * before[d]]
         if moved:
             event(ceiling_event(slot, after, rec))
+    except LocalTraffic as e:
+        _traffic_skip(now, slot, e)
     except Exception as e:
         log("capacity test failed: %r" % e)
     finally:
@@ -427,42 +500,49 @@ def ip3_result(v, reverse=True):
     return None, "iperf3: no speed (Status=%s, %s=%s, Report=%s)" % (v.get("Status"), f, v.get(f), rep[:120])
 
 
-def _iperf_once(server, secs, conn, reverse):
+def _iperf_once(server, secs, conn, reverse, load_windows=None, protect=False):
     """One iperf3 run by the modem against `server`: (Mbit/s or None, why, the reads)."""
+    if protect:
+        _require_quiet()
     st.update(base=IP3, first=True, vals=None, ip3_snaps=[], ip3_base=None, ip3_seen_on=False, ip3_started=False, cpu=[]); st["ev"].clear()
     ok, notes = write_settings(iperf_params(server, secs, conn, reverse))
     if ok:
         st["ev"].clear(); ok, how = start_iperf(); notes.append(how)
+        started = time.time()                         # CPE accepted Enable, the closest clock marker for transfer start
         st["ip3_started"] = ok
     if not ok: return None, "the modem refused the iperf3 settings: %s" % ", ".join(notes), st["ip3_snaps"]
-    if not st["ev"].wait(secs + 150): return None, "iperf3: no result within %d s (%s)" % (secs + 150, ", ".join(notes)), st["ip3_snaps"]
+    if not _await_result(secs + 150, protect): return None, "iperf3: no result within %d s (%s)" % (secs + 150, ", ".join(notes)), st["ip3_snaps"]
     sp, why = ip3_result(st["vals"], reverse)
+    if sp and load_windows is not None:
+        load_windows.append((started, min(time.time(), started + secs)))
     return sp, "%s (%s)%s, %d streams %d s" % (why, ", ".join(notes), cpu_note(), conn, secs), st["ip3_snaps"]     # ends in 'N s': valid()
 
 
-def measure(secs=None):
+def measure(secs=None, load_windows=None):
     """A lock-test step's throughput, now and synchronous: the modem's iperf3 down (CONN streams) then up (UP_CONN), the first server
-    that answers. -> (down, up, which servers). Never a ceiling, not in captest_hist (2026-11-18: the night cells' score needs it)."""
+    that answers. -> (down, up, which servers). Optionally collect one estimated transfer interval per successful direction.
+    Never a ceiling, not in captest_hist (2026-11-18: the night cells' score needs it)."""
     if st["running"]: return None, None, "a capacity test is running"
     st["running"] = True; out, how = {}, []
     try:
         for d, rev, conn in (("down", True, CONN), ("up", False, UP_CONN)):
             for srv in IPERFS:
-                sp, why, _ = _iperf_once(srv, secs or ISECS, conn, rev)
+                sp, why, _ = _iperf_once(srv, secs or ISECS, conn, rev, load_windows=load_windows, protect=load_windows is not None)
                 if sp: out[d] = sp; how.append("%s %s" % (d, srv)); break
         return out.get("down"), out.get("up"), ", ".join(how) or "no iperf3 result"
     finally:
         st.update(running=False, base=None)
 
 
-def run_iperf(now, servers, secs, conn, reverse, slot=None, diag=None):
+def run_iperf(now, servers, secs, conn, reverse, slot=None, diag=None, protect=False):
     """Thread: the modem's iperf3 against the first server that answers (Sofia, then Athens - public servers take one client at
     a time); the result counts for the period's ceiling unless `diag` (a custom diagnostic run). Measured 2026-11-13 22:15: 144
     Mbit/s download, Status Requested -> Complete, DownlinkSpeed '144Mbits/sec' (the MC889 fills no Report)."""
     try:
         slot = slot or slot_of(now); tried = []
+        opts = {"protect": True} if protect and sqm.URL else {}
         for srv in servers:
-            sp, why, reads = _iperf_once(srv, secs, conn, reverse); tried.append("%s: %s" % (srv, why))
+            sp, why, reads = _iperf_once(srv, secs, conn, reverse, **opts); tried.append("%s: %s" % (srv, why))
             if sp: break
         d = "down" if reverse else "up"
         rec = {"time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)), "slot": slot, "down": None, "up": None, d: sp,
@@ -472,7 +552,7 @@ def run_iperf(now, servers, secs, conn, reverse, slot=None, diag=None):
         if reverse and sp and UP_MEASURE and not diag:                   # the upload: same server first, then the others
             utried = []                                                  # 2026-11-13 23:17: Athens upload ended in 6 s, 'Mbits/sec' (no number)
             for u in [srv] + [x for x in servers if x != srv]:
-                usp, uwhy, ureads = _iperf_once(u, secs, UP_CONN, False); reads = reads + ureads; utried.append("%s: %s" % (u, uwhy))
+                usp, uwhy, ureads = _iperf_once(u, secs, UP_CONN, False, **opts); reads = reads + ureads; utried.append("%s: %s" % (u, uwhy))
                 if usp: break
             rec.update(up=usp, up_how=(uwhy if u == srv else utried[-1]) if usp else "; ".join(utried))
         applied = lambda c: {k: x for k, x in c.items() if k == "down" or UP}       # the upload ceiling only with CAPTEST_UP=1
@@ -490,6 +570,8 @@ def run_iperf(now, servers, secs, conn, reverse, slot=None, diag=None):
         moved = [k for k in after if not before.get(k) or abs(after[k] - before[k]) > 0.1 * before[k]]
         if moved:
             event(ceiling_event(slot, after, rec))
+    except LocalTraffic as e:
+        _traffic_skip(now, slot, e)
     except Exception as e:
         log("iperf3 test failed: %r" % e)
     finally:
@@ -500,13 +582,14 @@ def force(now=None, url=None, conn=None, secs=None, mode=None, server=None, reve
     """API (POST /captest): a test now - no slot, no idle wait (your own traffic lowers the result). False while one runs or the
     keeper is busy (lock test, sweep, lock change). It counts for the current period's ceiling like a scheduled one."""
     now = now or time.time()
-    if st["running"] or common.busy(): return False
-    st["running"] = True
+    with common.test_start_lock:
+        if st["running"] or common.busy(): return False
+        st["running"] = True
     if (mode or ("tr143" if url else METHOD)) == "iperf3":          # a url= is a TR-143 file
         custom = any(x is not None for x in (server, secs, conn)) or not reverse
         diag = {"mode": "iperf3", "server": server, "secs": secs, "conn": conn, "reverse": reverse} if custom else None
         if not diag: counted(now, "by hand (POST /captest)")
-        threading.Thread(target=run_iperf, args=(now, [server] if server else IPERFS, secs or ISECS, conn or CONN, reverse, None, diag),
+        threading.Thread(target=run_iperf, args=(now, [server] if server else IPERFS, secs or ISECS, conn or CONN, reverse, None, diag, not diag),
                          daemon=True).start()
     else:
         threading.Thread(target=run, args=(slot_of(now), now, True, url, conn, secs), daemon=True).start()
@@ -517,6 +600,7 @@ def info(now=None):
     """API (GET /captest): running, slots, the last test with the modem's raw values, recent results, the ceilings now."""
     now = now or time.time(); hist = state().get("captest_hist") or []
     return {"running": st["running"], "slots": SLOTS, "period_now": slot_of(now), "upload_test": UP, "host_fallback": HOST,
+            "traffic_skip": state().get("captest_traffic_skip"),
             "server_list": "ok %s" % st["servers_day"] if st["servers"] else "not fetched yet / failed (fallback %s)" % HOST,
             "last": state().get("captest_last"), "recent": hist[-20:],
             "ceiling_now": {d: ceiling(d, now) for d in ("down", "up")},
@@ -579,17 +663,25 @@ def maybe_test(row, now=None):
     if not s and not (why and (confirming or trig_ok(now))): return False
     if not s and guard.pause_end(now): return False    # LOCK_PAUSE: the released lock is no setup change and the empty night network
     last = list(brain.HIST)[-IDLE_MIN:]                # is no ceiling; it held the night screen ~40 min (2026-11-20 01:22) - the day's turn
-    if len(last) < IDLE_MIN or not all(brain.idle(r) for r in last): return False
+    if len(last) < IDLE_MIN or _traffic_reason(sqm.recent_rate()): return False
+    if any(not brain.idle(r) or _traffic_reason({"down": brain.f(r.get("sqm_rx")) or 0, "up": brain.f(r.get("sqm_tx")) or 0}) for r in last):
+        return False
     day = time.strftime("%Y-%m-%d", time.localtime(now))
-    trig = None
-    if s:
-        state({"captest_done": {k: v for k, v in done.items() if k[:10] >= time.strftime("%Y-%m-%d", time.localtime(now - 3 * 86400))}
-               | {"%s %s" % (day, s): True}})
-    else:
-        s, trig = slot_of(now), why; state({"captest_trig": [t for t in state().get("captest_trig") or [] if now - t < 86400] + [now]})
-    counted(now, trig)
-    st["running"] = True
-    if METHOD == "iperf3": threading.Thread(target=run_iperf, args=(now, IPERFS, ISECS, CONN, True, s), daemon=True).start()
+    with common.test_start_lock:
+        if st["running"] or common.busy(): return False
+        trig = None
+        if s:
+            done = state().get("captest_done") or {}
+            slot_key = "%s %s" % (day, s)
+            if done.get(slot_key): return False
+            cutoff = time.strftime("%Y-%m-%d", time.localtime(now - 3 * 86400))
+            state({"captest_done": {k: v for k, v in done.items() if k[:10] >= cutoff} | {slot_key: True}})
+        else:
+            s, trig = slot_of(now), why
+            state({"captest_trig": [t for t in state().get("captest_trig") or [] if now - t < 86400] + [now]})
+        counted(now, trig)
+        st["running"] = True
+    if METHOD == "iperf3": threading.Thread(target=run_iperf, args=(now, IPERFS, ISECS, CONN, True, s, None, True), daemon=True).start()
     else: threading.Thread(target=run, args=(s, now), daemon=True).start()
     return True
 

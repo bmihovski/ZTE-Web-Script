@@ -62,11 +62,38 @@ the docstrings and this skill in sync.
 - **The one-call refresh never overlaps its stages:** the chain waits per stage and aborts if the band scan is still running after
   `REFRESH_SCAN_MAX_S` (1800 s; the 6-band worst case is ~1230 s) instead of starting the smoke on the scan's band lock (2026-11-21p).
   Its Telegram (`abrefresh._msg`) names a no-service band (`B28: no service (...)`), never a row of blanks, and prints
-  `nr cell missing` when the scan saw no 5G leg (2026-11-21q).
-- **Morning check (`/morning`, `morning.py`, 2026-11-21r):** the 5G gate (a leg with no real `nr_cell` in its probe window is not
-  A/B/persisted), the band-lock discovery (#1 serving, #2 the best neighbour by a known 5G pair then RSRP; the low PCI changes, so
-  re-discover every run), the cell lock keeps the CA (a band lock does not), and the low bands are the fallback (Saturday or a bad
-  baseline), not daily.
+  `nr cell missing` when the scan saw no 5G leg (2026-11-21q). The band rows are **this run's only** (`_bands(run)`, the scan's
+  `run` stamp set by `bandscan.start()`): an aborted/failed scan must not print an older scan's rows as fresh (2026-11-22u).
+- **A run clears `running` last:** `absmoke._run` sets `st["running"] = None` after `st["result"]`, the state, the Telegram and the
+  event; a waiter (the refresh chain's `_wait` -> `st["result"]`, a test, `GET /ab`) that sees the run done must never find an
+  empty result (2026-11-22u).
+- **The one-call refresh needs the locks released:** its band scan refuses (409) while the keeper holds an LTE/NR cell lock, which
+  is the normal state - `POST /lte-lock?cell=none` + `POST /nr-lock?cell=none` first (the 17:26 run was from an unlocked state).
+- **Daytime ZTE LTE lock tests:** settle for CA, use a short download to raise NSA 5G, then measure call-ready/p95/jitter/loss in
+  the modem's two successful iperf transfer intervals (`load_method=iperf_phases`). `load_s` is their combined estimated duration
+  from the Enable acknowledgements. The later idle samples provide stability evidence. A lock needs a complete score at least
+  5 points over the same run's unlocked baseline and no clear internet-quality regression. SINR and RSRP are diagnostic.
+  The `5g` score component reflects the band. B8/B20 read p95 ~40 ms and 100% call-ready idle, then p95 139 ms, jitter 69 ms and
+  0% call-ready under load (2026-11-21).
+- **Pair lookups convert the key:** the pair DB is keyed `earfcn/pci` (`1550/434`, the sample format); a lock spec is
+  `pci@earfcn` (`66@1550`). `brain.anchor_key()` converts. `absmoke._nr_for` used the spec as the key, so it missed every pair and
+  silently used the pre-run sample's 5G cell - the A/B high leg would lock the n28 534@156510 after a band scan instead of the
+  anchor's n78 pair (2026-11-22u); morning's pair lookup had the same miss (the backup pair priority never ran). The
+  scenarios had seeded the wrong key format and hid it - seed the REAL registry format.
+- **Morning check (`/morning`, `morning.py`):** discover the serving cell and up to `MORNING_CANDIDATES` (2) backups per band.
+  Backups need two fresh RSRP readings of at least `MORNING_MIN_RSRP` (−110 dBm), and the serving cell needs usable signal.
+  Pairs with at least 10 measured minutes, loss ≤ 2% and jitter ≤ 20 ms rank by measured quality, then same site and signal.
+  Other neighbours rank by RSRP. Only probe another backup when the previous one cannot measure with 5G. The first working backup
+  fills the band's second slot. A locked cell has a 90 s web/online budget and a 90 s 5G wake budget. Two reachability failures in
+  seven days suppress that exact LTE lock in morning discovery. A successful measurement clears the persisted per-device streak.
+  Cell locks preserve CA. Discover B20/B8 on Saturday or when the unlocked screen is poor or unavailable, and use the fallback
+  when every high screen is poor. Low tests allow the natural n28 pairing. `POST /morning?apply=0&low=1` compares all bands under
+  full down/up load, records observed radio paths and scores in `/morning` → `trial`, and restores the keeper-managed locks.
+- **Capacity test traffic guard:** the modem's iperf bypasses the router's WAN port. Defer scheduled runs when that port already
+  carries traffic above the idle limits. The in-transfer guard discards a contaminated capacity result or a loaded lock-test
+  leg. `/captest` records the latest skipped capacity test under `traffic_skip`. A morning comparison can retry once on the same
+  cell after the LAN quiets, and `bands=` limits the comparison to the bands being rechecked.
+  The morning start and capacity-probe start share the same modem reservation lock.
 - Patching a function in tests hides its real body; add a real-body test.
 - The ZTE web has ONE session: an open page logs the keeper out; the antenna set retries 3× with a re-login, and the boot apply
   waits for the web (`CPE_READY_*`).

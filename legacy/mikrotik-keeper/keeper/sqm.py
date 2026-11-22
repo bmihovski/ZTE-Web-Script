@@ -235,6 +235,19 @@ def delay_now(lat_buf, now, idle, rebase=False):
     return round(statistics.mean(d), 1) if d else None
 
 
+def wan_rate():
+    """Traffic crossing the router's WAN port in Mbit/s. The modem's own iperf bypasses this port."""
+    m = rest("POST", "/interface/monitor-traffic", {"interface": IFACE, "once": True})[0]
+    return {"up": int(m["tx-bits-per-second"]) / 1e6, "down": int(m["rx-bits-per-second"]) / 1e6}
+
+
+def recent_rate():
+    rate_at = st.get("rate_at")
+    if URL and rate_at is not None and time.monotonic() - rate_at <= 2 * TICK:
+        return (st.get("last") or {}).get("rate")
+    return None
+
+
 def tick(lat_buf, now=None, path_change=0.0):
     """One SQM step: read the queue / traffic, decide, PATCH the limit when it changes >= 2 %.
     path_change = epoch of the last TR-069 cell/RAT/boot change (0 = none); the delay baseline is rebased once per change."""
@@ -244,8 +257,7 @@ def tick(lat_buf, now=None, path_change=0.0):
         if not q: raise RuntimeError("no simple queue named %r on the router" % QUEUE)
         st["id"] = q[0][".id"]; up, down = q[0]["max-limit"].split("/")
         st["limit"] = {"up": min(MAX["up"], mbit(up) or MAX["up"]), "down": min(MAX["down"], mbit(down) or MAX["down"])}
-    m = rest("POST", "/interface/monitor-traffic", {"interface": IFACE, "once": True})[0]
-    rate = {"up": int(m["tx-bits-per-second"]) / 1e6, "down": int(m["rx-bits-per-second"]) / 1e6}
+    rate = wan_rate()
     over = [k for k in rate if st["limit"][k] and rate[k] > 5 and rate[k] > 1.25 * st["limit"][k]]
     st["over"] = st.get("over", 0) + 1 if over else 0
     if st["over"] >= 3:          # traffic passes the queue: cutting further does nothing (and leaves a low limit once it is fixed)
@@ -279,6 +291,7 @@ def tick(lat_buf, now=None, path_change=0.0):
     st["last"] = {"time": time.strftime("%H:%M:%S"), "rate": rate, "ceiling": caps,
                   "why": {k: reason(st["limit"][k], shown[k], rate[k], d, caps[k], was[k] if was[k] != learned[k] else None) for k in new}, "delay_ms": None if d is None else round(d, 1), "limit": new,
                   "cpu": cpu, "cpu_max_since_start": st.get("cpu_max"), "cpu_spikes": (st.get("spikes") or [])[-5:], "useless_cut_streaks": st.get("useless", 0)}
+    st["rate_at"] = time.monotonic()
     if move:
         fmt = lambda v: "%dk" % (v * 1000) if v else "0"    # 0 = unlimited
         rest("PATCH", "/queue/simple/%s" % st["id"], {"max-limit": "%s/%s" % (fmt(new["up"]), fmt(new["down"]))})

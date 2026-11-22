@@ -33,7 +33,9 @@ at `/docs`.
   `ANCHOR_MIN_MINUTES` (10) minutes of evidence; the refill never creates or resurrects a cell (the registry owns the cells - a
   forgotten cell stays out, a partially formed entry must not break `/cells`; a 5G cell with ARFCN 0 or 255 is a post-boot
   placeholder and is not tracked); among the pairs no other pair *clearly* beats (the quality margins) the one with
-  the most minutes wins, so a short lucky pair never overrides a long-standing one. Shown per 5G cell in `/cells` (`anchors`, `best_anchor`), rebuilt from the samples
+  the most minutes wins, so a short lucky pair never overrides a long-standing one. The pair **keys are the sample format**
+  `earfcn/pci` (`1550/434`); a lock spec is `pci@earfcn` (`434@1550`) and must be converted with `brain.anchor_key()` before a
+  pair lookup - using a spec as the key misses every pair and silently falls back (2026-11-22u). Shown per 5G cell in `/cells` (`anchors`, `best_anchor`), rebuilt from the samples
   on the first start after this exists or on demand (`POST /cells/refill?days=7`); a failed 5G step in the Telegram summary names
   the anchor the cell is known under. "Not seen" under one anchor is not "unreachable".
 - **Secrets stay in the container env** (`ZTE_PASS_HASH`, `SQM_PASS`, `TG_TOKEN`); never log them. Only masked fixtures are in git.
@@ -103,6 +105,16 @@ at `/docs`.
   `ONLINE_STABLE` 5 good probes) before measuring. Timeouts are noted, not fatal - except a missing BOOT inform: the ZTE applies a
   lock only at boot, so the step was never locked. It is recorded as `not measured: no boot inform within N s` and skipped (no
   settle, no 12-minute measurement of a link that is not there).
+- **Measured under load:** settle for the CA (a sample with >= 2 carriers, `LOCKTEST_CA_WAIT_S`
+  60; a single-carrier cell is a note, not an error), **raise** the NSA 5G leg with a short download (`LOCKTEST_RAISE_S` 15 from
+  `INTTEST_URL`), then run the full down/up (the modem's iperf3, `LOCKTEST_IPERF`) **while the latency probe measures**. The row's
+  call-ready % / p95 / jitter / loss for a daytime ZTE LTE test come from the two successful transfer intervals
+  (`load_method=iperf_phases`, `load_s` is their combined duration). Each interval starts at the modem's Enable acknowledgement
+  and is bounded by the configured test duration and the result read. This estimates when traffic ran and excludes setup, retries,
+  time between transfers and later polling. Call-ready is the share of roughly 10 s slices meeting the call limits. Missing probe
+  coverage in either direction leaves loaded quality empty. Later samples provide stability evidence (on-target, switches, gap).
+  Older rows and other test modes use elapsed down/up time. B8/B20 showed idle p95 ~40 ms and 100% call-ready on 2026-11-21,
+  then p95 139 ms, jitter 69 ms and 0% call-ready under load.
 - **Per-mode internet test (5G, ZTE):** for each of the 4 antenna modes, check the target 5G cell over the last 3 reads; if it is
   not up, send wake traffic for `WAKE_S` (60 s; `WAKE_HOST` 1.1.1.1, `WAKE_SIZE` 1000, a small-download fallback) and look again;
   then run the internet test (`INTTEST_MB` 2 MB from `INTTEST_URL` over `INTTEST_S` 30 s) while the latency probe runs.
@@ -123,17 +135,19 @@ at `/docs`.
   reference); a 5G-free or switching baseline is measured (it is the reference). A baseline row without a measurement is not a
   baseline: the ranking drops it, so nothing is auto-applied against it.
 - **Ranking** (`GET /anchors?rat=lte|nr`): the latest result per candidate, only if it stayed on the cell (on-target ≥ 80 %) and is
-  not unstable; the 5G ranking is quality-first, the LTE ranking keeps call-ready, no-5G, signal, capacity. Each returned row (and
+  not unstable. Complete ZTE LTE transfer scores rank first by score. The 5G ranking is quality-first. Each returned row (and
   the baseline) also carries the lock-test score computed when read (`score`, `score_parts`, `score_partial`, `score_gate`); `score`
   is None when the row is partial (a metric - e.g. iperf - was not measured) or gated, because a partial score is no A/B score (the
   A/B high pair ranks by it). `failed` = off-target / not seen; `unstable` = the unstable list.
-- **Lock-test rows** also carry `boot_s` (lock -> boot inform) and `down_mbps` / `up_mbps` (the modem's iperf3 after the measuring
-  window, still locked; `LOCKTEST_IPERF=0` off; never a ceiling). `POST /lock-test?...&night=1` = a hand-picked night screen (LTE). Traffic stops a night run only after `NIGHT_BOOT_QUIET_S` (300) of modem uptime - before that it is the
+- **Lock-test rows** also carry `boot_s` (lock -> boot inform), `load_s` (the loaded window the quality was measured over) and
+  `down_mbps` / `up_mbps` (the modem's iperf3 as the step's load, at the start of the measuring window after the short raise, still
+  locked; `LOCKTEST_IPERF=0` off; never a ceiling). `POST /lock-test?...&night=1` = a hand-picked night screen (LTE). Traffic stops a night run only after `NIGHT_BOOT_QUIET_S` (300) of modem uptime - before that it is the
   modem's own reconnect (2026-11-18 08:56: a B8 step was stopped 3 s after its boot). Night LTE steps free the 5G lock in the same write
   (the anchor's own pairing shows; your 5G lock returns with the LTE lock at the end); daytime LTE tests keep your 5G lock.
 - **Lock-test score** (`brain.lt_score`, `/lock-tests` rows: `score`, `score_parts`, `score_partial`, `score_gate`): download 25 (0-200),
   upload 10 (0-30), call-ready 20, loss 15 (0-5 %), p95 10 (20-200 ms), jitter 10 (0-50 ms), 5G 10 (n78 10 / n28 5 / none; from `nr_arfcn` +
-  `nr_iperf` = the 5G cells while the step's iperf ran); gates: on the locked cell >= 80 %, a stable anchor. Computed when read.
+  `nr_iperf` = the 5G cells while the step's iperf ran); gates: on the locked cell >= 80 %, a stable anchor. The quality inputs are
+  the **loaded** window (2026-11-22v), so the score reflects the internet under traffic, not the idle link. Computed when read.
 - **Band scan** (`POST /band-scan?bands=8,1,...`, `keeper/bandscan.py`): per band `LockLTEBand` = that band over TR-069 (no reboot),
   `BANDSCAN_WAIT_S` (90) of samples (until one is on the band, at most 2x), then `BANDSCAN_TEST_S` (25) of load (an internet test) to
   raise the NSA 5G leg; a `band_scans` row (serving cell + median RSRP/RSRQ/SINR, neighbours, the network's own 5G cell + ARFCN/SINR/
@@ -164,24 +178,49 @@ at `/docs`.
   a partial row (an old row without iperf) has `score None` until a new lock test, and a band-scan-only cell has no score at all
   (B1 `340@100` stays out of the high pair until the daily/Saturday test promotes it). Low = the **newest band scan of each low
   band** (`LOW_BANDS` 8,20) + its n28 pair, ranked by call-ready, ties keep both (B8 then B20; the same scan's B1/B3/B7 rows are
-  high bands and never the "low" leg). A 5G pair is the cell's best measured anchor (`_nr_for`). It runs first at the start of the
+  high bands and never the "low" leg). A 5G pair is the cell's best measured anchor for that LTE cell (`_nr_for`, the pair DB);
+  the lookup converts the lock spec to the pair key with `brain.anchor_key()` - a spec used as the key missed every pair and
+  silently used the pre-run sample's 5G cell instead (fixed 2026-11-22u; the scenarios had seeded the wrong key format and hid
+  it). It runs first at the start of the
   night test and the Saturday day test (`AB_SMOKE=1`) and manually (the wife, when critical). Telegram: modem good / provider issue /
-  modem bad; `GET /ab` shows the per-leg detail. It is a test, busy (the guard/captest/night wait). Not the automatic A/B.
+  modem bad; `GET /ab` shows the per-leg detail. `running` is cleared **last** (after the result, the Telegram and the event), so
+  a waiter that sees the run done always finds its result - the refresh chain reads `st["result"]` straight after the wait
+  (2026-11-22u). It is a test, busy (the guard/captest/night wait). Not the automatic A/B.
 - **Morning cell check** (`POST /morning?low=1|0`, `GET /morning`, `keeper/morning.py`, `MORNING` 08:00): the daily cell decision.
-  One no-lock leg (full CA), then for B1/B3/B7 a **band-lock discovery** (no reboot): #1 = the band's serving cell, #2 = the best
-  neighbour with a known 5G pair, then the best RSRP; then a **cell lock + probe** (25 s; the cell lock keeps the CA - a band lock
-  collapses it, measured 2026-11-21) for #1 and #2. **5G is a hard gate:** a leg is a candidate only if a sample in its probe window
-  had a real `nr_cell`; only 5G legs are A/B/persisted. A = the best 5G #1, B = the best 5G #2 (a band whose #1 has no 5G contributes
-  its #2 as A, no B); the no-lock is the default on a tie; the best 5G is restored; a band with no 5G is skipped. The probe is
-  download + latency; the restored winner gets the modem's iperf3 upload (1 stream - the MC889 gives no upload with 4). Saturday
-  (`MORNING_LOW_SATURDAY`), or when the high baseline is bad (down < `MORNING_LOW_DOWN` 20 or call-ready < `MORNING_LOW_CALL` 90),
-  B8/B20 are added with their own band-lock discovery (the low cells' PCI changes: they are re-discovered, never cached); the low is
-  a fallback, not a daily candidate (B8 5 MHz / B20 10 MHz cannot match the n78 100 MHz CA: measured 2026-11-21 B8 394+n28 15.3 vs
-  no-lock 28.0; the B20 394 10 MHz did 50.8/28.9 on 2026-11-18). One Telegram; once a day at/after `MORNING`, a missed day as the
-  first thing; busy (the guard/captest/night wait). 8 reboots daily (~25 min), 12 with the low bands (~40 min).
+  One no-lock leg (full CA), then **band-lock discovery** (no reboot) for B1/B3/B7. Allow up to `MORNING_BAND_WAIT_S` (125) seconds
+  for two samples after the band write. A neighbour needs two fresh usable RSRP readings (default at least −110 dBm), and the
+  serving cell also needs usable signal. Discovery returns the readings and exclusion reasons. Each band queues up to
+  `MORNING_CANDIDATES` (2) backups. A measured 5G pair needs `ANCHOR_MIN_MINUTES` (10) minutes, loss at or below
+  `MORNING_PAIR_MAX_LOSS` (2%) and jitter at or below `MORNING_PAIR_MAX_JITTER` (20 ms) to get priority. These pairs rank by pair
+  call-ready, loss, p95 and jitter, with same site and signal as tie-breakers. Other neighbours rank by RSRP. The B1 `100/202` pair
+  measured 3.01% loss and 28.87 ms jitter on 2026-11-22 and both PCI 202 frequencies failed to get online that morning.
+  Lock #1 and the first backup individually (cell locking keeps CA) for a 25 s probe. Try the next backup only when the current
+  one cannot measure internet with a real 5G cell observed during its wake/probe. Each failed attempt is recorded. Locked legs
+  share `MORNING_DEAD_S` (90 s) between web readiness and fresh online probes, then wait up to `MORNING_5G_WAIT_S` (90 s) under
+  wake traffic for 5G. Expiry skips the download and leaves quality empty. After `MORNING_DEAD_N` (2) consecutive reachability
+  failures (offline or no 5G) in `MORNING_DEAD_DAYS` (7), skip the exact `PCI@EARFCN` for morning locks until the evidence expires.
+  The cache persists per device, a successful measurement clears the streak, and control errors add no failure evidence.
+  A = the best measured #1, B = the best measured backup. A band with only one measured leg contributes it to A. A new pair must
+  clearly improve on a usable unlocked baseline. If no configuration qualifies, restore the keeper-managed locks. The regular
+  probe uses a short download and latency checks. On Saturday (`MORNING_LOW_SATURDAY`), or when the unlocked screen fails or is poor,
+  discover B20 then B8 while the CPE is unlocked. The automatic fallback tests low only when all high screens fail the quality
+  bar (down < `MORNING_LOW_DOWN` 20, binary call-ready below `MORNING_LOW_CALL` 90, or unavailable), then stops after the first low
+  band that meets it. `low=1` and Saturday test both low bands. Low tests let NR attach naturally and require n28, and low backups
+  need a discovered LTE neighbour with recorded n28 pair evidence. One Telegram; once a day at/after `MORNING`, a missed day as the
+  first thing; busy (the guard/captest/night wait). A typical run takes 8 reboots (~25 min), or 12 with the low bands (~40 min).
+  A failed first backup can add one reboot per band.
+- **Morning comparison** (`POST /morning?apply=0&low=1`): test the unlocked baseline, high bands and both low bands with full
+  down/up measurements over the two iperf transfer windows. It records discovery, reachability, observed radio samples, speed,
+  loaded quality and score under `/morning` → `trial`. A locked candidate needs two radio samples, at least 80% on its LTE anchor
+  with the same NR cell, and agreement from any sample recorded during a transfer. The comparison uses the daytime LTE score
+  rules and requires matching iperf servers against the baseline. Competing LAN traffic can trigger one retry on the same cell
+  after three quiet WAN checks. `bands=` selects configured bands for a focused comparison. The run restores managed locks,
+  keeps a separate result and leaves the production morning failure cache alone.
 - **One-call refresh** (`POST /ab-refresh`, `GET /ab-refresh`, `keeper/abrefresh.py`, 2026-11-21): the full band scan (B1,B3,B7,
   B8,B20,B28) then the full A/B smoke, then **one** Telegram with both (the smoke's own Telegram is suppressed in the chain); ~25 min;
-  the wife's one request. `GET /ab` embeds the refresh. The band scan refreshes the B1/B8/B20 rows + the NR database; the smoke uses
+  the wife's one request. The band scan refuses while an LTE or NR **cell lock** is held, so the refresh 409s in the normal locked
+  state: release the locks first (`POST /lte-lock?cell=none` + `POST /nr-lock?cell=none`, or a LOCK_PAUSE/test window) - it ran
+  2026-11-21 17:26 only because the keeper was unlocked then. `GET /ab` embeds the refresh. The band scan refreshes the B1/B8/B20 rows + the NR database; the smoke uses
   the refreshed rows and the lock-test A/B scores (A = the max scored, B = the next); the low pair is the newest **B8 and B20** row
   (the scan also writes B1/B3/B7, which are high bands and not low candidates); the best found restore. The chain does the band scan
   first and only then the smoke (the stage is `band scan` -> `smoke` -> `done`); it waits per stage and **aborts** instead of
@@ -189,6 +228,9 @@ at `/docs`.
   6 x (2 x `BANDSCAN_WAIT_S` + `BANDSCAN_TEST_S`) ~ 1230 s; `REFRESH_SMOKE_MAX_S` 2400), so the smoke never takes a cell lock on
   top of the scan's band lock. The Telegram never prints a row of blanks: a band with no sample is named as such (`B28: no service
   (no sample on the band)`), and a band whose scan saw no 5G leg says `nr cell missing` instead of an empty `+ ,` (2026-11-21q).
+  The band rows are **this run's only**: every band-scan row carries the scan's `run` stamp (`bandscan.st["run"]`, set
+  synchronously by `start()`), and `_bands(run)` drops a band this run did not write - an aborted or failed scan never prints an
+  older scan's rows as fresh (2026-11-22u).
 - **Development mode** (`POST /dev?on=1`, the state `dev`, 2026-11-21): disables the automatic A/B and allows the tests outside their
   windows; the normal service mode is `dev` off. The wife can switch it on and keep working while an issue is fixed later.
 - Band scan bandwidth watch: each band's serving carrier bandwidth (`bw_mhz`, as logged '@N') is compared with its last scan; a change
@@ -217,7 +259,10 @@ at `/docs`.
   inform, the CPE web / the link did not come back) is no evidence about the cell and must be retried. A step that could not even be
   locked carries its `mode` and `run` like the others (a night run stays one unit; the finding then warns about the unmeasured
   baseline instead of treating the next candidate as one).
-- **Auto-apply** (`AUTO=on`, real load): the winner is locked when it clearly beats the unlocked baseline (the same quality policy);
+- **Auto-apply** (`AUTO=on`, real load): a daytime ZTE LTE candidate needs a complete transfer score at least 5 points above that
+  run's unlocked baseline, and its internet quality cannot be clearly worse under the call/loss/p95/jitter margins. The highest
+  eligible score wins. SINR and RSRP remain diagnostics. A missing or partial loaded baseline gives no decision. For a 5G test,
+  the quality policy decides whether the winner clearly beats its baseline.
   a 5G winner is applied as the **pair** - the 5G cell and the LTE anchor it was measured with (an NSA cell is served only under some
   anchors, so the cell alone would not reproduce the result) - and the winning step's antenna mode is kept. The pair may move the LTE
   lock only to an anchor measured as a daytime LTE anchor and not clearly worse than the current lock (call-ready -5 pp, anchor
@@ -267,6 +312,14 @@ at `/docs`.
   upload result with 4). Scheduled at `CAPTEST_SLOTS` incl. night slots, only after 10 idle minutes, never while busy (lock test,
   night screen, sweep, A/B trial) or < 15 min after a boot. Optional Iperf3 settings the modem reports read-only (TR-143 probe,
   Writable flags) are never written; `tools/ip3_args.py` dry-runs the settings against them.
+- **Local traffic during capacity tests:** with RouterOS telemetry configured, use the routed WAN port's rates to separate LAN
+  traffic from modem-originated iperf. Minute peaks and a recent rate can defer a scheduled probe within its slot. Check the WAN
+  directly before and during each measured transfer. Traffic above the existing idle limits (default 2 Mbit/s down or 0.5 up),
+  or a failed traffic read, discards the attempt. `/captest` shows `traffic_skip` separately from the last usable result. Skipped
+  attempts do not feed the ceiling history. A contaminated loaded comparison or lock-test step provides no loaded score.
+- **Morning and capacity tests share the modem.** Both reserve it under the same start lock. A scheduled capacity slot that finds
+  the morning job busy keeps its eligibility until its usual deadline. The morning comparison's own iperf belongs to the morning
+  job and does not enter the capacity history.
 - **Counted vs check:** `POST /captest` without options counts for the current period; any option (`secs`, `conn`, `reverse`,
   `server`) makes it a diagnostic - shown, never in a ceiling.
 - **Climb** (`sqm.climb`): busy at the ceiling with clean latency for `SQM_CLIMB_S` (600 s in total) -> the ceiling x1.05, again and

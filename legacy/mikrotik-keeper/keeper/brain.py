@@ -75,6 +75,8 @@ def ts(row):
 # the weighted score of a lock-test row (docs/NIGHTLY-PLAN.md, agreed 2026-11-18): (weight, low, high, +1 higher is better / -1 lower)
 SCORE_W = {"down": (25, 0, 200, 1), "up": (10, 0, 30, 1), "call": (20, 0, 100, 1), "loss": (15, 0, 5, -1), "p95": (10, 20, 200, -1), "jitter": (10, 0, 50, -1)}
 SCORE_COL = {"down": "down_mbps", "up": "up_mbps", "call": "call_ok_pct", "loss": "loss_pct", "p95": "lat_p95", "jitter": "jitter_ms"}
+LTE_LOAD_METHOD = "iperf_phases"
+LTE_SCORE_GAIN = 5.0
 
 
 def nr_band_of(arfcn):
@@ -186,10 +188,8 @@ def probe_loop():
         time.sleep(max(0.2, 2 - (time.time() - t0)))   # ~30 probes a minute
 
 
-def latency_row(window=60):
-    """Latency fields of the last `window` s: p50 / p95 / max, jitter, loss %, call_ok (1 = within the Teams limits)."""
-    now = time.time()
-    pts = [x for x in list(lat_buf) if now - x[0] <= window]
+def _lat(pts):
+    """The probe points -> p50 / p95 / max, jitter, loss %, call_ok (1 = within the Teams limits)."""
     xs = [x[1] for x in pts]
     if not xs: return {c: "" for c in LAT_COLS}
     ok = [x for x in xs if x is not None]
@@ -202,6 +202,40 @@ def latency_row(window=60):
     good = p95 is not None and p95 <= CALL_P95 and jitter != "" and jitter <= CALL_JITTER and loss <= CALL_LOSS
     return {"lat_p50": pct(ok, 50) or "", "lat_p95": p95 or "", "lat_max": round(max(ok), 1) if ok else "",
             "jitter_ms": jitter, "loss_pct": loss, "call_ok": 1 if good else 0}
+
+
+def latency_row(window=60):
+    """Latency fields of the last `window` s: p50 / p95 / max, jitter, loss %, call_ok (1 = within the Teams limits)."""
+    now = time.time()
+    return _lat([x for x in list(lat_buf) if now - x[0] <= window])
+
+
+def probe_window(t0, t1, slice_s=10):
+    """The probe's fields over an explicit loaded window [t0, t1] (wall clock): p95 / jitter / loss over the whole window and the
+    **call-ready %** as the share of `slice_s`-second slices that met the call limits (one short load window is otherwise only 0 or
+    100). The lock test measures the connection under the full down/up load (2026-11-22v), not on the idle link."""
+    return probe_windows([(t0, t1)], slice_s)
+
+
+def probe_windows(windows, slice_s=10, min_points=1):
+    """Measure explicit transfer windows. Require probe coverage in each and calculate jitter within each direction."""
+    recent, points = list(lat_buf), []
+    ok = tot = 0
+    for phase, (t0, t1) in enumerate(windows):
+        pts = [x for x in recent if t0 <= x[0] < t1]
+        if len(pts) < min_points:
+            return dict({c: "" for c in LAT_COLS}, call_ok_pct="")
+        points.extend((x[0], x[1], (phase, x[2] if len(x) > 2 else "")) for x in pts)
+        span = t1 - t0
+        n = max(1, round(span / slice_s))
+        for i in range(n):
+            a, b = t0 + span * i / n, t0 + span * (i + 1) / n
+            sp = [x for x in pts if a <= x[0] < b]
+            if sp:
+                tot += 1
+                ok += _lat(sp)["call_ok"]
+    out = dict(_lat(points), call_ok_pct=round(100.0 * ok / tot, 1) if tot else "")
+    return out
 
 
 def internet_test(seconds=30, url=None, mb=None, stop=None):
@@ -265,17 +299,22 @@ def wake(seconds=60, host=None, size=None, stop=None):
     return True
 
 
-def wait_online(timeout=180, stable=None):
+def wait_online(timeout=180, stable=None, since=None):
     """Wait until the last `stable` (ONLINE_STABLE, 5) latency probes all succeeded - the link is back after a reboot - up to
-    `timeout` s. True when it is (also immediately with LAT_TARGETS=off: no probe). Checks that the newest probe is recent."""
+    `timeout` s. Checks that the newest probe is recent. With `since`, every probe must be newer than the lock write.
+    True immediately with LAT_TARGETS=off (no probe)."""
     if not TARGETS: return True
     stable = stable or ONLINE_STABLE
-    t0 = time.monotonic()
-    while time.monotonic() - t0 < timeout:
+    deadline = time.monotonic() + timeout
+    while True:
         recent = list(lat_buf)[-stable:]
-        if len(recent) >= stable and all(x[1] is not None for x in recent) and time.time() - recent[-1][0] <= 30: return True
-        time.sleep(1)
-    return False
+        if (len(recent) >= stable and (since is None or recent[0][0] >= since)
+                and all(x[1] is not None for x in recent) and time.time() - recent[-1][0] <= 30):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(1, remaining))
 
 
 def quality_values(call_ready=None, loss=None, lat=None, jitter=None, sinr=None, rsrp=None):
@@ -540,6 +579,16 @@ def _pair_add(anchors, lte, row):
     a["rsrp"] = _ew(a.get("rsrp"), f(row.get("nr_rsrp")))
     a["lte_sinr"] = _ew(a.get("lte_sinr"), f(row.get("lte_sinr")))
     return a
+
+
+def anchor_key(spec):
+    """'434@1550' (a lock spec / `pci@earfcn`) -> '1550/434' (the registry and sample key, `earfcn/pci`); '1550/434' stays.
+    The pair database is keyed by the sample format; every lookup by a specification must come through here (2026-11-22: the
+    smoke and the morning looked the pair up with '434@1550' and always missed it, silently falling back to the current sample)."""
+    if "@" in (spec or ""):
+        p, e = spec.split("@", 1)
+        return "%s/%s" % (e, p)
+    return spec or ""
 
 
 def pair_quality(p, anchor):
@@ -864,7 +913,11 @@ def anchor_ranking(rat="lte"):
             return quality_values(r.get("call_ok_pct"), r.get("loss_pct"), r.get("lat_p95"), r.get("jitter_ms"),
                                   r.get("nr_sinr_p50"), r.get("nr_rsrp_p50")) + (nr_capacity(r) or 0,)
         # LTE: both legs count: a weak anchor drops the 5G leg, so anchor SINR + 5G SINR (a 1 dB better 5G must not beat a -1 dB anchor)
-        return (f(r.get("call_ok_pct")) or 0, -(f(r.get("no5g_min")) or 0), (f(r.get("anchor_sinr_p50")) or -20) + (f(r.get("nr_sinr_p50")) or -20), cap(r) or 0)
+        if r.get("load_method") == LTE_LOAD_METHOD:
+            score = r.get("score")
+            return (2, score) if score is not None else (0,)
+        return (1, f(r.get("call_ok_pct")) or 0, -(f(r.get("no5g_min")) or 0),
+                (f(r.get("anchor_sinr_p50")) or -20) + (f(r.get("nr_sinr_p50")) or -20), cap(r) or 0)
     unstable = lambda r: str(r.get("unstable")) == "1"      # the 5G leg follows its LTE anchor: not a result when the anchor was unstable
     base = latest.get("none")
     if base and (unstable(base) or f(base.get("call_ok_pct")) is None): base = None   # skipped / not measured: not a reference
@@ -929,10 +982,44 @@ def _lte_gain(best, base):
             (f(best.get("nr_sinr_p50")) or -99) - (f(base.get("nr_sinr_p50")) or -99) >= 2)
 
 
-def anchor_best(rat="lte"):
-    """Daytime ranking of one RAT (`lte`: anchors, `nr`: 5G cells) -> (best_row, base_row, gain) where gain = best clearly beats the
-    unlocked baseline (under load). (None, None, False) with no ranked results or no baseline (we don't auto-apply without a baseline)."""
-    rk = anchor_ranking(rat)
+def loaded_anchor_result(rows):
+    """Rank one LTE run by its complete load scores. A gain needs five points and no clear loss in internet quality."""
+    ranked = []
+    base = None
+    for row in rows:
+        if (row.get("load_method") != LTE_LOAD_METHOD or (f(row.get("load_s")) or 0) <= 0
+                or not (f(row.get("minutes")) or 0) or row.get("mode") in ("cut", "night")):
+            continue
+        score = lt_score(row)
+        if score["score"] is None or score["partial"]:
+            continue
+        row = dict(row, score=score["score"])
+        if row.get("lock") == "none":
+            base = row
+        elif (f(row.get("on_target_pct")) or 0) >= 80:
+            ranked.append(row)
+    if not ranked:
+        return None, base, False
+    best = max(ranked, key=lambda r: r["score"])
+    if not base:
+        return best, None, False
+    def quality(r):
+        return quality_values(r.get("call_ok_pct"), r.get("loss_pct"), r.get("lat_p95"), r.get("jitter_ms"))
+    safe = [r for r in ranked if not clearly_better(quality(base), quality(r))]
+    if not safe:
+        return best, base, False
+    best = max(safe, key=lambda r: r["score"])
+    return best, base, round(best["score"] - base["score"], 1) >= LTE_SCORE_GAIN
+
+
+def _anchor_choice(rk):
+    rat = rk["rat"]
+    rows = [r for r in [rk["baseline"], *rk["ranked"]] if r]
+    if rat == "lte":
+        loaded = [r for r in rows if r.get("load_method") == LTE_LOAD_METHOD]
+        if loaded:
+            run = max(r["run"] for r in loaded)
+            return loaded_anchor_result(r for r in loaded if r["run"] == run)
     if not rk["ranked"] or not rk["baseline"]: return (rk["ranked"][0] if rk["ranked"] else None), rk["baseline"], False
     best, base = rk["ranked"][0], rk["baseline"]
     if rat == "nr":                     # 5G: the same clear-win rule as the antenna mode (signal only when the quality is a tie)
@@ -942,14 +1029,21 @@ def anchor_best(rat="lte"):
     return best, base, _lte_gain(best, base)
 
 
+def anchor_best(rat="lte"):
+    """Daytime ranking of one RAT (`lte`: anchors, `nr`: 5G cells) -> (best_row, base_row, gain) where gain = best clearly beats the
+    unlocked baseline (under load). (None, None, False) with no ranked results or no baseline (we don't auto-apply without a baseline)."""
+    return _anchor_choice(anchor_ranking(rat))
+
+
 def anchor_finding(rk):
     """Findings from the lock-test ranking: recommend the best anchor, or say no lock is needed / it is the lock already."""
-    if not rk["ranked"]: return []
-    best, base = rk["ranked"][0], rk["baseline"]
+    best, base, gain = _anchor_choice(rk)
+    if not best: return []
+    if best.get("load_method") == LTE_LOAD_METHOD and not base:
+        return ["WARN: LTE lock test needs a complete loaded baseline to assess %s" % best["lock"]]
     d = lambda r: "call-ready %s%%, 5G %s SINR %s, anchor SINR %s (~%s Mbit/s/layer)%s" % (r.get("call_ok_pct"), r.get("nr_cells"), r.get("nr_sinr_p50"),
         r.get("anchor_sinr_p50"), r.get("capacity"), (", site " + r["site"]) if r.get("site") else "")
     if base:
-        gain = _lte_gain(best, base)
         if not gain:
             return ["OK: lock tests - no candidate clearly beats the unlocked baseline (%s); best %s: %s - no lock needed" % (d(base), best["lock"], d(best))]
     try:

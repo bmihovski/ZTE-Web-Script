@@ -74,6 +74,20 @@ Durable project memory. Read this first; the details live in the keeper docs.
 - **SQM phases 3 / 4 are closed by data** (2026-11-17: busy latency ~ idle + 1-2 ms, setups < 2 % apart); the weekly Telegram
   summary (`CAPTEST_WEEKLY`) carries the evidence - reopen only on its numbers (rules in BUSINESS_RULES).
 - The keeper applies the antenna mode once per boot; a superseded boot worker stands down (generation checked after the wait).
+- **Daytime ZTE LTE lock tests:** settle for CA, wake NSA with a short download, then measure quality during the two successful
+  iperf transfers. Use the same run's complete score to choose the LTE lock. A winner needs at least 5 points over the unlocked
+  baseline and no clear internet-quality regression. Treat SINR and RSRP as diagnostics.
+- **Morning discovery:** test the serving cell and queue two backups per band. A measured NSA pair gets priority by quality only
+  with at least 10 minutes, loss ≤ 2% and jitter ≤ 20 ms. Order other neighbours by RSRP. Try the next backup when the first cannot
+  measure with 5G. A locked leg gets 90 s for online readiness and 90 s to wake 5G. Two reachability failures in seven days suppress
+  that `PCI@EARFCN` in the per-device morning cache.
+- **Morning fallback and comparison:** failure of the unlocked screen can open B20/B8 discovery. A healthy high-band leg
+  suppresses the automatic low test. Use `POST /morning?apply=0&low=1` for fresh loaded comparisons with managed locks restored
+  and the separate result at `/morning` → `trial`.
+- **Local traffic during modem speed tests:** scheduled tests wait for quiet. RouterOS WAN traffic above the idle limits during
+  transfers invalidates capacity samples and loaded lock-test measurements. An invalid sample cannot move the learned ceiling.
+- **Morning discovery and isolation:** neighbours need two fresh usable RSRP readings in the selected band before a lock attempt.
+  Morning and capacity tests reserve the modem under the same start lock so their background jobs cannot overlap.
 
 ## Workflow
 

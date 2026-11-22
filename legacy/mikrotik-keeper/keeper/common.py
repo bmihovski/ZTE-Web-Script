@@ -184,6 +184,7 @@ def event(row):
 
 # ---------- busy registry: background jobs that must not overlap (each module registers its own) ----------
 _busy = {}
+test_start_lock = threading.Lock()  # morning and capacity probes check and reserve the same modem atomically
 
 
 def register_busy(name, check, fast=True):

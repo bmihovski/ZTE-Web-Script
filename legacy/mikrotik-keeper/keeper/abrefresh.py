@@ -23,10 +23,13 @@ def _wait(stage, running, limit):
     if running(): raise RuntimeError("%s still running after %d s: not starting the next stage" % (stage, limit))
 
 
-def _bands():
+def _bands(run):
+    """This run's row per band (`run` = the band scan's stamp). No run / no row on a band = not scanned: never an older scan's row
+    presented as this run's (an aborted scan would otherwise print stale bands as fresh)."""
+    if not run: return []
     rows = store.rows(DATA, "band_scans"); out = []
     for b in SCAN_BANDS:
-        r = next((x for x in reversed(rows) if str(x.get("band")) == b), None)
+        r = next((x for x in reversed(rows) if str(x.get("band")) == b and x.get("run") == run), None)
         if r: out.append({k: r.get(k) for k in ("band", "serving", "nr_cell", "nr_arfcn", "call_ok", "lat_p95", "jitter_ms", "down_mbps", "note")})
     return out
 
@@ -64,10 +67,11 @@ def run(trigger="manual"):
 
 
 def _run():
-    t0 = time.monotonic(); sm = None
+    t0 = time.monotonic(); sm = None; run = ""
     try:
         ok, why = bandscan.start(list(SCAN_BANDS))
         if not ok: raise RuntimeError("band scan refused: %s" % why)
+        run = bandscan.st.get("run") or ""              # set synchronously by start(): exactly this scan's rows
         _wait("band scan", lambda: bandscan.st.get("running"), SCAN_MAX_S)
         st["stage"] = "smoke"
         ok, why = absmoke.run("refresh", notify=False)
@@ -79,7 +83,7 @@ def _run():
     finally:
         st["running"] = None; st["stage"] = "done"
         res = {"trigger": st["why"], "time": stamp(), "started": st["started"], "seconds": round(time.monotonic() - t0, 1),
-               "band_scan": _bands(), "smoke": sm}
+               "band_scan": _bands(run), "smoke": sm}
         st["result"] = res; state({"ab_refresh": res})
         try: alert.report(_msg(res))
         except Exception as e: log("ab refresh telegram failed: %r" % e)

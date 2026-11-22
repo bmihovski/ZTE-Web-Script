@@ -78,6 +78,20 @@ assert d.run_verdict(nobase, "nr", lock="534@636576")["verdict"] == "no-result",
 lte = [vrow("none", "R2", "90", "0", "50", "5", "", "", on="", rat="lte"),
        vrow("434@1550", "R2", "100", "0", "50", "5", "", "", rat="lte")]
 assert d.run_verdict(lte, "lte", run="R2", lock="")["verdict"] == "apply", d.run_verdict(lte, "lte", run="R2")
+
+# A measured LTE decision uses this run's complete scores. Stronger signal cannot win a tie,
+# and a fast but clearly worse connection cannot override call quality.
+measured = dict(load_method="iperf_phases", load_s="20", call_ok_pct="100", loss_pct="0", lat_p95="55", jitter_ms="8",
+                down_mbps="80", up_mbps="15", nr_arfcn="636576")
+base = dict(vrow("none", "LOAD", "100", "0", "55", "8", "5", "-100", on=""), rat="lte")
+base.update(measured)
+strong = dict(base, lock="66@1550", on_target_pct="100", nr_sinr_p50="24", anchor_sinr_p50="28")
+fast = dict(base, lock="434@1550", on_target_pct="100", down_mbps="160", nr_sinr_p50="3")
+bad = dict(fast, lock="202@100", call_ok_pct="90", down_mbps="200", up_mbps="30")
+assert d.run_verdict([base, strong], "lte")["verdict"] == "no-lock"
+assert d.run_verdict([base, strong, fast, bad], "lte", lock="434@1550")["best"] == "434@1550"
+assert d.run_verdict([base, dict(fast, up_mbps="")], "lte")["verdict"] == "no-result"
+assert d.run_verdict([dict(base, lat_p95=""), fast], "lte")["verdict"] == "no-result"
 lte_no = [vrow("none", "R6", "100", "0", "50", "5", "", "", on="", rat="lte"),
           vrow("340@1550", "R6", "100", "0", "52", "6", "", "", rat="lte")]
 t = "\n".join(d.verdict_text(d.run_verdict(lte_no, "lte", run="R6", lock="340@100"), "340@100", "on"))
