@@ -55,10 +55,15 @@ the docstrings and this skill in sync.
 
 ## Traps
 
-- **The A/B high ranks by `/anchors`' `score`**: `brain.anchor_ranking()` must carry the lock-test score (it computes it from
-  `brain.lt_score`; a partial row - an old row without iperf - has `score None`, and a band-scan-only cell has no score at all).
-  `abplan.high()` reading a missing key made the one-call refresh run 3 legs (no A/B high) in 2026-11-21o. The low legs are the
-  **newest band scan per LOW_BANDS (8,20)**, never the B1/B3/B7 rows the same scan writes (2026-11-21p).
+- **A/B smoke diagnoses and restores:** `POST /ab-smoke` runs the current pair, selected alternatives and an unlocked control.
+  `GET /ab` exposes progress. `POST /ab-smoke-stop` interrupts measurement and restores after an in-flight reboot.
+  Report inconclusive when there is no fresh evidence. The smoke never commits a new winner. A persisted restoration request
+  survives an interrupted run. A/B alternatives need a complete current-method score, or an observed n28 pair for a low scan.
+- **Power-off workflow:** scheduled night tests, weekly arming, and Saturday confirmation are retired. The cold-boot clock
+  and lock guard are still required. Disable `LOCK_PAUSE` in production when the router is off overnight.
+- **Clean measurement history:** a one-shot `data/.reset-measurements` startup marker clears samples, results and learned
+  quality caches and compacts SQLite. It preserves managed locks, kept antenna modes, shared app lists, site and cell ID
+  notes, and capacity inputs for SQM. The new sample layout uses typed cell and metric columns with compact driver JSON.
 - **The one-call refresh never overlaps its stages:** the chain waits per stage and aborts if the band scan is still running after
   `REFRESH_SCAN_MAX_S` (1800 s; the 6-band worst case is ~1230 s) instead of starting the smoke on the scan's band lock (2026-11-21p).
   Its Telegram (`abrefresh._msg`) names a no-service band (`B28: no service (...)`), never a row of blanks, and prints

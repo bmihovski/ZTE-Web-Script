@@ -17,6 +17,7 @@ def main():
     log("start (v2 %s): DEVICE=%s, ACS + API on :%d, inform every %ds, %s, actions %s"
         % (VERSION, common.DEVICE, acs.PORT, acs.INTERVAL, dev.start_note(), brain.AUTO))
     alert.send("%s keeper started (v %s) - after a router reboot / power cut / deploy" % (dev.NAME, VERSION), "start")
+    if common.reset_measurements(): log("measurement store reset and compacted")
     brain.start(DATA)
     if brain.TARGETS: sqm.start(brain.lat_buf, log, lambda: getattr(brain, "ctx", {}).get("path_change_at", 0.0))    # SQM steers by the probe: no probe (LAT_TARGETS=off), no SQM
     selftest.start()          # daily SELFTEST_AT scenarios -> Telegram

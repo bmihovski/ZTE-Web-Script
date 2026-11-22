@@ -1,7 +1,7 @@
 # Keeper business rules
 
 The keeper is our TR-069 ACS for the home uplink CPE. It monitors the link, keeps the chosen cells locked, runs lock tests and
-the night screen, and puts the antenna mode back after a reboot. This file is the authoritative description of the rules the code
+daytime diagnostics, and puts the antenna mode back after a reboot. This file is the authoritative description of the rules the code
 implements; change it together with the code and the scenarios. The API is generated from `ROUTES` in `keeper/api.py` and served
 at `/docs`.
 
@@ -13,6 +13,12 @@ at `/docs`.
   the active `DEVICE`, so a ZTE row never decides a MikroTik result and vice versa. The state file (`state.json` /
   `state-mikrotik.json`) and the cell registry (`cells.json` / `cells-mikrotik.json`) are per device. Learned cell ids
   (`cell-ids.json`) are network facts and shared; the app's `ui:` lists are shared too. `?device=*` on `/export`/`/db` is explicit.
+- **Measurement storage.** New minute rows use SQLite columns for LTE/NR channel and PCI and the frequently queried numeric metrics.
+  Driver-specific fields and lower-volume history use compact JSON. The API and CSV preserve existing field names and lock syntax.
+  The operator can reset measurement history by placing `data/.reset-measurements` and restarting the keeper while no test runs.
+  On startup it discards measurements and learned quality caches, compacts SQLite, and consumes the marker before sampling.
+  Managed locks, kept antenna modes, site and cell ID notes, shared app lists and the running SQM configuration and capacity
+  inputs survive. Code deployment never uploads measurement data.
 - **5G cells carry their site (your notes).** `sites.json` may list a site's 5G cells (`{"rat":"NR","pci":...}`); the registry then
   shows each 5G cell's site, distance and bearing from the ZTE, and for every (5G cell, LTE anchor) pair: same site, the two sites'
   distance and the home-bearing difference (no coordinates = the fields are hidden). A co-sited pair that is equally good (comparable
@@ -154,16 +160,6 @@ at `/docs`.
   RSRP, and the band's call-ready/loss/p95/jitter/down) + an event; the (5G cell, anchor) pair goes into the NR database (night / A-B
   candidates, incl. the low bands B20/B28). Only without an LTE cell lock **and no NR cell lock**: an active/pending 5G lock is
   refused (it pins the scan's 5G leg and a band change can lose it -> the guard re-applies it with a reboot); busy meanwhile.
-- **Night planner** (`keeper/nightplan.py`, 2026-11-18): the night screen's cells = present at NIGHT (>= 50 % of the night
-  samples for the ARFCN and the cell, or a night band scan), best night RSRP first, < ARFCN best - `NIGHT_WEAK_DB` (10) out, a band
-  scan's `why` carries its call-ready (2026-11-21), a FULL
-  test (iperf + nr_iperf) in `nightplan.RETEST_DAYS` (30) skips unless +6 dB since, unseen 3 days out; as many as fit before the test
-  window (`LOCK_PAUSE`, current 23:30-08:00; `NIGHT_SCREEN` 01:30-05:00 only starts the screen) ends - `NIGHT_MAX` 0 = no cap - and
-  a step that would end after it is not started. `NIGHT_CELLS` (current empty) is a home set re-checked on `NIGHT_RETEST_DAYS` (7);
-  the planner's cells are the rest. Each test night starts with a band scan (`BANDSCAN_NIGHT`, current `1,3,7,8,20`; B28 has no
-  service here). `NIGHT_BANDS` ('' = all; current `1,3,7,8,20,28`) filters the planner's cells: the low bands are included so a
-  bad-weather B20/B8/B28 fallback is tested, not only the main bands. The plan: `/lock-tests` -> `night_plan`; `GET /night-plan` =
-  a preview now (nothing stored).
 - **Low-band A/B phase 1** (`GET /low-band`, `POST /low-band-trial?band=8|20`, `keeper/lowband.py`, 2026-11-21): the low bands
   (`LOW_BANDS` 8,20; B28 has no service here) and the network's n28 5G under them (156510/534 under 3774/394 / 6400/112) are the
   bad-weather fallback. The preview compares the last band-scan row per low band (serving, pair, call-ready/loss/p95/jitter/down)
@@ -171,21 +167,15 @@ at `/docs`.
   no cell lock; the network's low-band cell + n28; the internet test; the full list back), only unlocked. Phase 2 (not yet): the
   automatic two-tier A/B - the high-band no-lock is the default; a low quality triggers the low-band band-lock trial; a clear win
   keeps the low-band no-lock; the high band returns when it recovers.
-- **A/B smoke** (`POST /ab-smoke`, `GET /ab`, `keeper/absmoke.py`, `AB_SMOKE=1`, 2026-11-21): the full five-switch test, **with
-  locks** - A high -> B high -> no-lock -> A low -> B low, each one lock change + reboot + internet test, then the **best found**
-  config (or the no-lock when nothing clearly beats it). `keeper/abplan.py`: high = the lock-test anchors of `brain.anchor_ranking()`,
-  ranked by their score (A = the max, B = the next; a tie keeps both; a single cell -> A only); only a **complete** score competes -
-  a partial row (an old row without iperf) has `score None` until a new lock test, and a band-scan-only cell has no score at all
-  (B1 `340@100` stays out of the high pair until the daily/Saturday test promotes it). Low = the **newest band scan of each low
-  band** (`LOW_BANDS` 8,20) + its n28 pair, ranked by call-ready, ties keep both (B8 then B20; the same scan's B1/B3/B7 rows are
-  high bands and never the "low" leg). A 5G pair is the cell's best measured anchor for that LTE cell (`_nr_for`, the pair DB);
-  the lookup converts the lock spec to the pair key with `brain.anchor_key()` - a spec used as the key missed every pair and
-  silently used the pre-run sample's 5G cell instead (fixed 2026-11-22u; the scenarios had seeded the wrong key format and hid
-  it). It runs first at the start of the
-  night test and the Saturday day test (`AB_SMOKE=1`) and manually (the wife, when critical). Telegram: modem good / provider issue /
-  modem bad; `GET /ab` shows the per-leg detail. `running` is cleared **last** (after the result, the Telegram and the event), so
-  a waiter that sees the run done always finds its result - the refresh chain reads `st["result"]` straight after the wait
-  (2026-11-22u). It is a test, busy (the guard/captest/night wait). Not the automatic A/B.
+- **A/B smoke** is the on-demand diagnostic in the Keeper panel. Start with `POST /ab-smoke`, read phases, completed legs and
+  the last result with `GET /ab`, and stop with `POST /ab-smoke-stop`. The current managed pair is tested first without a reboot.
+  The plan includes an unlocked baseline, other anchors with a complete daytime transfer score from the current measurement method,
+  and low bands with an observed n28 pair. An unproven LTE anchor lets NR attach naturally. A changed lock requires a BOOT inform,
+  a fresh serving-cell observation and fresh probes. A working alternate after the current configuration fails points to the
+  configuration. Failed fresh probes on a registered unlocked modem point to the mobile uplink. A reachable uplink supports
+  checking the LAN or PC if the problem persists there. Missing evidence gives an inconclusive result.
+  Smoke always restores the managed locks. Stop waits for any in-flight reboot and then restores them. A persisted restore request
+  lets the guard retry that restoration after an interrupted run. The smoke holds the modem reservation until its result is published.
 - **Morning cell check** (`POST /morning?low=1|0`, `GET /morning`, `keeper/morning.py`, `MORNING` 08:00): the daily cell decision.
   One no-lock leg (full CA), then **band-lock discovery** (no reboot) for B1/B3/B7. Allow up to `MORNING_BAND_WAIT_S` (125) seconds
   for two samples after the band write. A neighbour needs two fresh usable RSRP readings (default at least −110 dBm), and the
@@ -222,7 +212,7 @@ at `/docs`.
   state: release the locks first (`POST /lte-lock?cell=none` + `POST /nr-lock?cell=none`, or a LOCK_PAUSE/test window) - it ran
   2026-11-21 17:26 only because the keeper was unlocked then. `GET /ab` embeds the refresh. The band scan refreshes the B1/B8/B20 rows + the NR database; the smoke uses
   the refreshed rows and the lock-test A/B scores (A = the max scored, B = the next); the low pair is the newest **B8 and B20** row
-  (the scan also writes B1/B3/B7, which are high bands and not low candidates); the best found restore. The chain does the band scan
+  (the scan also writes B1/B3/B7, which are high bands and not low candidates); the smoke restores the managed locks. The chain does the band scan
   first and only then the smoke (the stage is `band scan` -> `smoke` -> `done`); it waits per stage and **aborts** instead of
   starting the next one when a stage is still running after its ceiling (`REFRESH_SCAN_MAX_S` 1800 - above the 6-band worst case
   6 x (2 x `BANDSCAN_WAIT_S` + `BANDSCAN_TEST_S`) ~ 1230 s; `REFRESH_SMOKE_MAX_S` 2400), so the smoke never takes a cell lock on
@@ -235,30 +225,17 @@ at `/docs`.
   windows; the normal service mode is `dev` off. The wife can switch it on and keep working while an issue is fixed later.
 - Band scan bandwidth watch: each band's serving carrier bandwidth (`bw_mhz`, as logged '@N') is compared with its last scan; a change
   -> one Telegram note (the refarm signal: B8 5 -> 10 MHz after the 3G release). Unknown bandwidth or a first scan: no note.
-- Saturday day test (`DAY_TEST` "Sat 08:30-11:30", '' = off; not before 08:00 - the night-off cells are back ~08:00-08:10): once a
-  window after `DAY_IDLE_MIN` (10) idle minutes - the day lock, the planner's day-only cells, the last night run's cells within 5
-  score points of its baseline (daytime confirmation). Normal day test (5G lock kept), as many as fit, hard stop at the window end.
 - Quality A/B (`guard.quality_ab`, bad call-ready with good signal on an idle link, once a day): trial 1 = the B cell
   (`guard.ab_alt`): a daytime lock-test result (night rows never count), 5G paired in that test, ANOTHER site (eNB) than the lock,
-  seen in the last 6 h; best score as the share of the points measured (rows measuring >= 60 % of the weight), sparser rows after. Trial 2 = everything unlocked (the modem's choice).
+  seen in the last 6 h; best complete loaded score under the current method. Trial 2 = everything unlocked (the modem's choice).
   EVERY A/B reboot (the start, the next arm, the winner back, your locks back) waits until no one is in a CALL: blocked while every
   one of the last `AB_QUIET_MIN` (5) samples carries >= `AB_CALL_BYTES` (4000 B/s) in the same direction - a
   Teams / Zoom call is steady (~5-12 kB/s, also down when muted), update / mail / browsing bursts are not (2026-11-20: up p50 0.6
   kB/s, steady >= 4 kB/s in 8.5 % of 5-min windows). The current minute must be idle as well. A missed trial is fine; a dropped call is not.
-- **Night screen** (LTE only): current **research** runs every night (`NIGHT_ALWAYS=1`, `NIGHT_SCREEN=01:30-05:00`; the tests may run
-  until the `LOCK_PAUSE` end, 08:00). The weekly path (arm from the ZTE helper, `POST /night-screen?arm=1`, persisted as
-  `night_armed`; Friday 21:30 reminder until armed) is dormant while research runs and is for when research ends (the router + modem
-  are then off the other nights). In the `NIGHT_SCREEN` start window (01:30-05:00; an optional weekday narrows it further), after
-  `NIGHT_IDLE_MIN` (30) idle minutes with a verified clock, once a night: re-tests the current lock (or the unlocked baseline) +
-  `NIGHT_CELLS` + the planner's strong untested cells (not "dead"), then puts the lock straight back. Traffic stops it. Night rows (`mode` night) are
-  an unloaded network: kept for the finding, never in the daytime ranking, never auto-applied. The finding is RECOMMEND when a cell beats
-  the baseline, INFO when none did, WARN when the baseline was not measured (a missing baseline is no reference, so no verdict); cells the
-  screen could not measure are named, not shown with empty numbers. Rows are kept (lock tests are not pruned automatically); `/lock-tests`
-  only returns the last 40, so the latest night run may be mixed with day rows in that list (the finding uses the newest `run`). Only a
-  *measured* night row (minutes > 0) with no service counts as a dead cell (skipped for 30 days); a step that never measured (no boot
-  inform, the CPE web / the link did not come back) is no evidence about the cell and must be retried. A step that could not even be
-  locked carries its `mode` and `run` like the others (a night run stays one unit; the finding then warns about the unmeasured
-  baseline instead of treating the next candidate as one).
+- **Overnight operation.** The router and modem can be powered off overnight or when no service is needed. There is no scheduled
+  night screen, arm reminder, or Saturday confirmation test. Keep clock verification and ordinary outage recovery for cold boots.
+  `LOCK_PAUSE` is optional for sites that need to release a lock while a cell is off. The production power-off setup leaves it disabled.
+  Historical night-mode results remain readable and are excluded from daytime decisions.
 - **Auto-apply** (`AUTO=on`, real load): a daytime ZTE LTE candidate needs a complete transfer score at least 5 points above that
   run's unlocked baseline, and its internet quality cannot be clearly worse under the call/loss/p95/jitter margins. The highest
   eligible score wins. SINR and RSRP remain diagnostics. A missing or partial loaded baseline gives no decision. For a 5G test,
@@ -305,7 +282,7 @@ at `/docs`.
   (0.92 x it); ONE low test changes nothing but asks for a confirmation test `CAPTEST_CONFIRM_S` (600 s) later - inside the 1-h gap,
   within the daily budget, after 10 idle minutes, never in LOCK_PAUSE (2026-11-20 sweep: one peak-hour test swings +-25 %).
   the plan) and its test at +10 %. Extra tests (setup change, deep cuts, useless cuts, climb): `CAPTEST_TRIGGER_MAX` 6 a day, >= 1 h apart.
-  Current `CAPTEST_SLOTS=08:30,12:30,18:30,21:30` (no night slot while the night screen runs); `SQM_MAX_DOWN/UP=185/28`,
+  Current `CAPTEST_SLOTS=10:30,12:30,18:30,21:30`; `SQM_MAX_DOWN/UP=185/28`,
   `SQM_MIN_DOWN=35`, the plan 200/30.
   Never a triggered test inside `LOCK_PAUSE` (the released lock is no setup change; the empty night network is no ceiling).
 - **Tests** = the modem's own iperf3 (TR-143 cannot measure on the MC889 B07): download 4 streams, upload 1 stream (the MC889 gives no

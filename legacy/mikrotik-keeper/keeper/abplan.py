@@ -26,7 +26,7 @@ def high():
     d = {}
     for r in (brain.anchor_ranking().get("ranked") or []):
         c, s = r.get("lock"), r.get("score")
-        if not c or c == "none" or s is None: continue
+        if not c or c == "none" or s is None or r.get("load_method") != brain.LTE_LOAD_METHOD or not (brain.f(r.get("load_s")) or 0) > 0: continue
         d.setdefault(round(float(s), 1), []).append(c)
     for k in d: d[k] = list(dict.fromkeys(d[k]))
     return _pair(d)
@@ -37,7 +37,7 @@ def low():
     d = {}
     for r in lowband.latest():
         s, n = r.get("serving") or "", r.get("nr_cell") or ""
-        if "/" not in s: continue
+        if "/" not in s or brain.nr_band_of(n.split("/", 1)[0]) != "n28": continue
         try: q = float(r.get("call_ok"))
         except (TypeError, ValueError): continue
         spec = "%s@%s" % (s.split("/")[1], s.split("/")[0])

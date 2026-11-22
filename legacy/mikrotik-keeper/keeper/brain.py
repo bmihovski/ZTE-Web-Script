@@ -247,13 +247,15 @@ def internet_test(seconds=30, url=None, mb=None, stop=None):
     mb = INTTEST_MB if mb is None else mb
     out = {"down_mbps": None, "tested_mb": 0.0, "error": ""}
     stop = stop or threading.Event()
+    done = threading.Event()
+    started = time.time()
     if url and url != "off" and mb > 0:
         def pull():
             t0 = time.time(); n = 0
             try:
                 req = urllib.request.Request(url, headers={"User-Agent": "zte-keeper"})
                 with urllib.request.urlopen(req, timeout=10) as r:
-                    while not stop.is_set() and n < mb * 1e6:
+                    while not done.is_set() and not stop.is_set() and n < mb * 1e6:
                         b = r.read(int(min(65536, mb * 1e6 - n)))
                         if not b: break
                         n += len(b)
@@ -262,9 +264,9 @@ def internet_test(seconds=30, url=None, mb=None, stop=None):
             except Exception as e:
                 out["error"] = repr(e)
         threading.Thread(target=pull, daemon=True).start()
-    time.sleep(seconds)
-    stop.set()
-    out.update(latency_row(seconds + 2))
+    stop.wait(seconds)
+    done.set()
+    out.update(_lat([x for x in list(lat_buf) if x[0] >= started]))
     return out
 
 
@@ -756,14 +758,19 @@ def save_registry():
 def load_registry(data_dir):
     """Load the registry (or build it from the history on the first start) and your optional sites.json."""
     reg_st["dir"] = data_dir
+    rebuild = False
     try:
         with open(os.path.join(data_dir, CELLS_FILE)) as fh: REG.update(json.load(fh))
-        try:
-            with open(os.path.join(data_dir, "cell-ids.json")) as fh: REG.setdefault("ids", {}).update(json.load(fh))
-        except (OSError, ValueError): pass
     except (OSError, ValueError):
-        for r in list(HIST): track(r, ts(r))         # first start: build it from the samples already on disk
-        reg_st["n"] = 0; save_registry()
+        rebuild = True
+    try:
+        with open(os.path.join(data_dir, "cell-ids.json")) as fh: REG.setdefault("ids", {}).update(json.load(fh))
+    except (OSError, ValueError):
+        pass
+    if rebuild:
+        for r in list(HIST): track(r, ts(r))
+        reg_st["n"] = 0
+        save_registry()
     try:                                     # your own site notes - reference only, measurements stay the source
         with open(os.path.join(data_dir, "sites.json")) as fh: s = json.load(fh)
         reg_st["sites"] = {str(x.get("enb")): x for x in s.get("sites", []) if x.get("enb") is not None}

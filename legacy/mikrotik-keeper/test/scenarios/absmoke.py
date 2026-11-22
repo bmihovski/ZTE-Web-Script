@@ -5,17 +5,25 @@ import os, sys, tempfile, time
 here = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.abspath(os.path.join(here, "..", ".."))
 DATA = tempfile.mkdtemp(); os.environ.update(DATA=DATA, DEVICE="zte", ZTE_HOST="127.0.0.1:9")
 sys.path.insert(0, ROOT)
-from keeper import absmoke, alert, brain, common, devices, guard, store
+from keeper import absmoke, acs, alert, brain, common, devices, guard, store
+import threading
 ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 600))
 store.add(DATA, "band_scans", {"time": ts, "band": "8", "serving": "3774/394", "nr_cell": "156510/534", "nr_arfcn": "156510",
                                "call_ok": "100.0", "loss_pct": "0.0", "lat_p95": "60.3", "jitter_ms": "21.4", "down_mbps": "11.2", "note": ""})
 store.add(DATA, "band_scans", {"time": ts, "band": "20", "serving": "6400/112", "nr_cell": "156510/534", "nr_arfcn": "156510",
                                "call_ok": "100.0", "loss_pct": "0.0", "lat_p95": "68.4", "jitter_ms": "28.3", "down_mbps": "8.31", "note": ""})
-common.state({"lte_lock": {"cell": "340@100", "state": "released"}, "nr_lock": {"cell": "534@636576", "state": "released"}, "dev": False})
+common.state({"lte_lock": {"cell": "340@100", "state": "active"}, "nr_lock": {"cell": "534@636576", "state": "active"}, "dev": False})
 z = devices.current(); calls = []
-z.locks_apply = lambda l, n: (calls.append((l, n)), "tr069")[1]
-z.ready = lambda timeout=0: True
-brain.wait_online = lambda timeout=0: True
+def apply(l, n):
+    calls.append((l, n))
+    acs.st["boots"] += 1
+    brain.HIST.append({"time": common.stamp(), "lte_cell": brain.anchor_key(l), "nr_cell": brain.anchor_key(n)})
+    return "tr069"
+
+brain.HIST.append({"time": common.stamp(), "lte_cell": "100/340", "nr_cell": "636576/534"})
+z.locks_apply = apply
+z.ready = lambda **kw: True
+brain.wait_online = lambda **kw: True
 # the pair database in its REAL key format (earfcn/pci: "1550/66"), not the lock spec ("66@1550"): the A/B high leg must get
 # the anchor's measured 5G pair, never the pre-run sample's cell (the fallback here is the n28 cell 534@156510)
 brain.REG["nr"] = {"636576/534": {"anchors": {"1550/66": {"min": 100}, "100/340": {"min": 100}}},
@@ -23,7 +31,7 @@ brain.REG["nr"] = {"636576/534": {"anchors": {"1550/66": {"min": 100}, "100/340"
 brain.pair_quality = lambda p, a: 1
 assert absmoke._nr_for("340@100", {"nr_cell": "156510/534"}) == "534@636576", absmoke._nr_for("340@100", {"nr_cell": "156510/534"})
 assert absmoke._nr_for("66@1550", {"nr_cell": "156510/534"}) == "534@636576"
-assert absmoke._nr_for("999@999", {"nr_cell": "156510/534"}) == "534@156510"      # no pair history: the sample's 5G is the fallback
+assert absmoke._nr_for("999@999", {"nr_cell": "156510/534"}) == "none"             # no pair history on this anchor
 absmoke.abplan.high = lambda: ["340@100", "66@1550"]
 absmoke.abplan.low = lambda: [("394@3774", "534@156510"), ("112@6400", "534@156510")]
 seq = [dict(down_mbps=30, call_ok=1, loss_pct=0, lat_p95=20, jitter_ms=3),   # A high: p95 20 beats the no-lock 30
@@ -31,7 +39,7 @@ seq = [dict(down_mbps=30, call_ok=1, loss_pct=0, lat_p95=20, jitter_ms=3),   # A
        dict(down_mbps=25, call_ok=1, loss_pct=0, lat_p95=30, jitter_ms=5),   # no lock
        dict(down_mbps=10, call_ok=0, loss_pct=1, lat_p95=40, jitter_ms=8),
        dict(down_mbps=8, call_ok=0, loss_pct=1, lat_p95=40, jitter_ms=8)]
-brain.internet_test = lambda seconds=25: seq.pop(0)
+brain.internet_test = lambda **kw: seq.pop(0)
 brain.row_health = lambda row: {"sim": True, "registered": True, "signal": True, "data": True}
 rep = []
 def _rep(m):                       # a slow Telegram send: with `running` cleared before the result/Telegram, a waiter would see a
@@ -43,25 +51,38 @@ while absmoke.st["running"] and time.time() < deadline: time.sleep(0.05)
 assert absmoke.st["running"] is None, absmoke.st
 res = absmoke.st["result"]; print(res)
 legs = [x["leg"] for x in res["legs"]]
-assert legs == ["A high", "B high", "no lock", "A low", "B low"], legs
-assert calls == [("340@100", "534@636576"), ("66@1550", "534@636576"), ("none", "none"),
+assert legs == ["current lock", "A high", "no lock", "A low", "B low"], legs
+assert calls == [("66@1550", "534@636576"), ("none", "none"),
                  ("394@3774", "534@156510"), ("112@6400", "534@156510"), ("340@100", "534@636576")], calls   # A = the max scored, B = the next; best found the A high
-assert res["verdict"] == "modem good" and res["any_internet"], res
-assert rep and "modem good" in rep[0], rep
+assert res["verdict"] == "uplink reachable" and res["any_internet"], res
+assert rep and "uplink reachable" in rep[0], rep
 assert res["restored"] == {"lte": "340@100", "nr": "534@636576"}, res
 assert (common.state().get("lte_lock") or {}).get("cell") == "340@100"
-# the no-lock wins: the best is the no-lock itself -> restore the no-lock
-calls.clear(); seq[:] = [dict(down_mbps=5, call_ok=0, loss_pct=2, lat_p95=40, jitter_ms=10),
-                          dict(down_mbps=4, call_ok=0, loss_pct=2, lat_p95=40, jitter_ms=10),
-                          dict(down_mbps=50, call_ok=1, loss_pct=0, lat_p95=10, jitter_ms=2),   # the no-lock is the best
-                          dict(down_mbps=3, call_ok=0, loss_pct=2, lat_p95=40, jitter_ms=10),
-                          dict(down_mbps=2, call_ok=0, loss_pct=2, lat_p95=40, jitter_ms=10)]
-ok, why = absmoke.run("test2"); assert ok, why
-deadline = time.time() + 10
-while absmoke.st["running"] and time.time() < deadline: time.sleep(0.05)
-res2 = absmoke.st["result"]
-assert calls[-1] == ("none", "none"), calls
-assert res2["restored"] == {"lte": "none", "nr": "none"}, res2
-assert common.state().get("lte_lock") is None and common.state().get("nr_lock") is None
-assert res2["verdict"] == "modem good"
-print("OK absmoke")
+# Stop during a measurement, without starting another leg or keeping a partial winner.
+entered = threading.Event()
+
+def wait_for_stop(**kwargs):
+    if not calls:
+        return dict(down_mbps=30, call_ok=1, loss_pct=0)
+    entered.set()
+    assert kwargs["stop"].wait(5)
+    return {}
+
+calls.clear()
+brain.internet_test = wait_for_stop
+assert absmoke.run("cancel test")[0]
+assert entered.wait(5)
+p = absmoke.status()["progress"]
+assert p["phase"] == "measuring" and p["step"] == 2 and p["total"] == 5, p
+assert absmoke.stop()
+deadline = time.monotonic() + 10
+while absmoke.status()["running"] and time.monotonic() < deadline: time.sleep(0.05)
+res2 = absmoke.status()["result"]
+assert res2["verdict"] == "stopped" and res2["restored"] == {"lte": "340@100", "nr": "534@636576"}, res2
+assert calls == [("66@1550", "534@636576"), ("340@100", "534@636576")], calls
+assert not common.state().get("ab_smoke_restore")
+assert not absmoke.stop()
+assert absmoke._classify([{"ok": False, "error": "no boot inform"}])["verdict"] == "inconclusive"
+assert absmoke._classify([{"ok": False, "measured": True, "health": {"sim": True, "registered": True}, "leg": "no lock"}])["verdict"] == "mobile uplink suspected"
+assert absmoke._classify([{"ok": True, "leg": "no lock"}, {"ok": False, "measured": True, "leg": "current lock"}])["verdict"] == "configuration suspected"
+print("OK test_absmoke")

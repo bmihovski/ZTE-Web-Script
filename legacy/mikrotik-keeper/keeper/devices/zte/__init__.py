@@ -8,7 +8,7 @@ start before clearing the locks an interrupted lock test left).
 """
 import re, threading, time
 
-from keeper import acs, brain, captest, common, guard, locktest, morning
+from keeper import absmoke, acs, brain, captest, common, guard, locktest, morning
 from keeper.common import E, event, log, state
 from keeper.devices.zte import antennas, checkin, locks, ps as ps_mod, settings, watchdog, web
 from keeper.devices.zte.locks import lock_value, locks_apply, nr_value   # noqa: F401 (driver interface)
@@ -83,8 +83,10 @@ def row(vals):
 
 
 def minute_jobs():
-    """Sample jobs in order: scheduled sweep, lock guard, quality A/B, morning cell check, capacity test, night screen."""
-    return [antennas.maybe_sweep, guard.lock_guard, guard.quality_ab, morning.maybe_morning, captest.maybe_test, captest.weekly, locktest.maybe_night, locktest.maybe_day, locktest.remind]
+    """Resume an interrupted smoke before the normal guard and daytime jobs."""
+    if state().get("ab_smoke_restore"): return [absmoke.recover]
+    return [locktest.cut_night_on_traffic, antennas.maybe_sweep, guard.lock_guard, guard.quality_ab,
+            morning.maybe_morning, captest.maybe_test, captest.weekly]
 
 
 MODEM_FAULT = ("sim_undetected", "sim_destroy", "waitpin", "waitpuk", "waitnck", "undetected")   # modem_main_state = SIM / modem fault

@@ -10,7 +10,7 @@ from keeper import VERSION, abrefresh, absmoke, acs, alert, bandscan, brain, cap
 from keeper.common import DATA, event, log, state
 
 UI_NAMES = ("zte_positions", "zte_ant_results", "zte_exp_results", "zte_exp_pending")     # app lists kept in the keeper's database
-KINDS = ("samples", "events", "lock_tests", "antenna_sweeps")
+KINDS = store.KINDS
 
 ROUTES = [   # method, path, summary, [(param, example, description)], capability needed (None = any device)
     ("get", "/status", "Now: verdict, 5G / LTE cells, latency, download estimate, config, 24 h findings", [], None),
@@ -34,13 +34,11 @@ ROUTES = [   # method, path, summary, [(param, example, description)], capabilit
      "thermal, UPnP, NR band lock, network select) + audit warnings; logs in, so the browser's ZTE page logs out", [], "antennas"),
     ("post", "/ps-reconnect", "Fast PS data-session reconnect over the ZTE web page (disconnect + connect; no CPE reboot) - a less "
      "disruptive recovery than a reboot", [], "antennas"),
-    ("get", "/night-plan", "Preview: the night planner on the stored data now (cells a night would test, day-only cells, ARFCNs off at night, why) - nothing stored", [], None),
     ("get", "/band-scans", "Band scan now (the band being scanned) + the last 60 rows: serving cell, RSRP/RSRQ/SINR, neighbours, the "
      "network's own 5G pair and internet quality (call-ready/loss/p95/jitter/download) per band", [], None),
     ("get", "/low-band", "Read-only: low-band A/B phase 1 - the last B8/B20 scan (serving cell, n28 pair, call-ready/loss/p95/jitter/down) "
      "against the current high-band no-lock quality, with the quality-policy verdict", [], None),
-    ("get", "/ab", "Read-only: the A/B smoke state/result - the last five-switch test (A high - B high - no-lock - A low - B low, with "
-     "locks) and the dev flag", [], None),
+    ("get", "/ab", "Smoke progress, completed legs and the last diagnostic result", [], None),
     ("post", "/lte-lock", "Keep an LTE cell locked (guarded: released when lost, restored when back) or remove it", [("cell", "340@100", "PCI@EARFCN or none")], None),
     ("post", "/nr-lock", "Keep a 5G cell locked (guarded) or remove it", [("cell", "534@636576", "PCI@ARFCN or none")], None),
     ("post", "/antennas", "Antenna mode the keeper re-applies at every ZTE boot (overrides ANT_AUTO / ANT5 / ANT6)",
@@ -62,10 +60,8 @@ ROUTES = [   # method, path, summary, [(param, example, description)], capabilit
     ("post", "/low-band-trial", "Low-band A/B phase 1: start a one-band band scan (LOW_BANDS 8,20; LockLTEBand, no reboot, no cell lock; "
      "the network's low-band cell + n28; the internet test; full band list back). Only unlocked",
      [("band", "8", "LTE band number (LOW_BANDS)")], "lock_test"),
-    ("post", "/ab-smoke", "Full A/B smoke (with locks): A high (the max complete lock-test score) - B high (the next) - no-lock - "
-     "A low (the newest B8 band scan + its n28 pair) - B low (the newest B20 row), each measured; the BEST found config is restored "
-     "(no-lock only when it is best/equal); a Telegram with modem good / provider issue / modem bad. The wife runs it when critical",
-     [], "lock_test"),
+    ("post", "/ab-smoke", "Start a diagnostic comparison and restore the managed locks after the test", [], "lock_test"),
+    ("post", "/ab-smoke-stop", "Stop the smoke and restore the managed locks after any in-flight reboot", [], "lock_test"),
     ("get", "/ab-refresh", "Read-only: the one-call refresh (band scan -> A/B smoke -> one Telegram) state/result", [], None),
     ("post", "/ab-refresh", "One call: the full band scan (B1,B3,B7,B8,B20,B28), then the full A/B smoke, then ONE Telegram with both; "
      "~25 min; the wife can run it", [], "lock_test"),
@@ -77,8 +73,6 @@ ROUTES = [   # method, path, summary, [(param, example, description)], capabilit
      ("bands", "", "Optional comma-separated bands for a focused comparison with apply=0")], "morning"),
     ("post", "/dev", "?on=1|0: development mode - the automatic A/B is off and the tests are allowed; the wife can continue working "
      "while the issue is fixed later", [("on", "1", "1 = on, 0 = off")], None),
-    ("post", "/night-screen", "Arm (1) or cancel (0) the night screen for the coming night - leave the router + modem on for it "
-     "(NIGHT_ALWAYS=1: every night anyway)", [("arm", "1", "1 = arm the coming night, 0 = cancel")], "lock_test"),
     ("post", "/antenna-sweep", "Run the keeper's antenna sweep (close every ZTE web page first)", [], "sweep"),
     ("post", "/cells/forget", "Drop cells from this device's registry (e.g. the other device's cells that got in)",
      [("cells", "500/341,3150/341", "EARFCN/PCI (5G: ARFCN/PCI), comma separated")], None),
@@ -153,7 +147,7 @@ def config():
     """/status -> config: what the keeper is set to and doing now (core + the driver's part)."""
     dev = devices.current()
     return dict({"device": common.DEVICE, "lock_test": locktest.lt["running"], "lock_test_rat": locktest.lt.get("rat"),
-                 "lock_test_anchor": locktest.lt.get("anchor"), "night_armed": state().get("night_armed"), "night_always": locktest.NIGHT_ALWAYS, "lte_lock": state().get("lte_lock"), "nr_lock": state().get("nr_lock"),
+                 "lock_test_anchor": locktest.lt.get("anchor"), "quality_ab_phase": (state().get("quality_ab") or {}).get("phase"), "lte_lock": state().get("lte_lock"), "nr_lock": state().get("nr_lock"),
                  "fast_mode": acs.fast(), "busy": common.busy(), "inform_s": acs.INTERVAL,
                  "clock": {"verified": common.clock_ok(), "modem_skew_s": common.clock["skew"], "unverified_since": common.clock["bad_since"]},
                  "manages": common.E("CPE", "") or state().get("cpe") or dev.MAKER,
@@ -231,8 +225,7 @@ class H(BaseHTTPRequestHandler):
                     return dict(r, score=score, score_parts=x["parts"], score_partial=x["partial"], score_gate=x["gate"])
                 rows = [sc(r) for r in rows[-40:]]                          # the weighted score, computed when read (new weights re-score)
                 code, obj = 200, {"running": lt["running"], "phase": lt.get("phase", ""), "plan": lt["plan"], "align": lt["align"],
-                                  "rat": lt.get("rat"), "anchor": lt.get("anchor"), "waiting": lt["waiting"], "results": rows,
-                                  "night_plan": state().get("night_plan")}
+                                  "rat": lt.get("rat"), "anchor": lt.get("anchor"), "waiting": lt["waiting"], "results": rows}
             elif path == "/antenna-sweeps":
                 code, obj = 200, store.rows(DATA, "antenna_sweeps", last=40)
             elif path == "/tr069":                             # read-only: GetParameterValues of one name / subtree, or GetParameterNames of one level
@@ -251,8 +244,6 @@ class H(BaseHTTPRequestHandler):
             elif path == "/zte/settings":                      # the web-only settings + audit (2026-11-21)
                 res = dev.settings_read()
                 code, obj = (200, res) if "error" not in res else (502, res)
-            elif path == "/night-plan":
-                code, obj = 200, locktest.night_candidates(time.time(), preview=True)
             elif path == "/band-scans":
                 code, obj = 200, {"running": bandscan.st["running"], "scans": store.rows(DATA, "band_scans", last=60)}
             elif path == "/low-band":
@@ -315,7 +306,10 @@ class H(BaseHTTPRequestHandler):
         dev = devices.current()
         try:
             code, res = 200, None
-            if path in ("/lte-lock", "/nr-lock"):    # ?cell=434@1550 (5G: 534@636576) keep it locked (guarded) | none
+            if (path in ("/lte-lock", "/nr-lock", "/antennas", "/antenna-sweep", "/ps-reconnect")
+                    and (absmoke.st["running"] or state().get("ab_smoke_restore"))):
+                code, res = 409, {"why": "smoke test or lock restore in progress"}
+            elif path in ("/lte-lock", "/nr-lock"):    # ?cell=434@1550 (5G: 534@636576) keep it locked (guarded) | none
                 cell = g("cell")
                 if not (cell == "none" or re.fullmatch(r"\d{1,4}@\d{1,7}", cell)): raise ValueError("cell=PCI@EARFCN (5G: PCI@ARFCN) or none")
                 try: res = guard.lock_request(cell, "nr" if path == "/nr-lock" else "lte")
@@ -353,6 +347,9 @@ class H(BaseHTTPRequestHandler):
             elif path == "/ab-smoke":       # full five-switch A/B test, with locks; the wife runs it when critical
                 ok, why = absmoke.run("manual")
                 code, res = 202 if ok else 409, {"started": ok, "why": why}
+            elif path == "/ab-smoke-stop":
+                stopping = absmoke.stop()
+                code, res = (202, {"stopping": True}) if stopping else (409, {"why": "no smoke test to stop"})
             elif path == "/ab-refresh":     # one call: band scan -> smoke -> one Telegram
                 ok, why = abrefresh.run("manual")
                 code, res = 202 if ok else 409, {"started": ok, "why": why}
@@ -374,9 +371,6 @@ class H(BaseHTTPRequestHandler):
                 state({"dev": on}); log("development mode %s" % ("on" if on else "off"))
                 event({"event": "development mode", "to": "on" if on else "off", "why": "the auto A/B is off and the tests are allowed" if on else "normal service"})
                 code, res = 200, {"dev": on}
-            elif path == "/night-screen":     # ?arm=1|0 - the ZTE helper's button (the router + modem stay on that night)
-                if g("arm") not in ("0", "1"): raise ValueError("arm=1|0")
-                res = locktest.night_arm(g("arm") == "1")
             elif path in ("/lock-test-skip", "/lock-test-stop"):
                 what = "skip" if path.endswith("skip") else "stop"; ok = locktest.lt_cut(what)
                 code, res = 200 if ok else 409, {what: ok, "cell": locktest.lt["running"]}

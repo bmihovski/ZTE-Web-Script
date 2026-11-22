@@ -28,7 +28,8 @@ def locked(day_start):
 for lock, anchor, site, ok in (("340@100", "100/340", "1243/81", "100.0"), ("340@3350", "3350/340", "1243/61", "99.0"),
                                ("202@100", "100/202", "999/1", "98.0"), ("434@1550", "1550/434", "1072/3", "97.0")):
     store.add(DATA, "lock_tests", {"time": "2026-11-02 09:00:00", "rat": "lte", "lock": lock, "anchor": anchor, "site": site, "minutes": "12",
-                                   "on_target_pct": "100.0", "call_ok_pct": ok, "anchor_sinr_p50": "5", "nr_sinr_p50": "8", "nr_arfcn": "636576", "mode": "as is"})
+                                   "on_target_pct": "100.0", "call_ok_pct": ok, "loss_pct": "0", "lat_p95": "65", "jitter_ms": "10",
+                                   "down_mbps": "60", "up_mbps": "20", "load_s": "20", "load_method": brain.LTE_LOAD_METHOD, "anchor_sinr_p50": "5", "nr_sinr_p50": "8", "nr_arfcn": "636576", "mode": "as is"})
 for k, last in (("100/340", NOW), ("3350/340", NOW), ("100/202", NOW - 8 * 3600), ("1550/434", NOW - 600)):
     brain.REG["lte"][k] = {"band": "B1", "rsrp": -90, "last": last, "seen_min": 300}
 assert guard.ab_alt("340@100", {}, NOW) == "434@1550"                          # same eNB and not-seen-lately skipped
@@ -116,17 +117,16 @@ assert guard.quiet([{"up_bps": "1500", "down_bps": "8000"}] * (guard.AB_QUIET_MI
 # --- the B cell (docs/NIGHTLY-PLAN.md item 6, 2026-11-18): the weighted score first, 5G pairing required, daytime results only ---
 full = lambda lock, anchor, site, down, nr, mode="as is": store.add(DATA, "lock_tests", {"time": "2026-11-18 10:00:00", "rat": "lte", "lock": lock,
     "anchor": anchor, "site": site, "minutes": "12", "on_target_pct": "100.0", "call_ok_pct": "100", "anchor_sinr_p50": "5", "nr_sinr_p50": "8",
-    "nr_arfcn": nr, "down_mbps": down, "up_mbps": "25", "loss_pct": "0", "lat_p95": "40", "jitter_ms": "5", "mode": mode})
+    "nr_arfcn": nr, "down_mbps": down, "load_s": "20", "load_method": brain.LTE_LOAD_METHOD, "up_mbps": "25", "loss_pct": "0", "lat_p95": "40", "jitter_ms": "5", "mode": mode})
 for k in ("100/340", "1550/434", "6400/112", "6400/121", "3774/112"): brain.REG["lte"][k] = {"band": "B1", "rsrp": -90, "last": NOW, "seen_min": 300}
 full("112@6400", "6400/112", "2000/1", "150", "")                    # best throughput, no 5G -> not a B cell
-full("121@6400", "6400/121", "2001/1", "120", "636576")             # scored, 5G: beats 434@1550 (its row has no throughput -> partial)
+full("121@6400", "6400/121", "2001/1", "120", "636576")             # scored, 5G: beats 434@1550 on measured quality and throughput
 full("112@3774", "3774/112", "2002/1", "190", "636576", "night")   # night only: no daytime confirmation -> not a B cell
 assert guard.ab_alt("340@100", {}, NOW) == "121@6400", guard.ab_alt("340@100", {}, NOW)
-# 2026-11-18 live: older rows lack only down/up (no iperf then) - compare the share of the points measured, not the raw score
-# (B20 394@6400 68/100 must not beat a B3 cell at ~60/65); rows that measured < 60 % of the weight still rank after
+# Legacy partial results cannot move the automatic trial to another site.
 store.add(DATA, "lock_tests", {"time": "2026-11-18 10:00:00", "rat": "lte", "lock": "77@1550", "anchor": "1550/77", "site": "3000/1", "minutes": "12",
     "on_target_pct": "100.0", "call_ok_pct": "100", "anchor_sinr_p50": "9", "nr_sinr_p50": "12", "nr_arfcn": "636576", "loss_pct": "0",
     "lat_p95": "40", "jitter_ms": "5", "mode": "as is"})
 brain.REG["lte"]["1550/77"] = {"band": "B3", "rsrp": -90, "last": NOW, "seen_min": 300}
-assert guard.ab_alt("340@100", {}, NOW) == "77@1550", guard.ab_alt("340@100", {}, NOW)
+assert guard.ab_alt("340@100", {}, NOW) == "121@6400", guard.ab_alt("340@100", {}, NOW)
 print("OK test_quality_ab")

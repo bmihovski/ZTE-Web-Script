@@ -216,7 +216,7 @@ The keeper measures, analyses and decides; the userscript only shows the results
   before the release).
 - **Router clock after a power cut**: the RB450 has no battery clock; RouterOS boots with an old time and NTP fixes it only once the
   ZTE has internet (2026-10-30: booted at "10-29 18:00", real 06:25, fixed 75 s later). The keeper trusts its clock only while the
-  modem's Inform `CurrentTime` agrees (`CLOCK_MAX_SKEW_S`, 300; 0 = don't check); until then LOCK_PAUSE and the night screen wait,
+  modem's Inform `CurrentTime` agrees (`CLOCK_MAX_SKEW_S`, 300; 0 = don't check); until then time-of-day actions wait,
   events `clock not verified` / `clock verified` mark the window; the latter names the wrongly stamped range
   (`records stamped A to B (47 s)`, measured on the monotonic clock - later records carry real times and sort among them).
   Once verified in a run, a later disagreement is the modem's clock (a router reboot restarts the keeper): event `modem clock wrong`,
@@ -245,31 +245,26 @@ The keeper measures, analyses and decides; the userscript only shows the results
   samples on first start, kept for good. Findings: `NEW:` a strong cell that appeared after watching started, `GONE:` a long-seen
   cell missing for > 24 h -> re-run the lock test. `POST /cells/forget?cells=500/341,3150/341` drops cells that don't belong to this device's registry. Your own `data/sites.json` (optional, reference only) adds site name, distance
   and bearing from the ZTE to the cells whose site the ZTE reported.
-- **Night screen** (only on a night armed from the ZTE helper - `POST /night-screen?arm=1|0` - or every night with `NIGHT_ALWAYS=1`;
-  weekly Telegram from `NIGHT_REMIND_DAY` Fri `NIGHT_REMIND` 21:30, each evening until armed; `DAY_TEST` Sat 08:30-11:30 ('' off), `DAY_IDLE_MIN` 10; `NIGHT_BANDS` (lock-test only these bands, e.g. 1,3,7; empty = all), `BANDSCAN_NIGHT` 1,3,7,8,20 (a bandwidth change -> Telegram); `NIGHT_SCREEN` 02:00-05:00, `off` disables; `NIGHT_MAX` 3, `NIGHT_IDLE_MIN` 30, `NIGHT_RETEST_DAYS` 7,
-  `NIGHT_CELLS` always-re-check list e.g. `340@3350`): once a night, after 30 idle minutes, the keeper lock-tests the current lock (baseline)
-  plus `NIGHT_CELLS` (home set, same weekly throttle) plus up to 3 strong B1/B3/B7 cells from the registry not tested in 7 days, then puts the
-  lock back. Traffic stops it. Night rows (`mode` night) are an unloaded network: they never enter the daytime ranking. It pushes the full
-  ranking to Telegram and **recommends** a daytime test, but **never auto-switches** - the night network has B1 (your lock's band) switched off
-  and no load, so a night "winner" can lose by day. A night run whose baseline was not measured (no service on the lock's cell) gives no
-  verdict (`WARN: the baseline was not measured`); the finding names the cells it could not measure instead of showing empty numbers.
-  Rows are kept, but `/lock-tests` returns only the last 40, so the newest night `run` is what the finding uses.
-  Cells a night test found dead (a *measured* row, 12 min, no service) in the last 30 days are skipped; a step that never measured
-  (no boot inform, the CPE web / the link did not come back) is no evidence and is retried next time.
-  **Auto-apply happens on the daytime lock test instead** (`POST /lock-test`, real load): when it finishes, with `AUTO=on` the keeper locks the
-  winning cell if it clearly beats the unlocked baseline and the result is fresh, and pushes what it did to Telegram. Review the night Telegram,
-  run a daytime test for a promising cell, and it applies itself.
+- **A/B smoke** in the Keeper panel compares the current locked uplink, measured alternatives, and the unlocked modem.
+  Use **Run** when diagnosing a problem and **Stop** to restore the managed locks after any pending reboot. The panel shows
+  progress, measured legs, and the diagnosis. It also reports when there is insufficient evidence to identify the failure.
+- **Overnight operation.** It is safe to power off the router and modem when service is unneeded. There is no scheduled night
+  screen, arm reminder, or Saturday confirmation test. Clock and outage recovery still apply on the next boot.
 - **The app's data in the keeper** (`GET/POST /userdata?name=...`, `GET/POST /cell-ids`): saved positions, antenna sweeps, cell
   experiments and learned cell ids (LTE eNB/sector + 5G NCI) live in keeper.db; the browser keeps a cache. On load the app pulls the keeper's
   copy (pushes a list only the browser has, once), every save is pushed. The keeper also learns the serving LTE cell id from TR-069 CELLID.
 - **Storage** (`store.py`): SQLite `keeper.db` in the data dir (Python stdlib, nothing to install). Samples, events, lock tests and
-  sweeps are JSON records, so new fields never split files again. Old CSVs (incl. `.1`/`.vN`) are imported once and left in place.
+  sweeps use the same API and CSV formats. New minutes store cell identities and numeric metrics in typed SQLite columns, with
+  compact JSON for driver fields and other record kinds. Old CSVs are imported once and left in place.
   Housekeeping once a day (and right after start), so the router's disk never fills: samples older than `KEEP_DAYS` (90) go, the app's
   lists keep their newest 20 saves, and while the data is over `DB_MAX_MB` (150) the oldest day of samples goes (today's always stays).
   Freed space is reused, so the file stops growing; it only shrinks with a vacuum. `GET /db`: size, free disk, records per device / kind
   (oldest / newest), the imported CSVs (safe to delete). `POST /db/prune?days=30&kind=samples&device=*` deletes older records
   (`kind` samples | events | lock_tests | antenna_sweeps | ui, `days` >= 1); `&vacuum=1` shrinks the file (needs free disk ~ its size,
   pauses the keeper a few seconds); `&csv=1` deletes the imported CSVs. CSV export: `GET /export?kind=samples&from=...&to=...`.
+  To discard the measurement history, place an empty `data/.reset-measurements` marker through the router's SFTP mount,
+  then restart the keeper while it is idle. Startup compacts SQLite and removes the one-shot marker. Existing managed locks,
+  site notes, app lists, antenna settings and capacity inputs for SQM are kept.
   Files in the data dir: keep `keeper.db` (+ `-wal`, `-shm`), `state*.json`, `cells*.json`, `cell-ids.json`, `sites.json`, `keeper.log`;
   safe to delete: `samples.csv*`, `events.csv*`, `lock_tests.csv*`, `antenna_sweeps.csv*` (imported), v1's `switches.csv`, `tr069-raw.log*` (RAW=1 only).
 - **API docs**: Swagger UI at `http://192.168.6.250:7557/docs` (loads swagger-ui from cdn.jsdelivr.net), spec at `/openapi.json`,
@@ -287,7 +282,7 @@ The keeper measures, analyses and decides; the userscript only shows the results
   The modem forgets locks on reboot: the guard sets them again after every boot. Lock state `state-mikrotik.json`, cell list
   `cells-mikrotik.json`; learned cell ids (`cell-ids.json`) and the app's data are shared. Lock tests run here too (`POST /lock-test`,
   both RATs): a step is one script and NO CPE reboot, so it never waits for a boot inform (the Internet drops only for the LTE interface
-  restart). Antennas, the antenna sweep and the night screen are ZTE only. The ATL's SIM has a data plan: only the LAN TR-069 traffic is free, so set `LAT_TARGETS=off` while it is the
+  restart). Antennas, the antenna sweep and A/B smoke are ZTE only. The ATL's SIM has a data plan: only the LAN TR-069 traffic is free, so set `LAT_TARGETS=off` while it is the
   test device (no probe). Failover is manual: move the cable / route, change `DEVICE`, restart the container.
   Summer house (the ATL alone, no RB450 = no keeper): nothing to set up - the ATL runs unlocked on its own, its TR-069 client
   just can't reach the ACS (harmless); the keeper's data has a gap for that time. No operator check-in is ever relayed for the ATL.

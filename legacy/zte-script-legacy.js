@@ -7,7 +7,7 @@
  * 
  */
 
-console.log("Loading ZTE Script v" + "2026-11-17-#32");
+console.log("Loading ZTE Script v" + "2026-11-22-#33");
 
 siginfo =
     "wan_active_band,wan_active_channel,wan_lte_ca,wan_apn,wan_ipaddr," +
@@ -2104,6 +2104,7 @@ function keeper_table(rows, cols)
 function keeper_poll()
 {
     if (!$("#keeper_status").length) return;
+    keeper_ab_poll();
     Promise.all([keeper_get("/status"), keeper_get("/report?hours=24"), keeper_get("/events?n=30"), keeper_get("/antenna-sweeps"), keeper_get("/lock-tests"), keeper_get("/anchors"), keeper_get("/cells"), keeper_get("/anchors?rat=nr"), keeper_get("/captest").catch(function() { return null; })]).then(function(res) {
         var s = res[0], r = res[1], ev = res[2], sw = res[3], lk = res[4] || {}, an = res[5] || {}, cl = res[6] || {}, an5 = res[7] || {};
         var col = { good: "#2a2", fair: "#c80", poor: "#c22" }[s.verdict] || "#888";
@@ -2119,7 +2120,6 @@ function keeper_poll()
                 s.capacity.carriers.map(function(c) { return esc_html(c.carrier) + " " + esc_html(c.bw_mhz) + " MHz SINR " + esc_html(c.sinr) + " = " +
                     (c.mbps_layer == null ? "?" : esc_html(c.mbps_layer) + "x" + c.layers); }).join(", ") + "</span>" : ""));
         keeper_cap_render(res[8]);
-        $("#keeper_night").html(keeper_night_html((res[0] || {}).config || {}));
         $("#keeper_findings").html((r.findings || []).map(function(f) {
             var c = /^RECOMMEND/.test(f) ? "#06c" : /^WARN/.test(f) ? "#c22" : /^OK/.test(f) ? "#2a2" : "inherit";
             return "<li style='color:" + c + "'>" + esc_html(f) + "</li>"; }).join(""));
@@ -2168,17 +2168,50 @@ function keeper_poll()
 
 /* ---- capacity & shaper: the limit now and why, the learned ceilings, the tests; manual tests to check the line ---- */
 var keeper_cap_note = "", keeper_cap_last_time = null;     // the manual test's progress / result line; the newest test's time
-// the night screen runs only on a night armed here (the router + modem are off the other nights); NIGHT_ALWAYS=1 = research, every night
-function keeper_night_html(cfg)
+var keeper_ab_timer, keeper_ab_request = 0;
+function keeper_ab_poll()
 {
-    if (cfg.night_always) return "Night screen: every night (research mode, NIGHT_ALWAYS=1)";
-    if (cfg.night_armed) return "Night screen: <b>armed</b> for the night to " + esc_html(cfg.night_armed) +
-        " - leave the router + modem on. <a onclick='keeper_night(0)'>cancel</a>";
-    return "Night screen: not armed. <a onclick='keeper_night(1)'>Arm the coming night</a> (then leave the router + modem on)";
+    window.clearTimeout(keeper_ab_timer);
+    if (!$("#keeper_ab_status").length) return;
+    var request = ++keeper_ab_request;
+    keeper_get("/ab").then(function(d) {
+        if (request !== keeper_ab_request) return;
+        var p = d.progress || {}, last = d.result || {}, running = Boolean(d.running);
+        var phase = p.phase || "starting";
+        var progress = (p.step ? "Step " + p.step + " of " + p.total + " · " + p.leg + " · " : "") + phase;
+        var text = running ? (d.stopping ? "Stopping · " + progress : progress) :
+            (d.restore_pending ? "Restore pending" : (last.verdict ? last.verdict + " · " + last.time + " · " + (last.detail || "") : "Ready"));
+        $("#keeper_ab_status").text(text);
+        $("#keeper_ab_start").prop("disabled", running || Boolean(d.restore_pending));
+        $("#keeper_ab_stop").prop("disabled", !running || Boolean(d.stopping) || phase === "restoring");
+        $("#keeper_ab_legs").html(keeper_table(running ? (p.legs || []) : (last.legs || []),
+            ["leg", "lte", "nr", "observed_lte", "observed_nr", "down_mbps", "loss_pct", "lat_p95", "error"]));
+        if (running || d.restore_pending) keeper_ab_timer = window.setTimeout(keeper_ab_poll, 3000);
+    }).catch(function() {
+        if (request !== keeper_ab_request) return;
+        $("#keeper_ab_status").text("Smoke status unavailable");
+        $("#keeper_ab_start, #keeper_ab_stop").prop("disabled", true);
+        keeper_ab_timer = window.setTimeout(keeper_ab_poll, 5000);
+    });
 }
-function keeper_night(on)
+
+function keeper_ab_action(stop)
 {
-    return keeper_call("POST", "/night-screen?arm=" + (on ? 1 : 0)).then(function() { window.setTimeout(keeper_poll, 1000); });
+    if (!stop && !window.confirm("Run A/B smoke? The modem may reboot while testing and will restore the current locks.")) return;
+    window.clearTimeout(keeper_ab_timer);
+    ++keeper_ab_request;
+    $("#keeper_ab_start, #keeper_ab_stop").prop("disabled", true);
+    keeper_call("POST", stop ? "/ab-smoke-stop" : "/ab-smoke").then(function(r) {
+        if (r.status === 202) {
+            $("#keeper_ab_note").text("");
+            keeper_ab_poll();
+            return;
+        }
+        return r.json().then(function(d) { throw new Error(d.why || d.error || "Request refused"); });
+    }).catch(function(e) {
+        $("#keeper_ab_note").text(e.message);
+        keeper_ab_poll();
+    });
 }
 
 function keeper_cap_render(c)
@@ -3755,7 +3788,7 @@ function inject_html()
 
         <div class="inner_mod_container mod_border tools_container">
             <details open>
-                <summary><b>Keeper (MikroTik, 24/7)</b></summary>
+                <summary><b>Keeper</b></summary>
                 <a onclick="keeper_poll()">Refresh</a> | <a onclick="keeper_set_url()">Keeper URL</a> |
                 <a onclick="window.open(KEEPER_URL + '/report?hours=24')">Full report (JSON)</a>
                 <div id="keeper_status" style="margin:4px 0">loading...</div>
@@ -3764,7 +3797,13 @@ function inject_html()
                 <div style="font-size:11px">Capacity &amp; shaper (SQM): the limit now, why, and where its ceiling comes from -
                     <a onclick="keeper_captest('count')">Test now (counts)</a> | <a onclick="keeper_captest('down')">Download check</a> |
                     <a onclick="keeper_captest('up')">Upload check</a> (checks never change a ceiling):</div>
-                <div id="keeper_night" style="margin:4px 0"></div>
+                <div style="margin:6px 0"><b>A/B smoke</b>
+                    <button id="keeper_ab_start" onclick="keeper_ab_action(false)" disabled>Run</button>
+                    <button id="keeper_ab_stop" onclick="keeper_ab_action(true)" disabled>Stop</button>
+                    <span id="keeper_ab_status" role="status">Checking availability</span>
+                    <span id="keeper_ab_note" role="status"></span>
+                </div>
+                <div class="keeper_scroll"><table class="tools_table" id="keeper_ab_legs"></table></div>
                 <div id="keeper_cap_note" style="margin:4px 0"></div>
                 <div id="keeper_cap_sum" style="margin:4px 0"></div>
                 <div style="font-size:11px">Ceilings per period (0.92 x the median of the last 5 counted tests, 2 needed; env = SQM_MAX_*; the shaper may climb above while the latency stays clean):</div>

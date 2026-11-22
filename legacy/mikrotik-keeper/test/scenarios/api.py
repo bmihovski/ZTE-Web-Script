@@ -34,7 +34,6 @@ try:
     st, e = post("/lock-test?cells=534@636576&rat=nr&night=1", ""); assert st == 400 and "night=1" in e["error"], (st, e)   # night: LTE only
     st, e = post("/band-scan?bands=8,x", ""); assert st == 400 and "bands=" in e["error"], (st, e)            # the band scan
     s_, t_, b_ = get("/band-scans"); assert s_ == 200 and json.loads(b_) == {"running": None, "scans": []}, b_
-    assert "night_plan" in json.loads(get("/lock-tests")[2])                          # the planner's last decision (cells, why, day_only)
     # GET /tr069?path=: one read-only TR-069 read of a name / subtree with the next session (2026-11-21: find the modem's watchdog)
     assert get("/tr069?path=bad")[0] == 400 and get("/tr069?path=Device.")[0] == 400        # no free-form / whole-tree reads
     assert get("/zte/settings")[0] == 502 and post("/ps-reconnect", "")[0] == 502             # no web at ZTE_HOST=127.0.0.1:9 -> 502
@@ -83,13 +82,11 @@ try:
                '<cwmp:ID>2</cwmp:ID></s:Header><s:Body><s:Fault><detail><cwmp:Fault><FaultCode>9005</FaultCode>'
                '<FaultString>Invalid parameter name</FaultString></cwmp:Fault></detail></s:Fault></s:Body></s:Envelope>')
     t3.join(); assert out3["v"] is None, out3
-    from keeper import common; np0 = common.state().get("night_plan"); s_, t_, b_ = get("/night-plan"); x = json.loads(b_)         # preview: what a night would test now
-    assert s_ == 200 and set(x) >= {"cells", "day_only", "night_off", "why", "night_bands"} and common.state().get("night_plan") == np0, x
-    r = json.loads(get("/lock-tests")[2])["results"][-1]; assert r["score"] == 70.0 and r["score_parts"]["down"] == 9.3 and r["score_gate"] == "", r
-    st, armed = post("/night-screen?arm=1", ""); assert st == 200 and re.fullmatch(r"\d{4}-\d\d-\d\d", armed["armed"] or ""), armed   # the panel's button
-    cfg = json.loads(get("/status")[2])["config"]; assert cfg["night_armed"] == armed["armed"] and cfg["night_always"] is False, cfg
-    assert post("/night-screen?arm=0", "") == (200, {"armed": None}) and json.loads(get("/status")[2])["config"]["night_armed"] is None
-    assert post("/cell-ids", '{"lte:100:340": 1}')[1]["added"] == 0 and json.loads(get("/cell-ids")[2])["lte:100:340"] == 318289   # known ids kept
+    assert post("/ab-smoke-stop", "")[0] == 409
+    assert "progress" in json.loads(get("/ab")[2])
+    assert not any(r[1] in ("/night-screen", "/night-plan") for r in apimod.ROUTES)
+    assert "night_armed" not in json.loads(get("/status")[2])["config"]
+
     assert post("/userdata?name=zte_positions", '[{"label": "window 108", "heading": 108}]') == (200, {"saved": "zte_positions"})
     assert json.loads(get("/userdata?name=zte_positions")[2])["data"][0]["heading"] == 108
     assert json.loads(get("/userdata?name=zte_ant_results")[2])["data"] is None and post("/userdata?name=x", "1")[0] == 400

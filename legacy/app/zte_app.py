@@ -83,11 +83,11 @@ ROUTER = CONFIG["zte"]
 MT_ROUTER = CONFIG["mikrotik"]
 ORIGINS = {ROUTER, MT_ROUTER}  # + any address opened from the launcher
 KEEPER = origin(os.environ.get("ZTE_KEEPER", "http://192.168.6.250:7557"))  # zte-keeper API (MikroTik container), read by the ZTE page
-KEEPER_PATH = re.compile(r"^/(status|report|events|cells|anchors|antennas|antenna-sweeps|antenna-sweep|lock-tests|lock-test-continue|lock-test-skip|lock-test-stop|lock-test|lte-lock|nr-lock|userdata|cell-ids|captest|night-screen)(\?[A-Za-z0-9_=&.@,;]*)?$")
+KEEPER_PATH = re.compile(r"^/(status|report|events|cells|anchors|antennas|antenna-sweeps|antenna-sweep|lock-tests|lock-test-continue|lock-test-skip|lock-test-stop|lock-test|lte-lock|nr-lock|userdata|cell-ids|captest|ab|ab-smoke|ab-smoke-stop)(\?[A-Za-z0-9_=&.@,;]*)?$")
 KEEPER_BOTH = ("/userdata", "/cell-ids")      # read and written by the app (its lists live in the keeper's database)
 KEEPER_RUN = ("/captest",)                     # read, and POST without a body (a capacity test now; its options in the query)
 KEEPER_WRITES = ("/antennas", "/antenna-sweep", "/lock-test", "/lock-test-continue", "/lock-test-skip", "/lock-test-stop", "/lte-lock", "/nr-lock",
-                 "/night-screen")    # the only POSTs
+                 "/ab-smoke", "/ab-smoke-stop")    # the only POSTs
 HERE = Path(__file__).resolve().parent
 TOKEN = secrets.token_urlsafe(16)
 DEBUG = "--debug" in sys.argv
@@ -614,7 +614,10 @@ def selftest():
     assert JsApi().keeper("POST", "/lte-lock?cell=434@1550")["status"] == 202 and JsApi().keeper("GET", "/cells")["status"] == 200
     assert JsApi().keeper("POST", "/lock-test-continue?heading=108")["status"] == 202 and JsApi().keeper("POST", "/lock-test?cells=434@1550&align=1")["status"] == 202
     assert JsApi().keeper("GET", "/anchors")["status"] == 200 and JsApi().keeper("GET", "/lte-lock?cell=none")["text"] == "refused"
-    assert JsApi().keeper("POST", "/night-screen?arm=1")["status"] == 202 and JsApi().keeper("GET", "/night-screen")["text"] == "refused"   # the night button
+    assert JsApi().keeper("GET", "/ab")["status"] == 200
+    assert JsApi().keeper("POST", "/ab-smoke")["status"] == 202 and JsApi().keeper("POST", "/ab-smoke-stop")["status"] == 202
+    assert JsApi().keeper("GET", "/ab-smoke")["text"] == "refused"
+    assert JsApi().keeper("POST", "/night-screen?arm=1")["text"] == "refused"
     assert JsApi().keeper("GET", "/antenna-sweep")["text"] == "refused"                       # write path, GET
     assert JsApi().keeper("POST", "/status")["text"] == "refused"                              # read path, POST
     for bad in ("/", "/../etc/passwd", "http://evil.example/status", "/status/x", "/report?h=<x>"):

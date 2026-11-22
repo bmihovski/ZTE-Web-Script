@@ -1,150 +1,244 @@
-"""A/B smoke (2026-11-21): the full five-switch test of the A/B configs, **with locks**:
-A(high) -> B(high) -> no-lock -> A(low) -> B(low), then the BEST found config (or the no-lock when nothing clearly beats it).
+"""On-demand comparison of the current, alternate, and unlocked uplink. Always restore the managed locks."""
+import threading
+import time
 
-Run at the start of the night test and the day test (`AB_SMOKE=1`), or manually (`POST /ab-smoke`; the wife runs it when critical).
-Each leg: one lock change + reboot (`locks_apply`, both legs in one write), wait for the boot/web/link, the internet test; the per-leg
-quality and the conclusion: `modem good` (some config has internet - check the computer/LAN), `provider issue` (the modem is
-registered but no config gets data), `modem bad` (SIM/modem not ready). The smoke is NOT the automatic A/B: it is a test, busy, and
-it blocks the guard/captest/night until done. The auto A/B (Mon-Fri CAPTEST slots) is a separate controller.
-"""
-import threading, time
+from keeper import VERSION, abplan, acs, alert, brain, common, devices, guard
+from keeper.common import E, event, log, stamp, state
 
-from keeper import abplan, alert, brain, common, devices
-from keeper.common import event, log, state, stamp
-
-st = {"running": None, "result": None, "started": None, "legs": [], "why": ""}
+BOOT_S = float(E("AB_SMOKE_BOOT_S", "180"))
+st = {"running": None, "progress": None, "result": None, "cancel": None, "retry_at": 0.0}
 common.register_busy("ab smoke", lambda: bool(st["running"]))
 
 
 def _spec(v):
-    """'3350/340' or '340@3350' -> '340@3350'; ''/no5G -> ''."""
-    v = v or ""
-    if "@" in v: return v
-    if "/" in v:
-        a, b = v.split("/", 1)
-        return "%s@%s" % (b, a)
-    return ""
+    """Convert a sample's channel/PCI to a lock command."""
+    if "/" not in (v or ""): return ""
+    channel, pci = v.split("/", 1)
+    return "%s@%s" % (pci, channel)
 
 
-def _wait_link(timeout=240):
+def _last_sample():
+    try: return brain.HIST[-1]
+    except IndexError: return {}
+
+
+def _switch(lte, nr, stop):
+    """Only a new BOOT inform proves that a ZTE lock was applied."""
     dev = devices.current()
-    try: dev.ready(timeout=timeout)
-    except Exception: pass
-    try: brain.wait_online(timeout=min(180, timeout))
-    except Exception: pass
+    boots = acs.st["boots"]
+    if dev.locks_apply(lte, nr) is None:
+        raise RuntimeError("the lock write was not accepted")
+    if not dev.LOCKS_REBOOT:
+        return
+    deadline = time.monotonic() + BOOT_S
+    while acs.st["boots"] == boots and time.monotonic() < deadline:
+        # Finish an in-flight reboot before attempting the restore even when the operator requests Stop.
+        time.sleep(min(1, max(0, deadline - time.monotonic())))
+    if acs.st["boots"] == boots:
+        raise RuntimeError("no boot inform within %g s" % BOOT_S)
+    if not stop.is_set() and not dev.ready(timeout=25, stop=stop):
+        raise RuntimeError("modem web interface unavailable after boot")
 
 
-def _leg(name, lte, nr, seconds=25):
-    """One leg: lock the pair (one reboot), wait, internet-test -> the result dict."""
-    t0 = time.time(); res = {"leg": name, "lte": lte or "none", "nr": nr or "none", "time": stamp(), "ok": False, "error": ""}
+def _fresh_sample(mark, stop, timeout=45):
+    deadline = time.monotonic() + timeout
+    while not stop.is_set():
+        row = _last_sample()
+        if row is not mark and row.get("time") and 0 <= time.time() - brain.ts(row) < 90:
+            return row
+        remaining = deadline - time.monotonic()
+        if remaining <= 0: break
+        stop.wait(min(1, remaining))
+    return {}
+
+
+def _leg(name, lte, nr, switch, stop):
+    mark = _last_sample()
+    res = {"leg": name, "lte": lte, "nr": nr, "time": stamp(), "ok": False, "measured": False, "error": ""}
     try:
-        dev = devices.current()
-        r = dev.locks_apply(lte or "none", nr or "none")
-        if r is None: raise RuntimeError("the lock write was not accepted")
-        _wait_link()
-        net = brain.internet_test(seconds=seconds)
-        h = brain.row_health(dict(list(brain.HIST)[-1]) if brain.HIST else {})
-        res.update({"ok": net.get("down_mbps") is not None or net.get("call_ok") == 1, "down_mbps": net.get("down_mbps"),
-                    "call_ok": net.get("call_ok"), "loss_pct": net.get("loss_pct"), "lat_p95": net.get("lat_p95"),
-                    "jitter_ms": net.get("jitter_ms"), "health": h, "seconds": round(time.time() - t0, 1)})
+        if switch:
+            _switch(lte, nr, stop)
+            st["progress"] = dict(st["progress"], phase="waiting for radio")
+        row = _fresh_sample(mark if switch else None, stop)
+        if stop.is_set(): return res
+        actual_lte = row.get("lte_cell")
+        if lte != "none" and actual_lte != brain.anchor_key(lte):
+            raise RuntimeError("no fresh observation on the requested LTE anchor")
+        st["progress"] = dict(st["progress"], phase="measuring")
+        net = brain.internet_test(seconds=25, stop=stop)
+        if stop.is_set(): return res
+        row = _last_sample() if row else row
+        actual_lte, actual_nr = row.get("lte_cell"), row.get("nr_cell")
+        if lte != "none" and actual_lte != brain.anchor_key(lte):
+            raise RuntimeError("LTE anchor changed during the measurement")
+        ok = (brain.f(net.get("down_mbps")) or 0) > 0 or (
+            brain.f(net.get("loss_pct")) is not None and float(net["loss_pct"]) < 100)
+        measured = ok or brain.f(net.get("loss_pct")) == 100
+        res.update({k: net.get(k) for k in ("down_mbps", "call_ok", "loss_pct", "lat_p95", "jitter_ms")})
+        res.update(ok=ok, measured=measured, observed_lte=actual_lte, observed_nr=actual_nr,
+                   health=brain.row_health(row) if row else None,
+                   error="" if measured else (net.get("error") or "no fresh probe evidence"))
     except Exception as e:
-        res["error"] = repr(e)
-    st["legs"].append(res)
-    log("ab smoke %s: ok=%s down=%s call=%s %s" % (name, res["ok"], res.get("down_mbps"), res.get("call_ok"), res.get("error")))
+        res["error"] = str(e)
+    log("ab smoke %s: ok=%s down=%s %s" % (name, res["ok"], res.get("down_mbps"), res["error"]))
     return res
 
 
 def _nr_for(anchor, row):
-    """The best measured 5G pair for this LTE anchor (the NR database), else the current sample's 5G."""
-    best = None; key = brain.anchor_key(anchor)          # the pair keys are earfcn/pci ("1550/434"), the spec is pci@earfcn
-    for cell, e in (brain.REG.get("nr") or {}).items():
-        a = (e.get("anchors") or {}).get(key)
-        if a:
-            q = brain.pair_quality(a, key)
-            if best is None or q > best[0]: best = (q, cell)
-    return _spec(best[1]) if best else (_spec(row.get("nr_cell")) or "none")
-
-
-def _best(legs):
-    """The best found: the leg with the best quality tuple; no-lock when no lock is better (all worse than no-lock) or the
-    no-lock itself is the best. Returns (lte, nr) - 'none'/'none' for the no-lock."""
-    q = {}
-    for x in legs:
-        if not x.get("ok"): continue
-        q[x["leg"]] = brain.quality_values(100.0 if x.get("call_ok") == 1 else (x.get("call_ok") or 0),
-                                           x.get("loss_pct"), x.get("lat_p95"), x.get("jitter_ms"))
-    if not q: return "none", "none"
-    nl = q.get("no lock"); best = max(q, key=lambda k: q[k])
-    if best == "no lock" or (nl and q[best] == nl): return "none", "none"
-    x = next(x for x in legs if x["leg"] == best)
-    return x["lte"], x["nr"]
+    """Prefer the highest quality observed NSA pair. Leave NR free for an unproven anchor."""
+    key = brain.anchor_key(anchor)
+    pairs = [(brain.pair_quality(a, key), cell) for cell, e in list((brain.REG.get("nr") or {}).items())
+             if (a := (e.get("anchors") or {}).get(key))]
+    if pairs: return _spec(max(pairs)[1])
+    if row.get("lte_cell") == key: return _spec(row.get("nr_cell")) or "none"
+    return "none"
 
 
 def _classify(legs):
-    net = [x for x in legs if x.get("ok")]
-    h = next((x.get("health") for x in legs if x.get("health")), {})
-    if net: verdict = "modem good"
-    elif h.get("sim") is False: verdict = "modem bad"
-    else: verdict = "provider issue"
-    return {"verdict": verdict, "any_internet": bool(net)}
+    reachable = [x for x in legs if x.get("ok")]
+    measured = [x for x in legs if x.get("measured")]
+    current = next((x for x in measured if x["leg"] == "current lock"), None)
+    unlocked = next((x for x in measured if x["leg"] == "no lock"), None)
+    if current and not current["ok"] and reachable:
+        verdict = "configuration suspected"
+    elif reachable:
+        verdict = "uplink reachable"
+    elif any((x.get("health") or {}).get("sim") is False for x in measured):
+        verdict = "SIM or modem fault suspected"
+    elif unlocked and (unlocked.get("health") or {}).get("registered"):
+        verdict = "mobile uplink suspected"
+    else:
+        verdict = "inconclusive"
+    advice = {
+        "configuration suspected": "The current lock failed while another configuration reached the internet.",
+        "uplink reachable": "Keeper probes reached the internet. Check the LAN or PC if the problem persists there.",
+        "SIM or modem fault suspected": "The modem reported a SIM fault during a measured leg.",
+        "mobile uplink suspected": "Fresh probes failed even with locks released and the modem registered.",
+        "inconclusive": "The test did not establish a working uplink or a mobile-network failure.",
+    }
+    return {"verdict": verdict, "detail": advice[verdict], "any_internet": bool(reachable)}
 
 
-def _msg(r):
-    lines = ["AB smoke (%s): %s" % (r.get("trigger", "?"), r["verdict"])]
-    for x in r["legs"]:
-        if x.get("ok"):
-            lines.append("%s: internet, down %s Mbit/s, call-ready %s, p95 %s, jitter %s" % (
-                x["leg"], x.get("down_mbps"), x.get("call_ok"), x.get("lat_p95"), x.get("jitter_ms")))
-        else:
-            lines.append("%s: no internet%s" % (x["leg"], (" (" + x["error"] + ")") if x.get("error") else (" (" + (x.get("note") or "no data") + ")")))
-    lines.append({"modem good": "the modem works in at least one config - check the computer/LAN",
-                  "provider issue": "the modem is registered but no config gets data - the provider/network",
-                  "modem bad": "SIM/modem not ready - the modem"}[r["verdict"]])
+def _msg(result):
+    lines = ["A/B smoke (%s): %s" % (result["trigger"], result["verdict"])]
+    for leg in result["legs"]:
+        text = "down %s Mbit/s, loss %s%%, p95 %s ms" % (leg.get("down_mbps"), leg.get("loss_pct"), leg.get("lat_p95"))
+        lines.append("%s: %s" % (leg["leg"], text if leg["measured"] else leg["error"]))
+    if result["restore_error"]: lines.append("Restore pending: " + result["restore_error"])
     return "\n".join(lines)
 
 
-def _run(notify=True):
-    dev = devices.current(); row = dict(list(brain.HIST)[-1]) if brain.HIST else {}
-    t0 = time.time(); l = n = "none"
+def _plan(original):
+    lte, nr = original
+    plan = [("current lock", lte, nr)] if (lte, nr) != ("none", "none") else []
+    row = _last_sample()
+    high = [(cell, _nr_for(cell, row)) for cell in abplan.high() if cell != lte]
+    plan += [(name, *pair) for name, pair in zip(("A high", "B high"), high)]
+    plan.append(("no lock", "none", "none"))
+    plan += [(name, *pair) for name, pair in zip(("A low", "B low"), abplan.low()) if pair != original]
+    return plan
+
+
+def _restore(pair):
+    started = time.time()
+    _switch(*pair, threading.Event())
+    if not brain.wait_online(timeout=60, since=started):
+        log("ab smoke: locks restored, link has not recovered yet")
+    state({"ab_smoke_restore": None})
+
+
+def _run(original, notify):
+    started = stamp()
+    t0 = time.monotonic()
+    stop = st["cancel"]
+    trigger = st["running"]
+    legs = []
+    restored, restore_error = None, ""
+    changed = False
     try:
-        hi = abplan.high(); lo = abplan.low()          # A = the max scored anchor, B = the next; the low pair from the band scans
-        if not hi and not lo:
-            _leg("no lock", "none", "none")             # one cell total / nothing measured: the no-lock is the network's choice
-        else:
-            if hi: _leg("A high", hi[0], _nr_for(hi[0], row))
-            if len(hi) > 1: _leg("B high", hi[1], _nr_for(hi[1], row))
-            _leg("no lock", "none", "none")
-            for name, (lo_cell, no_cell) in zip(("A low", "B low"), lo): _leg(name, lo_cell, no_cell)
+        plan = _plan(original)
+        for step, (name, lte, nr) in enumerate(plan, 1):
+            if stop.is_set(): break
+            switch = changed or (lte, nr) != original
+            st["progress"] = {"step": step, "total": len(plan), "leg": name, "phase": "switching" if switch else "measuring",
+                              "lte": lte, "nr": nr, "legs": list(legs)}
+            if switch and not changed:
+                state({"ab_smoke_restore": list(original)})
+                changed = True
+            result = _leg(name, lte, nr, switch, stop)
+            if not stop.is_set(): legs.append(result)
     except Exception as e:
-        st["why"] = "%s failed: %r" % (st["why"], e); log("ab smoke failed: %r" % e)
+        log("ab smoke failed: %r" % e)
     finally:
+        st["progress"] = dict(st["progress"] or {}, phase="restoring", legs=list(legs))
         try:
-            l, n = _best(st["legs"])                             # the best found, or the no-lock when all are worse
-            state({"lte_lock": ({"cell": l, "state": "active", "reason": "ab smoke: the best found"} if l != "none" else None),
-                   "nr_lock": ({"cell": n, "state": "active", "reason": "ab smoke: the best found"} if n != "none" else None)})
-            dev.locks_apply(l, n); _wait_link(120)
-        except Exception as e: log("ab smoke restore failed: %r" % e)
-        res = {"trigger": st["why"], "time": stamp(), "started": st["started"], "seconds": round(time.time() - t0, 1),
-               "legs": list(st["legs"]), "restored": {"lte": l, "nr": n}}
-        res.update(_classify(res["legs"]))
-        st["result"] = res; state({"ab_smoke": res})
-        if notify:
-            try: alert.report(_msg(res))
-            except Exception as e: log("ab smoke telegram failed: %r" % e)
-        event({"event": "ab smoke", "to": res["verdict"], "why": "%s: %d legs" % (res["trigger"], len(res["legs"]))})
-        st["running"] = None        # LAST: a waiter that sees running=None must already find the result + the Telegram (the refresh
-                                    # chain reads st["result"] right after the wait, and a test/GET must not see a done-but-empty run)
+            if changed: _restore(original)
+            restored = dict(zip(("lte", "nr"), original))
+        except Exception as e:
+            restore_error = str(e)
+            st["retry_at"] = time.monotonic() + 60
+            log("ab smoke restore pending: %r" % e)
+        try:
+            summary = _classify(legs)
+            if stop.is_set(): summary.update(verdict="stopped", detail="Stopped by the operator.")
+            res = dict(summary, trigger=trigger, time=stamp(), started=started, version=VERSION,
+                       seconds=round(time.monotonic() - t0, 1), legs=legs, restored=restored, restore_error=restore_error)
+            st["result"] = res
+            state({"ab_smoke": res})
+            if notify:
+                try: alert.report(_msg(res))
+                except Exception as e: log("ab smoke telegram failed: %r" % e)
+            event({"event": "ab smoke", "to": res["verdict"], "why": "%s: %d legs" % (trigger, len(legs))})
+        finally:
+            with common.test_start_lock:
+                st.update(running=None, progress=None, cancel=None)
 
 
 def run(trigger="manual", notify=True):
-    """Start the full smoke -> (started, why). Busy while it runs (the guard/captest/night wait). `notify=False` lets the
-    one-call refresh send a single Telegram with the band scan too."""
-    if st["running"]: return False, "busy: %s" % st["running"]
-    st.update(running=trigger, result=None, started=stamp(), legs=[], why=trigger)
-    threading.Thread(target=_run, args=(notify,), daemon=True).start()
+    """Reserve the modem before publishing a run so other probes defer."""
+    with common.test_start_lock:
+        saved = state()
+        why = common.busy()
+        if why: return False, "busy: " + why
+        if (saved.get("quality_ab") or {}).get("phase") in ("trial", "keep"):
+            return False, "automatic quality A/B is active"
+        if saved.get("ab_smoke_restore"): return False, "previous smoke restore is pending"
+        locks = [saved.get(k) or {} for k in ("lte_lock", "nr_lock")]
+        if any(lock.get("state") == "pending" for lock in locks):
+            return False, "managed locks are pending"
+        original = tuple(lock["cell"] if lock.get("state") == "active" else "none" for lock in locks)
+        st.update(running=trigger, progress={"phase": "planning", "legs": []}, result=None, cancel=threading.Event())
+        threading.Thread(target=_run, args=(original, notify), daemon=True).start()
     return True, trigger
 
 
+def stop():
+    with common.test_start_lock:
+        cancel = st["cancel"]
+        if not cancel: return False
+        cancel.set()
+    return True
+
+
+def recover(row):
+    """Restore an interrupted smoke after a keeper restart or a failed restore."""
+    if time.monotonic() < st["retry_at"]: return
+    with common.test_start_lock:
+        pair = state().get("ab_smoke_restore")
+        if not pair or common.busy() or not guard.quiet(row=row): return
+        st.update(running="recovery", progress={"phase": "restoring", "legs": []})
+        st["retry_at"] = time.monotonic() + 60
+    def work():
+        try: _restore(pair)
+        except Exception as e: log("ab smoke restore pending: %r" % e)
+        finally:
+            with common.test_start_lock: st.update(running=None, progress=None)
+    threading.Thread(target=work, daemon=True).start()
+
+
 def status():
-    """Read-only: the running smoke or the last result (for GET /ab)."""
-    return {"running": st["running"], "trigger": st["why"], "result": st["result"] or state().get("ab_smoke")}
+    current = st.copy()
+    saved = state()
+    return {"running": current["running"], "progress": current["progress"],
+            "stopping": bool(current["cancel"] and current["cancel"].is_set()),
+            "restore_pending": bool(saved.get("ab_smoke_restore")), "result": current["result"] or saved.get("ab_smoke")}

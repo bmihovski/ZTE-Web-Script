@@ -11,9 +11,7 @@ row; it is kept for the next boot only when the winner is auto-applied.
 screen: the guard's lock is put back instead).
 Align mode (align=1) waits after each lock until you aligned the antenna (POST /lock-test-continue?heading=N); align=0 is the fixed
 position (no wait, `heading=` is recorded). Skip / stop end a step / the test.
-Night screen (LTE only): in NIGHT_SCREEN, after NIGHT_IDLE_MIN idle minutes, re-tests the current lock + NIGHT_CELLS (home set) + up to
-NIGHT_MAX strong untested cells. Pushes the ranking to Telegram and RECOMMENDS a daytime test (never auto-applies - the night network
-has B1 off and no load); traffic stops it. Auto-apply happens on the daytime test instead (real load), when AUTO=on.
+Night-mode LTE tests are manual. Their results are diagnostic and never auto-apply a winner.
 
 Two modes: align=True waits for you per cell (on-go); align=False is a fixed position (already aligned, heading recorded) - an NR
 test sweeps + internet-tests the modes in both. An unstable LTE anchor (serving-cell switches, < LOCKTEST_MIN_ANCHOR_PCT on the
@@ -25,10 +23,7 @@ reference); a 5G-free or switching baseline is measured (it is the reference). A
 Env: LOCKTEST_SETTLE_S (180), LOCKTEST_MEASURE_MIN (12), LOCKTEST_BOOT_WAIT_S (420), LOCKTEST_ALIGN_TIMEOUT_MIN (90),
 LOCKTEST_READY_TIMEOUT_S (180 - wait for the CPE web), LOCKTEST_ONLINE_TIMEOUT_S (180 - wait for stable probes),
 LOCKTEST_MAX_ANCHOR_SWITCHES (0), LOCKTEST_MIN_ANCHOR_PCT (80), LOCKTEST_MAX_GAP_MIN (3),
-NIGHT_SCREEN ('[Day[-Day] ]HH:MM-HH:MM' start window, default 02:00-05:00, current 01:30-05:00; 'Sat 02:00-05:00' = only Friday
-night), NIGHT_MAX (0 = no cap), NIGHT_IDLE_MIN (30), NIGHT_RETEST_DAYS (7, the home set's re-check; the planner's full-test skip is
-nightplan.RETEST_DAYS 30), NIGHT_CELLS (always re-check, current empty).
-NIGHT_NOINFORM_SKIP (2) / NIGHT_NOINFORM_DAYS (3): after N night no-informs skip the cell for D days (CETIN powers it down overnight).
+NIGHT_SCREEN (02:00-05:00) sets a hard end for a manual night-mode test started inside the window.
 """
 import collections, re, threading, time
 
@@ -54,21 +49,8 @@ LT_COLS = ["time", "rat", "lock", "minutes", "on_target_pct", "anchor", "site", 
            "boot_s", "down_mbps", "up_mbps", "nr_iperf", "load_s", "load_method"]
 LT_IPERF = E("LOCKTEST_IPERF", "1") == "1"
 NIGHT = E("NIGHT_SCREEN", "02:00-05:00")
-BANDSCAN_NIGHT = [b for b in E("BANDSCAN_NIGHT", "1,3,7,8,20").replace(" ", "").split(",") if b]   # a test night starts with a band scan ('' = off); no B28: no service here, 3 min offline (2026-11-18)
-IPERF_TAIL_S = 90.0   # a sample is the minute's average: the one after the run's own iperf still carries it (2026-11-20 02:27:06)
-BOOT_QUIET_S = float(E("NIGHT_BOOT_QUIET_S", "300"))   # traffic in the first 5 min after a step's reboot is the modem's own reconnect
-NIGHT_ALWAYS = E("NIGHT_ALWAYS", "0") == "1"      # research: every night in the window; else only a night armed from the ZTE helper
-AB_SMOKE = E("AB_SMOKE", "0") == "1"          # the full five-switch A/B smoke at the start of the night/day test
-REMIND_AT, REMIND_DAY = E("NIGHT_REMIND", "21:30"), E("NIGHT_REMIND_DAY", "Fri")   # weekly reminder from this day + time until armed ('' = off)
-DAY_TEST = E("DAY_TEST", "Sat 08:30-11:30")   # day-only cells + daytime confirmation; after 08:00 the night-off cells are back ('' = off)
-DAY_IDLE_MIN = int(E("DAY_IDLE_MIN", "10"))
-NIGHT_MAX, NIGHT_IDLE_MIN = int(E("NIGHT_MAX", "0")), int(E("NIGHT_IDLE_MIN", "30"))   # NIGHT_MAX 0 = as many as fit before the window ends
-NIGHT_RETEST_DAYS = float(E("NIGHT_RETEST_DAYS", "7"))
-NIGHT_NOINFORM_SKIP = int(E("NIGHT_NOINFORM_SKIP", "2"))    # skip a cell at night after this many recent night no-informs ...
-NIGHT_NOINFORM_DAYS = float(E("NIGHT_NOINFORM_DAYS", "3"))  # ... within this many days (CETIN powers some cells down overnight), then retry
-NIGHT_CELLS = [c for c in E("NIGHT_CELLS", "").replace(" ", "").split(",") if c]   # always re-check these (home set), same weekly throttle
-NIGHT_BANDS = [b for b in E("NIGHT_BANDS", "").replace(" ", "").split(",") if b]   # '' = every band (2026-11-18: B8 / B20 with 5G free;
-# 2026-10-27 had dropped B8 / B20 / B28 as "far, loaded, n28 5G" - measured then with the 5G lock kept)
+IPERF_TAIL_S = 90.0
+BOOT_QUIET_S = float(E("NIGHT_BOOT_QUIET_S", "300"))
 lt = {"running": None, "plan": [], "done": [], "align": False, "waiting": False, "heading": "", "fixed": "", "go": threading.Event(),
       "cut": None, "cut_ev": threading.Event(), "rat": "lte", "anchor": None, "modes": {}}   # modes: lock -> (ant5, ant6) of the step's sweep
 common.register_busy("lock test", lambda: lt["running"])
@@ -590,198 +572,18 @@ def cell_mode(cell):
     return None
 
 
-# ---------- night screen (LTE) ----------
-def _dead_cells(now):
-    """Cells a night screen locked in the last 30 days but got no service on (a measured row: minutes > 0, no anchor, 0 % on-target)
-    - don't burn reboots on them again. A step that never measured (no boot inform, the CPE web / the link did not come back) is no
-    evidence about the cell and must not blacklist it."""
-    cut = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - 30 * 86400))
-    return {r["lock"] for r in store.rows(DATA, "lock_tests", cut)
-            if r.get("mode") == "night" and not r.get("anchor") and (brain.f(r.get("on_target_pct")) or 0) == 0
-            and (brain.f(r.get("minutes")) or 0) > 0}
-
-
-def _no_inform(now):
-    """Cells whose lock gave no boot inform in the last NIGHT_NOINFORM_DAYS, any mode (2026-11-19 434@100 by day: 7 min offline
-    for nothing) - the day test skips them; the night screen has its own, softer rule (_night_unreachable)."""
-    cut = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - NIGHT_NOINFORM_DAYS * 86400))
-    return {r["lock"] for r in store.rows(DATA, "lock_tests", cut)
-            if (brain.f(r.get("minutes")) or 0) == 0 and "no boot inform" in (r.get("note") or "")}
-
-
-def _night_unreachable(now):
-    """Cells that gave no boot inform on >= NIGHT_NOINFORM_SKIP of the last NIGHT_NOINFORM_DAYS nights - CETIN powers the cell
-    down overnight, so the lock never attaches and the boot inform never comes. Skip it at night (a 2 a.m. reboot for nothing)
-    until the window passes, then try again (the night map changes). Soft and night-only: unlike _dead_cells it is not a 30-day
-    blacklist and a measured row (minutes > 0) is no vote here - only repeated no-informs are."""
-    cut = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - NIGHT_NOINFORM_DAYS * 86400))
-    n = {}
-    for r in store.rows(DATA, "lock_tests", cut):
-        if r.get("mode") == "night" and (brain.f(r.get("minutes")) or 0) == 0 and "no boot inform" in (r.get("note") or ""):
-            n[r["lock"]] = n.get(r["lock"], 0) + 1
-    return {c for c, k in n.items() if k >= NIGHT_NOINFORM_SKIP}
-
-
 def night_window():
     """(HH:MM, HH:MM) of the night: LOCK_PAUSE (the locks are released, 00:50-08:00) when set, else NIGHT_SCREEN's hours."""
     w = guard.LOCK_PAUSE or NIGHT.split()[-1]
     return tuple(w.split("-")) if "-" in w else ("02:00", "05:00")
 
 
-def in_bands(cell):
-    """Is `cell` (PCI@EARFCN) on one of NIGHT_BANDS ('1,3,7' or 'B1,B3')? 2026-11-19: 'B3' was compared with '3' - every cell dropped."""
-    return brain.band_of(cell.split("@")[1]).lstrip("B") in {b.upper().lstrip("B") for b in NIGHT_BANDS}
 
-
-def night_candidates(now, preview=False):
-    """The night planner's cells (keeper/nightplan.py): present at NIGHT (samples + band scans), not the lock, not fully tested lately,
-    not dead / night-unreachable - best night RSRP first. The plan is kept in state night_plan (cells, day_only, night_off, why)."""
-    from keeper import nightplan
-    frm = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - nightplan.LOOKBACK_DAYS * 86400))
-    frm_t = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - nightplan.RETEST_DAYS * 86400))
-    p = nightplan.plan(store.rows(DATA, "samples", frm), store.rows(DATA, "lock_tests", frm_t), store.rows(DATA, "band_scans", frm), now,
-                       night_window(), lock=(state().get("lte_lock") or {}).get("cell"), dead=_dead_cells(now) | _night_unreachable(now))
-    if NIGHT_BANDS: p["cells"] = [c for c in p["cells"] if in_bands(c)]
-    if preview: return dict(p, night_bands=NIGHT_BANDS)                    # GET /night-plan: what a night would test now, nothing stored
-    state({"night_plan": dict(p, time=stamp())})
-    return p["cells"]
-
-
-def step_s():
-    """One night step, estimated: boot ~90 s + settle + measuring + the iperf (~100 s)."""
-    return 90 + LT_SETTLE_S + LT_MEASURE_MIN * 60 + (100 if LT_IPERF else 0)
-
-
-DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-
-
-def in_window(spec, now):
-    """NIGHT_SCREEN '[Day[-Day] ]HH:MM-HH:MM' (no day = every night). The day is the date of the night's morning ('Sat 02:00-05:00' =
-    Friday night); a window past midnight counts its small hours to the evening's day. A misconfigured value: never (logged by nobody,
-    shown in /lock-tests as no night run) - one test night a week, the router + modem powered off the others (2026-11-17)."""
-    try:
-        parts = spec.split(); a, b = parts[-1].split("-"); lt_ = time.localtime(now); t = time.strftime("%H:%M", lt_); wrap = a > b
-        if not ((t >= a or t < b) if wrap else a <= t < b): return False
-        if len(parts) == 1: return True
-        wd = (lt_.tm_wday - (1 if wrap and t < b else 0)) % 7
-        d = parts[0].split("-"); i1, i2 = DAYS.index(d[0]), DAYS.index(d[-1])
-        return i1 <= wd <= i2 if i1 <= i2 else (wd >= i1 or wd <= i2)
-    except (ValueError, IndexError): return False
-
-
-def in_night(now): return in_window(NIGHT, now)
-
-
-def morning(now):
-    """The date of the coming night's morning: today while before the window's end, else tomorrow."""
-    w = NIGHT.split()[-1] if NIGHT.split() else ""; end = w.split("-")[1] if "-" in w else "05:00"; lt_ = time.localtime(now)   # off: 05:00
-    return time.strftime("%Y-%m-%d", lt_ if time.strftime("%H:%M", lt_) < end else time.localtime(now + 86400))
-
-
-def armed(now):
-    """Does the night screen run this night? NIGHT_ALWAYS, or this night armed (state night_armed = its morning's date)."""
-    return NIGHT_ALWAYS or state().get("night_armed") == morning(now)
-
-
-def night_arm(on, now=None):
-    """POST /night-screen?arm=1|0 (the ZTE helper's button): arm / cancel the coming night (persisted - you leave the router + modem
-    on for it; the other nights they are off, 2026-11-17)."""
-    now = now or time.time(); d = morning(now) if on else None
-    state({"night_armed": d, "night_armed_at": time.strftime("%Y-%m-%d", time.localtime(now)) if on else None})   # the reminder's week
-    event({"event": "night screen armed" if on else "night screen cancelled", "to": d or ""})
-    return {"armed": d}
-
-
-def remind(row, now=None):
-    """Minute job: the weekly cell-test reminder (Telegram). From NIGHT_REMIND_DAY (Fri) at NIGHT_REMIND (21:30) once each evening until
-    a night is armed in the ZTE helper (pressing Arm ends the week, even if that night's run fails; cancelling brings it back); then
-    quiet until the next Friday. Research (NIGHT_ALWAYS=1): never - it runs every night anyway. An arm before Friday is last week's."""
-    now = now or time.time(); lt_ = time.localtime(now); today = time.strftime("%Y-%m-%d", lt_)
-    if NIGHT_ALWAYS or not REMIND_AT or not common.clock_ok() or time.strftime("%H:%M", lt_) < REMIND_AT: return False
-    if state().get("night_remind_last") == today: return False
-    try: back = (lt_.tm_wday - DAYS.index(REMIND_DAY)) % 7
-    except ValueError: return False                                            # misconfigured NIGHT_REMIND_DAY: off
-    week = time.strftime("%Y-%m-%d", time.localtime(now - back * 86400))     # this cycle's Friday
-    if (state().get("night_armed_at") or "") >= week: return False            # armed this week: quiet
-    state({"night_remind_last": today}); name = common.device_name()
-    alert.report("%s: Friday - arm tonight's cell tests in the ZTE helper (Night screen: Arm the coming night) and leave the router + modem on; "
-                 "results for the weekend" % name if back == 0 else
-                 "%s: the cell tests are not scheduled since %s - arm a night in the ZTE helper and leave the router + modem on that night" % (name, week))
-    return True
-
-
-def maybe_night(row, now=None):
-    """With each sample: start the night screen once a night, in the window, after NIGHT_IDLE_MIN idle minutes;
-    traffic during the screen stops it (the lock is put back). True when it started."""
-    now = now or time.time()
-    rebooting = (brain.f(row.get("uptime_s")) or 9e9) < BOOT_QUIET_S       # the modem's own reconnect after a step's reboot (2026-11-18 08:56)
-    own = lt.get("iperf") or time.monotonic() - lt.get("iperf_end", -1e9) < IPERF_TAIL_S     # its own iperf + the sample after it: not traffic
-    if lt.get("night") and lt["running"] and not brain.idle(row) and not lt["cut"] and not own and not rebooting:
-        log("night screen: traffic - stopping"); lt_cut("stop"); return False
-    if NIGHT in ("", "off") or common.busy() or not common.clock_ok(): return False     # old clock after a power cut: not night yet
-    day = time.strftime("%Y-%m-%d", time.localtime(now))
-    if (not in_night(now) and not state().get("dev")) or state().get("night_last") == day or not armed(now): return False
-    last = list(brain.HIST)[-NIGHT_IDLE_MIN:]
-    if len(last) < NIGHT_IDLE_MIN or not all(brain.idle(r) for r in last): return False
-    if AB_SMOKE and state().get("night_smoke") != day:       # the A/B smoke is the first thing: prove the switching works
-        from keeper import absmoke
-        state({"night_smoke": day}); ok, why = absmoke.run("night")
-        log("night screen: A/B smoke first: %s" % why); return ok
-    if BANDSCAN_NIGHT and state().get("night_scan") != day:   # first a band scan: cells never in the CA (B8 112@3774) reach the plan
-        from keeper import bandscan
-        ok, why = bandscan.start(BANDSCAN_NIGHT); state({"night_scan": day})          # once a night, also when refused (a cell lock held)
-        log("night screen: band scan first (%s): %s" % (", ".join("B" + b for b in BANDSCAN_NIGHT), why)); return False
-    state({"night_last": day}); cands = night_candidates(now)
-    w = state().get("lte_lock") or {}
-    lockcell = w["cell"] if w.get("state") == "active" else None
-    cut = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now - NIGHT_RETEST_DAYS * 86400))
-    tested = {r["lock"] for r in store.rows(DATA, "lock_tests", cut) if r.get("mode") != "cut" and (brain.f(r.get("minutes")) or 0) > 0}
-    extra = [c for c in NIGHT_CELLS if c != lockcell and c not in tested and c not in _dead_cells(now) and c not in _night_unreachable(now)]   # home-set cells due for a re-check
-    if not cands and not extra:
-        log("night screen: no new candidates"); return False
-    from keeper import nightplan
-    end = nightplan.window_end(now, "-".join(night_window())) or now + 3 * 3600
-    n = nightplan.budget(now, end, step_s()); n = min(n, NIGHT_MAX) if NIGHT_MAX > 0 else n
-    plan = [lockcell or "none"] + extra + cands
-    seen = set(); plan = [c for c in plan if not (c in seen or seen.add(c))][:1 + n]
-    log("night screen: %s" % ", ".join(plan)); event({"event": "night screen", "to": ", ".join(plan),
-        "why": "night planner: %d cell(s) fit before %s; present at night, not fully tested in %g days" % (len(plan) - 1, time.strftime("%H:%M", time.localtime(end)), nightplan.RETEST_DAYS)})
-    threading.Thread(target=lock_test, args=(plan,), kwargs={"night": True, "deadline": time.time() + (end - nightplan.MARGIN_S - now)},   # the time left, on the clock the run uses
-                     daemon=True).start()
-    return True
-
-
-def maybe_day(row, now=None):
-    """With each sample: the Saturday day test (DAY_TEST, docs/NIGHTLY-PLAN.md item 7) once a window, after DAY_IDLE_MIN idle minutes:
-    the day lock (baseline), the planner's day-only cells (off at night, e.g. ARFCN 100), then the latest night run's cells within
-    5 points of its baseline (an empty network at night; confirmed under daytime load). A normal day test: the 5G lock stays, the
-    hard stop at the window's end. True when it started."""
-    now = now or time.time()
-    if not DAY_TEST or common.busy() or lt.get("running") or not common.clock_ok() or (not in_window(DAY_TEST, now) and not state().get("dev")): return False
-    day = time.strftime("%Y-%m-%d", time.localtime(now))
-    if state().get("day_last") == day: return False
-    last = list(brain.HIST)[-DAY_IDLE_MIN:]
-    if len(last) < DAY_IDLE_MIN or not all(brain.idle(r) for r in last): return False
-    if AB_SMOKE and state().get("day_smoke") != day:         # the A/B smoke is the first thing of the day test
-        from keeper import absmoke
-        state({"day_smoke": day}); ok, why = absmoke.run("day")
-        log("day test: A/B smoke first: %s" % why); return ok
-    from keeper import nightplan
-    state({"day_last": day})
-    w = state().get("lte_lock") or {}
-    base = w["cell"] if w.get("state") == "active" else "none"
-    nights = [r for r in store.rows(DATA, "lock_tests") if r.get("mode") == "night" and r.get("run")]
-    run = max((r["run"] for r in nights), default=None)
-    confirm = nightplan.day_confirm([r for r in nights if r["run"] == run])
-    dead = _dead_cells(now) | _no_inform(now)
-    plan = [base] + [c for c in list((state().get("night_plan") or {}).get("day_only") or []) + confirm if c not in dead]
-    seen = set(); plan = [c for c in plan if not (c in seen or seen.add(c))]
-    end = nightplan.window_end(now, DAY_TEST.split()[-1]) or now + 3600
-    plan = plan[:1 + nightplan.budget(now, end, step_s())]
-    if len(plan) < 2:
-        log("day test: nothing to test"); return False
-    log("day test: %s" % ", ".join(plan)); event({"event": "day test", "to": ", ".join(plan),
-        "why": "day-only cells + night results within 5 points of the night baseline; %d cell(s) fit before %s" % (len(plan) - 1, time.strftime("%H:%M", time.localtime(end)))})
-    alert.report("day test started: %s (until %s at the latest)" % (", ".join(plan[1:]), time.strftime("%H:%M", time.localtime(end))))
-    threading.Thread(target=lock_test, args=(plan,), kwargs={"deadline": time.time() + (end - nightplan.MARGIN_S - now)}, daemon=True).start()
-    return True
+def cut_night_on_traffic(row):
+    """Stop a manually started night-mode test if household traffic resumes."""
+    if not (lt.get("night") and lt["running"] and not lt["cut"]): return
+    rebooting = (brain.f(row.get("uptime_s")) or 9e9) < BOOT_QUIET_S
+    own = lt.get("iperf") or time.monotonic() - lt.get("iperf_end", -1e9) < IPERF_TAIL_S
+    if not rebooting and not own and not brain.idle(row):
+        log("night-mode lock test: traffic - stopping")
+        lt_cut("stop")

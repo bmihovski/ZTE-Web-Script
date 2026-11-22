@@ -161,9 +161,34 @@ def state(update=None):
             s = {}
         if update:
             s.update(update)
-            with open(path + ".tmp", "w") as fh: json.dump(s, fh)
+            with open(path + ".tmp", "w") as fh: json.dump(s, fh, separators=(",", ":"))
             os.replace(path + ".tmp", path)
     return s
+
+
+RESET_STATE_KEYS = ("morning", "morning_trial", "morning_dead", "morning_last", "ab_smoke", "ab_refresh",
+                    "night_plan", "night_armed", "night_armed_at", "night_last", "night_remind_last",
+                    "night_smoke", "night_scan", "day_last", "day_smoke")
+
+
+def reset_measurements():
+    """Consume an operator-created marker before the probes and registry have started."""
+    marker = os.path.join(DATA, ".reset-measurements")
+    if not os.path.isfile(marker): return False
+    store.reset_measurements(DATA)
+    for name in ("cells.json", "cells-mikrotik.json"):
+        path = os.path.join(DATA, name)
+        if os.path.exists(path): os.unlink(path)
+    for name in ("state.json", "state-mikrotik.json"):
+        path = os.path.join(DATA, name)
+        if not os.path.exists(path): continue
+        with open(path) as fh: saved = json.load(fh)
+        for key in RESET_STATE_KEYS: saved.pop(key, None)
+        if (saved.get("quality_ab") or {}).get("phase") == "done": saved.pop("quality_ab")
+        with open(path + ".tmp", "w") as fh: json.dump(saved, fh, separators=(",", ":"))
+        os.replace(path + ".tmp", path)
+    os.unlink(marker)
+    return True
 
 
 def record(kind, cols, row):
