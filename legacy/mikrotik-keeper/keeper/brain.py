@@ -357,6 +357,15 @@ def add(row, live=True):
     if live: track(row)
 
 
+def samples_since(mark):
+    """Return observations newer than a captured history row, including after it rolls out of the deque."""
+    history = list(HIST)
+    for index in range(len(history) - 1, -1, -1):
+        if history[index] is mark:
+            return history[index + 1:]
+    return history
+
+
 def window(hours):
     """Samples of the last `hours` from the in-memory history."""
     cutoff = time.time() - hours * 3600

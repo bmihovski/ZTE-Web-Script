@@ -154,12 +154,28 @@ at `/docs`.
   upload 10 (0-30), call-ready 20, loss 15 (0-5 %), p95 10 (20-200 ms), jitter 10 (0-50 ms), 5G 10 (n78 10 / n28 5 / none; from `nr_arfcn` +
   `nr_iperf` = the 5G cells while the step's iperf ran); gates: on the locked cell >= 80 %, a stable anchor. The quality inputs are
   the **loaded** window (2026-11-22v), so the score reflects the internet under traffic, not the idle link. Computed when read.
+- The ZTE helper uses a consistent serving EARFCN for display, neighbour history, lock defaults, and measurements. A zero
+  channel during a band transition needs agreement from both serving channel fields and a B1 report before it can become a
+  serving identity. Standalone zero-channel neighbour or secondary carrier readings cannot create lockable rows.
+
 - **Band scan** (`POST /band-scan?bands=8,1,...`, `keeper/bandscan.py`): per band `LockLTEBand` = that band over TR-069 (no reboot),
   `BANDSCAN_WAIT_S` (90) of samples (until one is on the band, at most 2x), then `BANDSCAN_TEST_S` (25) of load (an internet test) to
   raise the NSA 5G leg; a `band_scans` row (serving cell + median RSRP/RSRQ/SINR, neighbours, the network's own 5G cell + ARFCN/SINR/
   RSRP, and the band's call-ready/loss/p95/jitter/down) + an event; the (5G cell, anchor) pair goes into the NR database (night / A-B
   candidates, incl. the low bands B20/B28). Only without an LTE cell lock **and no NR cell lock**: an active/pending 5G lock is
   refused (it pins the scan's 5G leg and a band change can lose it -> the guard re-applies it with a reboot); busy meanwhile.
+- ZTE band discovery uses fresh observations with the requested band readback and matching serving EARFCN. If the reported
+  primary CA cell disagrees with the serving cell, skip the observation. Neighbours and pair evidence stay keyed by full PCI
+  and EARFCN, so PCI 112 at 3350 and 3774 stays distinct. On-demand TR-069 reads reuse values covered by a regular subtree request.
+- **Explicit low LTE cell locks (ZTE).** Derive B8/B20 from EARFCN. Write its single LTE band and the requested cell lock(s)
+  before one reboot. Store the exact previous LTE band list across low-to-low replacements and restore it on release or
+  replacement with a high anchor. A dedicated comparison accepts `POST /morning?apply=0&cell=394@3774&nr=534@156510`.
+  It tests the unlocked control and the selected pair after a quiet WAN check, then restores the original modem configuration.
+  Smoke and morning runs journal the actual starting band and cell locks. Interrupted runs and partial writes recover from
+  the journal. A restore completes after configuration readback and fresh online probes. Loaded comparisons require a matching
+  configured band, LTE anchor and serving NR cell in both successful transfers. Missing observations leave the result unscored.
+  The low-band wake gate uses fresh modem reads for the requested LTE anchor and n28 pairing. On timeout it reports whether the
+  LTE anchor attached and distinguishes a missing 5G pair from loss of LTE service.
 - **Low-band A/B phase 1** (`GET /low-band`, `POST /low-band-trial?band=8|20`, `keeper/lowband.py`, 2026-11-21): the low bands
   (`LOW_BANDS` 8,20; B28 has no service here) and the network's n28 5G under them (156510/534 under 3774/394 / 6400/112) are the
   bad-weather fallback. The preview compares the last band-scan row per low band (serving, pair, call-ready/loss/p95/jitter/down)
@@ -207,6 +223,9 @@ at `/docs`.
   rules and requires matching iperf servers against the baseline. Competing LAN traffic can trigger one retry on the same cell
   after three quiet WAN checks. `bands=` selects configured bands for a focused comparison. The run restores managed locks,
   keeps a separate result and leaves the production morning failure cache alone.
+  Each ZTE comparison transfer spans at least two fast Inform intervals plus five seconds. The log labels HTTPS probe and
+  iperf3 rates separately. The trial reports missing bands under `coverage`. A lock awaiting rollback ends the run and restores
+  the starting configuration before any further modem work. Previously verified legs remain available in the trial.
 - **One-call refresh** (`POST /ab-refresh`, `GET /ab-refresh`, `keeper/abrefresh.py`, 2026-11-21): the full band scan (B1,B3,B7,
   B8,B20,B28) then the full A/B smoke, then **one** Telegram with both (the smoke's own Telegram is suppressed in the chain); ~25 min;
   the wife's one request. The band scan refuses while an LTE or NR **cell lock** is held, so the refresh 409s in the normal locked

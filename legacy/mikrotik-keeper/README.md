@@ -411,3 +411,8 @@ Edit the env (e.g. `ANT6` `4` -> `1` for omni, `ANT_AUTO` `1` to give control ba
   the same as the router page. A wrong hash is tried once, then the keeper waits 10 minutes (no lockout).
 - Tested against a simulated ZTE (`test/`): login, apply, switches, "no 5G", rx dropout, reboot -> re-login -> re-apply after 60 s, wrong hash back-off; v2 `test/run_test_py.py`: boot apply + logout, switches, interval, operator relay with 401,
   giving way to a web-page login (`run_test3.py`, one session like the real ZTE) and ending the pause on a reboot.
+
+- Explicit ZTE B8/B20 cell locks restrict LTE to that EARFCN's band until replacement or release. The keeper saves the
+  previous LTE band list and journals temporary band/cell settings for Stop and restart. Use
+  `POST /morning?apply=0&cell=394@3774&nr=534@156510` for a quiet, restore-only comparison. Inspect the radio observations
+  for both transfer windows and the final lock readback before interpreting loaded quality.

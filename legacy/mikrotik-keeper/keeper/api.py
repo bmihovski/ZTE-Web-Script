@@ -70,7 +70,9 @@ ROUTES = [   # method, path, summary, [(param, example, description)], capabilit
      "try the next backup only if the first cannot measure), 5G gate, A/B, best 5G restore, one Telegram; ?low=1 adds B8/B20 (empty = Saturday or a "
      "bad high baseline)", [("low", "", "1 = test B20 and B8, 0 = high bands only, empty = auto"),
      ("apply", "1", "0 = compare under full down/up load and restore the keeper-managed locks; 1 = regular check"),
-     ("bands", "", "Optional comma-separated bands for a focused comparison with apply=0")], "morning"),
+     ("bands", "", "Optional comma-separated bands for a focused comparison with apply=0"),
+     ("cell", "", "One B8/B20 PCI@EARFCN for a quiet restore-only comparison"),
+     ("nr", "", "Optional 5G PCI@ARFCN for the selected cell")], "morning"),
     ("post", "/dev", "?on=1|0: development mode - the automatic A/B is off and the tests are allowed; the wife can continue working "
      "while the issue is fixed later", [("on", "1", "1 = on, 0 = off")], None),
     ("post", "/antenna-sweep", "Run the keeper's antenna sweep (close every ZTE web page first)", [], "sweep"),
@@ -307,7 +309,7 @@ class H(BaseHTTPRequestHandler):
         try:
             code, res = 200, None
             if (path in ("/lte-lock", "/nr-lock", "/antennas", "/antenna-sweep", "/ps-reconnect")
-                    and (absmoke.st["running"] or state().get("ab_smoke_restore"))):
+                    and (absmoke.st["running"] or state().get("ab_smoke_restore") or (hasattr(dev, "profile") and dev.profile.pending()))):
                 code, res = 409, {"why": "smoke test or lock restore in progress"}
             elif path in ("/lte-lock", "/nr-lock"):    # ?cell=434@1550 (5G: 534@636576) keep it locked (guarded) | none
                 cell = g("cell")
@@ -364,7 +366,18 @@ class H(BaseHTTPRequestHandler):
                     if any(b in morning.LOW for b in bands):
                         if low is False: raise ValueError("low=0 excludes low bands")
                         low = True
-                ok, why = morning.run(low=low, trigger="manual" if apply else "comparison", apply=apply, notify=apply, bands=bands)
+                cell, nr = g("cell"), g("nr")
+                if cell:
+                    if apply or low is False or not re.fullmatch(guard.SPEC_RE, cell):
+                        raise ValueError("cell requires apply=0 and one low LTE cell")
+                    band = brain.band_of(cell.split("@")[1])[1:]
+                    if band not in ("8", "20") or (bands and bands != [band]):
+                        raise ValueError("cell and selected low band must agree")
+                    bands, low = [band], True
+                if nr:
+                    if not cell or not re.fullmatch(guard.SPEC_RE, nr) or guard.nr_band(nr.split("@")[1])[0] != 28:
+                        raise ValueError("nr requires a selected low LTE cell and n28 PCI@ARFCN")
+                ok, why = morning.run(low=low, trigger="manual" if apply else "comparison", apply=apply, notify=apply, bands=bands, cell=cell, nr=nr)
                 code, res = 202 if ok else 409, {"started": ok, "why": why, "low": low, "apply": apply, "bands": bands}
             elif path == "/dev":            # development mode: the auto A/B off, the tests allowed
                 on = g("on") in ("1", "true", "on", "yes")

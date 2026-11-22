@@ -81,14 +81,16 @@ def _run():
     except Exception as e:
         st["why"] = "%s failed: %r" % (st["why"], e); log("ab refresh failed: %r" % e)
     finally:
-        st["running"] = None; st["stage"] = "done"
-        res = {"trigger": st["why"], "time": stamp(), "started": st["started"], "seconds": round(time.monotonic() - t0, 1),
-               "band_scan": _bands(run), "smoke": sm}
-        st["result"] = res; state({"ab_refresh": res})
-        try: alert.report(_msg(res))
-        except Exception as e: log("ab refresh telegram failed: %r" % e)
-        event({"event": "ab refresh", "to": "done", "why": "%s: %d bands, smoke %s" % (
-            res["trigger"], len(res["band_scan"]), (sm or {}).get("verdict"))})
+        try:
+            res = {"trigger": st["why"], "time": stamp(), "started": st["started"], "seconds": round(time.monotonic() - t0, 1),
+                   "band_scan": _bands(run), "smoke": sm}
+            st["result"] = res; state({"ab_refresh": res})
+            try: alert.report(_msg(res))
+            except Exception as e: log("ab refresh telegram failed: %r" % e)
+            event({"event": "ab refresh", "to": "done", "why": "%s: %d bands, smoke %s" % (
+                res["trigger"], len(res["band_scan"]), (sm or {}).get("verdict"))})
+        finally:
+            st.update(stage="done", running=None)
 
 
 def status():

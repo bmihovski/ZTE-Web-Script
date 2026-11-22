@@ -25,11 +25,16 @@ assert morning._fallback(dict(healthy, down_mbps=16), [dict(healthy, call_ok=0)]
 assert morning.LOW[:2] == ["20", "8"]
 
 # Real Nov 22 B1 neighbours, then a scan where the good 100/66 pair is also visible.
+from keeper.devices.zte import locks
+def band_report(band):
+    locks.on_values({locks.CI + k: v for k, v in {"LockLTEBand": band, "LockLTECell": "", "LockNr5gCell": ""}.items()})
+band_report(bandscan.ALL)
 writes = []
 def band_write(params):
     writes.append(params)
+    threading.Timer(0.002, band_report, args=(params[0][2],)).start()
     if params[0][2] != bandscan.ALL:
-        sample = dict(brain.HIST[-1])
+        sample = dict(brain.HIST[-1], lte_band_config=params[0][2])
         def report():
             brain.HIST.append(dict(sample, lte_neighbours=sample["lte_neighbours"] + " 100/121:-73"))
             brain.HIST.append(sample)
@@ -54,6 +59,11 @@ anchors = brain.REG["nr"]["636576/534"]["anchors"]
 anchors["100/500"] = {"min": 20, "ok": 19, "loss": 0, "p95": 56, "jitter": 8}
 assert morning._discover("1")["candidates"] == ["66@100", "500@100"]  # better known pair beats the stronger known pair
 del anchors["100/500"]
+brain.HIST.append({"time": stamp(), "lte_cell": "3774/394", "lte_rsrp": -80, "lte_ca": "B8/3774/394:-80/4@5",
+                   "lte_neighbours": "3350/112:-79 3774/112:-79", "nr_cell": "156510/534"})
+low = morning._discover("8")
+assert low["serving"] == "3774/394" and low["candidates"] == ["112@3774"], low
+assert "112@3350" not in low["signals"], low
 
 # --- the daily run: no-lock + 3 bands x (#1 + #2)
 class Z:
@@ -189,4 +199,60 @@ assert morning._has5g(mark)
 assert len(state()["morning_dead"]["202@100"]) == 2
 morning._note_reachability({"lte": "202@100", "ok": True, "has5g": True})
 assert morning._dead_cells() == {"202@3350"}
-print("OK morning")
+
+# The live 394 trial had verified LTE internet, but the pinned n28 pair never appeared.
+# A different n28 cell on the same anchor must not start the requested-pair measurement.
+brain.HIST.clear()
+brain.wake = lambda **kw: brain.HIST.append({"time": stamp(), "lte_cell": "3774/394", "nr_cell": "156510/212"})
+wrong_nr = morning._leg("B8 394@3774", "394@3774", "534@156510", band="8", role="first", compare=True)
+assert wrong_nr["failure"] == "no_5g" and not wrong_nr["has5g"], wrong_nr
+assert "LTE 394@3774 attached" in wrong_nr["error"] and "534@156510" in wrong_nr["error"], wrong_nr
+assert "cell not reachable" not in wrong_nr["error"] and wrong_nr.get("load_s") is None, wrong_nr
+
+# Evidence from the full live comparison on 2026-11-22: five 10 s downloads
+# finished between informs. Full comparisons need the same duration floor
+# as a one-cell comparison, while a failed lock must unwind straight to restore.
+class ComparisonProfile:
+    LTE, NR = "LockLTECell", "LockNr5gCell"
+    def snapshot(self): return {"raw": {self.LTE: "", self.NR: ""}}
+    def begin_scope(self, owner): return self.snapshot()
+    def low_band(self, lte): return None
+    def transfer_evidence(self, windows, target, lte, nr, nr_band):
+        return {"verified": False, "samples_per_transfer": [0, 1], "observations": []}
+    def finish_scope(self):
+        state({"profile_rollback": None})
+    def spec(self, value): return value or "none"
+
+z.profile = ComparisonProfile()
+morning.captest.ISECS = 10
+transfer_durations = []
+def loaded(secs=None, load_windows=None):
+    transfer_durations.append(secs)
+    now = time.time()
+    load_windows.extend([(now - 30, now - 20), (now - 10, now)])
+    return 50, 20, "test"
+morning.captest.measure = loaded
+leg = {"leg": "B1 202@100", "lte": "202@100", "nr": "none"}
+morning._record_load(leg, None, None)
+assert transfer_durations == [2 * acs.FAST_INTERVAL + 5], transfer_durations
+assert "no fresh radio sample" in leg["error"] and leg.get("load_down_mbps") is None, leg
+
+z.calls.clear()
+def failed_lock(lte, nr):
+    z.calls.append((lte, nr))
+    if lte != "none":
+        state({"profile_rollback": {"raw": {}}})
+        raise RuntimeError("no BOOT inform")
+    return "unchanged"
+z.locks_apply = failed_lock
+brain.wake = lambda **kw: brain.HIST.append({"time": stamp(), "lte_cell": "100/340", "nr_cell": "636576/534"})
+brain.internet_test = lambda **kw: {"down_mbps": 30, "call_ok": 1}
+ok, why = morning.run(low=True, apply=False, trigger="comparison", notify=False)
+assert ok, why
+deadline = time.monotonic() + 10
+while morning.st["running"] and time.monotonic() < deadline: time.sleep(0.01)
+trial = state()["morning_trial"]
+assert z.calls == [("none", "none"), ("434@1550", "534@636576")], z.calls
+assert not trial["complete"] and trial["restored"] == {"lte": "none", "nr": "none"}, trial
+assert trial["coverage"]["missing_bands"] == ["3", "20", "8"] and len(trial["legs"]) == 2, trial
+print("OK test_morning")

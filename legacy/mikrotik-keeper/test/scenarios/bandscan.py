@@ -40,18 +40,34 @@ assert bs.bw_change("8", 10, [{"band": "8", "bw_mhz": "5"}, {"band": "20", "bw_m
 assert bs.bw_change("8", 10, [{"band": "8", "bw_mhz": ""}]) is None and bs.bw_change("8", None, [{"band": "8", "bw_mhz": "5"}]) is None
 assert bs.bw_change("8", 10, []) is None                                  # first scan: nothing to compare
 
+# A band write without reboot can return mixed primary and CA fields. PCI 112 and
+# its signal values are identical, but neither a stale B7 primary nor a B7 CA read
+# is evidence for the selected B8 anchor. NR must come from the selected LTE row.
+b8 = dict(rows[0], lte_band_config="8", lte_cell="3774/112", lte_ca="B8/3774/112:-79/-4@5",
+          nr_cell="156510/534", nr_arfcn="156510", lte_neighbours="3350/112:-79 3774/36:-99")
+stale_primary = dict(b8, lte_cell="3350/112")
+stale_ca = dict(b8, lte_ca="B7/3350/112:-79/-4@5")
+stale_mask = dict(b8, lte_band_config="7")
+assert all(not bs.summarize("8", [r])["serving"] for r in (stale_primary, stale_ca, stale_mask))
+others = [dict(b8, lte_cell="3774/394", lte_ca="B8/3774/394:-79/-4@5", nr_cell="156510/212", nr_arfcn="156510")] * 2
+valid = bs.summarize("8", [b8, b8, b8, stale_primary, stale_ca, stale_mask, *others])
+assert valid["serving"] == "3774/112" and valid["nr_cell"] == "156510/534"
+assert valid["samples"] == 5 and "3350/112:-79" in valid["neighbours"], valid
+assert bs.summarize("8", [b8], net={"down_mbps": 12})["down_mbps"] == 12
+
 # scan(): one write per band (no reboot), the samples of its window, then ONE write of the full list back; busy meanwhile
 writes = []; seen_busy = []
 def fake_set(pairs, reboot=False, timeout=180):
     writes.append((pairs, reboot)); seen_busy.append(common.busy())
     b = pairs[0][2]
     if b in ("8", "28"):                                   # the modem's next sample on that band (28: no service -> no LTE cell)
-        brain.HIST.append({"time": st(time.time()), "lte_cell": "3774/112" if b == "8" else "", "lte_rsrp": "-94", "lte_rsrq": "-10",
+        row = {"time": st(time.time()), "lte_band_config": b, "lte_cell": "3774/112" if b == "8" else "", "lte_rsrp": "-94", "lte_rsrq": "-10",
                            "lte_sinr": "5", "lte_neighbours": "3774/36:-99", "lte_ca": "B8/3774/112:-94/5@10" if b == "8" else "",
                            "nr_cell": "636576/534" if b == "8" else "no5G", "nr_arfcn": "636576" if b == "8" else "",
                            "nr_sinr": "9" if b == "8" else "", "nr_rsrp": "-80" if b == "8" else "",
                            "call_ok": "1" if b == "8" else "", "loss_pct": "0" if b == "8" else "",
-                           "lat_p95": "28" if b == "8" else "", "jitter_ms": "3" if b == "8" else ""})
+                           "lat_p95": "28" if b == "8" else "", "jitter_ms": "3" if b == "8" else ""}
+        threading.Timer(0.01, brain.HIST.append, args=(row,)).start()
     return b != "99"                                       # 99: refused by the modem
 acs.tr069_set = fake_set
 common.state({"lte_lock": {"cell": "340@100", "state": "released"}})

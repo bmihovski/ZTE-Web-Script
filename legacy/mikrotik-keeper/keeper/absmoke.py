@@ -26,9 +26,10 @@ def _switch(lte, nr, stop):
     """Only a new BOOT inform proves that a ZTE lock was applied."""
     dev = devices.current()
     boots = acs.st["boots"]
-    if dev.locks_apply(lte, nr) is None:
+    method = dev.locks_apply(lte, nr)
+    if method is None:
         raise RuntimeError("the lock write was not accepted")
-    if not dev.LOCKS_REBOOT:
+    if method == "unchanged" or not dev.LOCKS_REBOOT:
         return
     deadline = time.monotonic() + BOOT_S
     while acs.st["boots"] == boots and time.monotonic() < deadline:
@@ -65,8 +66,18 @@ def _leg(name, lte, nr, switch, stop):
         if lte != "none" and actual_lte != brain.anchor_key(lte):
             raise RuntimeError("no fresh observation on the requested LTE anchor")
         st["progress"] = dict(st["progress"], phase="measuring")
+        profile = getattr(devices.current(), "profile", None)
+        target = profile.snapshot()["raw"] if profile else None
+        started = time.time()
         net = brain.internet_test(seconds=25, stop=stop)
         if stop.is_set(): return res
+        if profile and profile.low_band(lte):
+            if target[profile.BAND] != profile.low_band(lte):
+                raise RuntimeError("requested LTE band restriction missing")
+            proof = profile.transfer_evidence([(started, time.time())], target, lte, nr)
+            res["radio"] = proof
+            if not proof["verified"]:
+                raise RuntimeError("missing matching band and serving pair during load")
         row = _last_sample() if row else row
         actual_lte, actual_nr = row.get("lte_cell"), row.get("nr_cell")
         if lte != "none" and actual_lte != brain.anchor_key(lte):
@@ -148,7 +159,7 @@ def _restore(pair):
     started = time.time()
     _switch(*pair, threading.Event())
     if not brain.wait_online(timeout=60, since=started):
-        log("ab smoke: locks restored, link has not recovered yet")
+        raise RuntimeError("locks restored, link has not recovered yet")
     state({"ab_smoke_restore": None})
 
 
@@ -160,16 +171,21 @@ def _run(original, notify):
     legs = []
     restored, restore_error = None, ""
     changed = False
+    scope = None
+    profile = getattr(devices.current(), "profile", None)
     try:
+        if profile:
+            scope = profile.begin_scope("smoke")
+            original = tuple(profile.spec(scope["raw"][k]) for k in (profile.LTE, profile.NR))
         plan = _plan(original)
         st["plan"] = plan
         for step, (name, lte, nr) in enumerate(plan, 1):
             if stop.is_set(): break
-            switch = changed or (lte, nr) != original
+            switch = changed or (lte, nr) != original or bool(profile and profile.low_band(lte))
             st["progress"] = {"step": step, "total": len(plan), "leg": name, "phase": "switching" if switch else "measuring",
                               "lte": lte, "nr": nr, "legs": list(legs)}
             if switch and not changed:
-                state({"ab_smoke_restore": list(original)})
+                if not scope: state({"ab_smoke_restore": list(original)})
                 changed = True
             result = _leg(name, lte, nr, switch, stop)
             if not stop.is_set(): legs.append(result)
@@ -178,7 +194,8 @@ def _run(original, notify):
     finally:
         st["progress"] = dict(st["progress"] or {}, phase="restoring", legs=list(legs))
         try:
-            if changed: _restore(original)
+            if scope: profile.finish_scope()
+            elif changed: _restore(original)
             restored = dict(zip(("lte", "nr"), original))
         except Exception as e:
             restore_error = str(e)
@@ -261,7 +278,8 @@ def status():
     active = {"profile": profile, "lte_lock": managed[0], "nr_lock": managed[1],
               "lte": _spec(sample.get("lte_cell")), "nr": _spec(sample.get("nr_cell"))}
     plan = (current["plan"] or []) if current["running"] else _plan(managed)
+    profile = getattr(devices.current(), "profile", None)
     return {"running": current["running"], "progress": current["progress"], "active": active,
-            "plan": [dict(leg=name, lte=lte, nr=nr) for name, lte, nr in plan],
+            "plan": [dict(leg=name, lte=lte, nr=nr, lte_band=profile.low_band(lte) if profile else None) for name, lte, nr in plan],
             "stopping": bool(current["cancel"] and current["cancel"].is_set()),
-            "restore_pending": bool(saved.get("ab_smoke_restore")), "result": current["result"] or saved.get("ab_smoke")}
+            "restore_pending": bool(saved.get("ab_smoke_restore") or (saved.get("profile_restore") or {}).get("owner") == "smoke"), "result": current["result"] or saved.get("ab_smoke")}

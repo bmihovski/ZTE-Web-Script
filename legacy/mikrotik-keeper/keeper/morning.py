@@ -3,8 +3,8 @@
 Daily (`MORNING` 08:00, with catch-up until `MORNING_END`): one no-lock leg (the full CA)
 and, for B1/B3/B7, a band-lock discovery of the serving cell and up to two backups ranked by good measured pair quality, then
 RSRP. Try the second backup only if the first cannot measure. Skip recent repeat reachability failures by LTE cell. The band
-lock is discovery only (it collapses the CA); the cell lock keeps the CA (2026-11-21: the
-08:55 band locks show one carrier, the cell locks show 434 + 100/434 and 66 + 3350/66). Discover B20/B8 on Saturday or when the
+scan restores the previous band list after discovery. High-band cell locks allow CA; a B8/B20 cell lock
+restricts LTE to its matching band for that leg. Discover B20/B8 on Saturday or when the
 unlocked screen is poor or unavailable. Test them after the high bands if no high leg passes the screen. Learn the cells from the
 current discovery and let each low LTE anchor attach its own n28 cell.
 
@@ -121,14 +121,6 @@ def _wait_link(timeout=LINK_WAIT_S):
     except Exception: pass
 
 
-def _since(mark):
-    history = list(brain.HIST)
-    for i in range(len(history) - 1, -1, -1):
-        if history[i] is mark:
-            return history[i + 1:]
-    return history
-
-
 def _real_nr(row, nr_band=None):
     nr = row.get("nr_cell") or ""
     if "/" in nr and nr.split("/", 1)[0] not in ("0", "255"):
@@ -139,7 +131,7 @@ def _real_nr(row, nr_band=None):
 
 def _has5g(mark, nr_band=None):
     """Look for a real 5G cell since the start of this leg's wake/probe, even when the history deque is full."""
-    return any(_real_nr(row, nr_band) for row in _since(mark))
+    return any(_real_nr(row, nr_band) for row in brain.samples_since(mark))
 
 
 def _q(l):
@@ -150,17 +142,21 @@ def _q(l):
 def _record_load(leg, mark, nr_band):
     """Measure comparable throughput and transfer-window quality, and record the radio path observed on this leg."""
     windows = []
+    profile = getattr(devices.current(), "profile", None)
+    target_config = profile.snapshot()["raw"] if profile else None
+    # Allow at least two fast informs per transfer, including when Enable lands between reads.
+    transfer_s = max(captest.ISECS, 2 * acs.FAST_INTERVAL + 5) if profile else None
     try:
-        down, up, how = captest.measure(load_windows=windows)
+        down, up, how = captest.measure(secs=transfer_s, load_windows=windows)
     except captest.LocalTraffic as e:
         leg["load_retries"] = [str(e)]
         log("morning %s: waiting to retry the load measurement: %s" % (leg["leg"], e))
         if not captest.wait_lan_quiet():
             raise
         windows.clear()
-        down, up, how = captest.measure(load_windows=windows)
+        down, up, how = captest.measure(secs=transfer_s, load_windows=windows)
     quality = brain.probe_windows(windows, min_points=2) if len(windows) == 2 else {}
-    rows = _since(mark)
+    rows = brain.samples_since(mark)
     lte_cells = Counter(r["lte_cell"] for r in rows if r.get("lte_cell"))
     anchor = lte_cells.most_common(1)[0][0] if lte_cells else ""
     target = brain.anchor_key(leg["lte"]) if leg["lte"] != "none" else anchor
@@ -169,6 +165,24 @@ def _record_load(leg, mark, nr_band):
     nr = nr_cells.most_common(1)[0][0] if nr_cells else ""
     transfer_rows = [row for row in rows if any(start <= brain.ts(row) < end for start, end in windows)]
     transfer_matches = sum(1 for row in transfer_rows if row.get("lte_cell") == target and _real_nr(row, nr_band) == nr)
+    if profile:
+        proof = profile.transfer_evidence(windows, target_config, leg["lte"], leg["nr"], nr_band)
+        leg["radio"] = proof
+        leg["transfer_seconds"] = [round(end - start, 1) for start, end in windows]
+        if len(windows) != 2:
+            leg["error"] = "iperf3 did not complete both transfers (%s)" % how
+            return
+        if not all(proof["samples_per_transfer"]):
+            leg["error"] = "no fresh radio sample during %s transfer" % (
+                " or ".join(direction for direction, count in zip(("download", "upload"), proof["samples_per_transfer"]) if not count))
+            return
+        if not proof["verified"]:
+            leg["error"] = "unverified band or serving cells during down/up transfers"
+            return
+        transfer_rows = proof["observations"]
+        nr = transfer_rows[0]["nr_cell"]
+        anchor = transfer_rows[0]["lte_cell"]
+        transfer_matches = len(transfer_rows)
     leg.update(load_method=brain.LTE_LOAD_METHOD, load_s=round(sum(end - start for start, end in windows), 1),
                load_down_mbps=down, load_up_mbps=up, load_how=how, observed_anchor=anchor, observed_nr=nr,
                nr_samples=dict(nr_cells), radio_samples=len(rows), on_target_pct=round(100 * lte_cells[target] / len(rows), 1) if rows else None,
@@ -183,9 +197,13 @@ def _leg(name, lte, nr, band=None, role="", compare=False):
     t0 = time.time(); res = {"leg": name, "band": band, "role": role, "lte": lte or "none", "nr": nr or "none",
                              "time": stamp(), "ok": False, "error": "", "has5g": False}
     stop = threading.Event()
+    profile = None
     nr_band = "n28" if band in LOW else None
     try:
         dev = devices.current()
+        profile = getattr(dev, "profile", None)
+        if band and lte and brain.band_of(lte.split("@")[-1]) != "B" + band:
+            raise RuntimeError("LTE band conflicts with cell EARFCN")
         r = dev.locks_apply(lte or "none", nr or "none")
         if r is None: raise RuntimeError("the lock write was not accepted")
         if band:
@@ -198,56 +216,93 @@ def _leg(name, lte, nr, band=None, role="", compare=False):
         if not res.get("failure"):
             history = list(brain.HIST)
             mark = history[-1] if history else None
+            wake_start = time.time()
+            target_lte = brain.anchor_key(lte)
+            target_nr = brain.anchor_key(nr) if nr and nr != "none" else None
+
+            def wake_rows():
+                if profile and nr_band:
+                    return [row for row in list(profile.radio)
+                            if row["time"] >= wake_start and row["boots"] == acs.st["boots"]
+                            and row.get(profile.BAND) == band]
+                return brain.samples_since(mark)
+
+            def seen_pair():
+                if not nr_band:
+                    return _has5g(mark)
+                return any(row.get("lte_cell") == target_lte and _real_nr(row, nr_band)
+                           and (not target_nr or row["nr_cell"] == target_nr) for row in wake_rows())
+
             wake_for = FIVE_G_WAIT_S + WAKE_LEAD_S + PROBE_S + (480 if compare else 5)
             threading.Thread(target=brain.wake, kwargs={"seconds": wake_for, "stop": stop},
                              daemon=True).start()
             deadline = time.monotonic() + FIVE_G_WAIT_S
-            while not _has5g(mark, nr_band):
+            while not seen_pair():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
                 time.sleep(min(2, remaining))
-            if band and not _has5g(mark, nr_band):
+            if band and not seen_pair():
                 label = "n28 5G" if nr_band else "5G"
-                res.update(failure="no_5g", error="cell not reachable: no %s within %g s" % (label, FIVE_G_WAIT_S))
+                if target_nr and nr_band:
+                    label += " " + nr
+                rows = wake_rows()
+                attached = any(row.get("lte_cell") == target_lte for row in rows)
+                detail = "LTE %s attached" % lte if attached else "LTE %s not observed during wake" % lte
+                res.update(failure="no_5g", error="%s; no %s within %g s" % (detail, label, FIVE_G_WAIT_S))
+                if nr_band:
+                    res["wake_radio"] = rows
             else:
                 time.sleep(WAKE_LEAD_S)
+                probe_start = time.time()
                 net = brain.internet_test(seconds=PROBE_S)
                 history = list(brain.HIST)
                 h = brain.row_health(history[-1] if history else {})
                 res.update({"ok": net.get("down_mbps") is not None or net.get("call_ok") == 1, "down_mbps": net.get("down_mbps"),
                             "call_ok": net.get("call_ok"), "loss_pct": net.get("loss_pct"), "lat_p95": net.get("lat_p95"),
-                            "jitter_ms": net.get("jitter_ms"), "health": h, "has5g": _has5g(mark, nr_band)})
+                            "jitter_ms": net.get("jitter_ms"), "health": h, "has5g": seen_pair()})
                 if band and not res["ok"] and brain.f(res["loss_pct"]) == 100:
                     res.update(failure="no_internet", error="no internet during the probe")
-                seen = [_real_nr(row, nr_band) for row in _since(mark)]
+                seen = [_real_nr(row, nr_band) for row in brain.samples_since(mark)]
                 res["observed_nr"] = next((nr for nr in reversed(seen) if nr), "")
+                if profile and profile.low_band(lte) and res["ok"]:
+                    proof = profile.transfer_evidence([(probe_start, time.time())], profile.snapshot()["raw"], lte, nr, nr_band)
+                    res["probe_radio"] = proof
+                    if not proof["verified"]:
+                        raise RuntimeError("no confirmed low-band serving pair during probe")
+                    res["observed_nr"] = proof["observations"][-1]["nr_cell"]
                 if compare and res["ok"]:
                     _record_load(res, mark, nr_band)
     except Exception as e:
-        res["error"] = repr(e)
+        res.update(ok=False, error=str(e))
     finally:
         stop.set()
     res["seconds"] = round(time.time() - t0, 1); st["legs"].append(res)
     if not compare:
         _note_reachability(res)
-    log("morning %s: ok=%s 5g=%s down=%s call=%s p95=%s %s" % (name, res["ok"], res["has5g"], res.get("down_mbps"),
-                                                              res.get("call_ok"), res.get("lat_p95"), res.get("error")))
+    log("morning %s: ok=%s 5g=%s HTTPS down=%s call=%s p95=%s; iperf3 down=%s up=%s %s" % (
+        name, res["ok"], res["has5g"], res.get("down_mbps"), res.get("call_ok"), res.get("lat_p95"),
+        res.get("load_down_mbps"), res.get("load_up_mbps"), res["error"]))
+    if profile and state().get("profile_rollback"):
+        raise RuntimeError("%s: %s; ending the run to restore the original configuration" % (name, res["error"]))
     return res
 
 
 def _discover(band):
-    """Band lock (no reboot): the serving cell and ranked backups, then restore the full band list."""
+    """Discover the serving cell and ranked backups on one band, then restore the prior list."""
     out = {"band": band, "serving": "", "candidates": [], "nr": "", "error": ""}
-    if not acs.tr069_set([(bandscan.PARAM, "xsd:string", band)]):
-        out["error"] = "LockLTEBand=%s not accepted" % band; return out
+    profile = getattr(devices.current(), "profile", None)
+    prior = profile.snapshot()["raw"][profile.BAND] if profile else bandscan.ALL
     try:
+        if profile: state({"profile_write": {"LockLTEBand": band}})
+        if not acs.tr069_set([(bandscan.PARAM, "xsd:string", band)]):
+            out["error"] = "LockLTEBand=%s not accepted" % band
+            return out
         history = list(brain.HIST)
         mark = history[-1] if history else None
         deadline = time.monotonic() + BAND_WAIT_S
         while True:
-            rows = [r for r in _since(mark) if r.get("lte_cell")
-                    and brain.band_of(r["lte_cell"].split("/")[0]) == "B" + band]
+            rows = [r for r in brain.samples_since(mark) if bandscan.confirmed(r, band, require_mask=True)]
             remaining = deadline - time.monotonic()
             if len(rows) >= 2 or remaining <= 0:
                 break
@@ -269,7 +324,7 @@ def _discover(band):
                 v = brain.f(reading)
                 spec = _spec(cell)
                 if (spec and spec != first and v is not None
-                        and brain.band_of(brain.anchor_key(spec).split("/", 1)[0]) == "B" + band):
+                        and bandscan.cell_on_band(cell, band)):
                     current[spec] = max(v, current.get(spec, v))
             for spec, v in current.items():
                 signals.setdefault(spec, []).append(v)
@@ -298,7 +353,12 @@ def _discover(band):
     except Exception as e:
         out["error"] = repr(e); return out
     finally:
-        acs.tr069_set([(bandscan.PARAM, "xsd:string", bandscan.ALL)])
+        if profile: state({"profile_write": {"LockLTEBand": prior}})
+        if not acs.tr069_set([(bandscan.PARAM, "xsd:string", prior)]):
+            raise RuntimeError("discovery band restore refused")
+        if profile:
+            profile.wait_band(prior, time.monotonic())
+            state({"profile_write": None})
 
 
 def _healthy(leg):
@@ -352,6 +412,7 @@ def _decision(legs):
         radio_agrees = leg["transfer_radio_samples"] == leg["transfer_radio_matches"]
         if leg["lte"] == "none" or (leg["comparable_server"] and leg["radio_samples"] >= 2
                                     and (leg.get("nr_pct") or 0) >= 80 and radio_agrees):
+            leg["load_comparable"] = leg["score"] is not None
             measured.append(row)
     best, base, gain = brain.loaded_anchor_result(measured)
     return {"lte": best["lock"] if best else None, "score": best["score"] if best else None,
@@ -408,20 +469,33 @@ def _managed_locks():
     return locks
 
 
-def _run(low=None, notify=True, trigger="manual", apply=True, bands=None):
+def _run(low=None, notify=True, trigger="manual", apply=True, bands=None, cell=None, nr=None):
     t0 = time.time(); st["legs"] = []
     a = b = best = decision = fallback = up = None
     restored = {}
     discoveries = []
     complete = False
+    scope = None
+    profile = getattr(devices.current(), "profile", None)
     highs = [b for b in BANDS if bands is None or b in bands]
     lows = [b for b in LOW if bands is None or b in bands]
+    requested_bands = highs + (lows if low is True else [])
     try:
+        if profile:
+            scope = profile.begin_scope("morning")
+        if cell and (not captest.sqm.URL or not captest.wait_lan_quiet()):
+            raise RuntimeError("local traffic before comparison")
         baseline = _leg("no lock", "none", "none", compare=not apply)
         saturday = low is None and LOW_SAT and time.localtime().tm_wday == 5
         look_low = low is True or saturday or (low is None and not _healthy(baseline))
         st["stage"] = "discover"
-        for band in dict.fromkeys([*highs, *(lows if look_low else [])]):  # discovery needs the unlocked CPE
+        if cell:
+            st["stage"] = "band " + lows[0]
+            if not captest.wait_lan_quiet(): raise RuntimeError("local traffic before low leg")
+            _leg("B%s %s" % (lows[0], cell), cell, nr or "none", band=lows[0], role="first", compare=True)
+        requested_bands = highs + (lows if look_low else [])
+        discovery_bands = [] if cell else dict.fromkeys(requested_bands)
+        for band in discovery_bands:  # discovery needs the unlocked CPE
             d = _discover(band)
             discoveries.append(d)
             if d.get("error") or not d.get("serving"):
@@ -441,22 +515,29 @@ def _run(low=None, notify=True, trigger="manual", apply=True, bands=None):
                 if low is None and not saturday and any(_healthy(leg) for leg in st["legs"][n:]):
                     break
         a, b, best, rl, rn = _ab(st["legs"])
-        if not apply:
-            decision = _decision(st["legs"])
         complete = True
     except Exception as e:
-        st["why"] = "%s failed: %r" % (st["why"], e); log("morning check failed: %r" % e)
+        st["why"] = "%s failed: %s" % (st["why"], e); log("morning check failed: %s" % e)
     finally:
         st["stage"] = "restore"
         try:
             commit = apply and complete and best is not None
             lte, nr = (rl, rn) if commit else _managed_locks()
-            if devices.current().locks_apply(lte, nr) is None:
+            if profile and not scope:
+                raise RuntimeError("no configuration snapshot; no restore required")
+            if scope and not commit:
+                profile.finish_scope()
+                lte, nr = [profile.spec(scope["raw"][k]) for k in (profile.LTE, profile.NR)]
+            elif devices.current().locks_apply(lte, nr) is None:
                 raise RuntimeError("restore write was not accepted")
             restored = {"lte": lte, "nr": nr}
             if commit:
-                state({"lte_lock": ({"cell": lte, "state": "active", "reason": "morning: the best 5G"} if lte != "none" else None),
-                       "nr_lock": ({"cell": nr, "state": "active", "reason": "morning: the best 5G"} if nr != "none" else None)})
+                managed = {"lte_lock": ({"cell": lte, "state": "active", "reason": "morning: the best 5G"} if lte != "none" else None),
+                       "nr_lock": ({"cell": nr, "state": "active", "reason": "morning: the best 5G"} if nr != "none" else None)}
+                if scope:
+                    if not brain.wait_online(timeout=90, since=time.time()): raise RuntimeError("selected profile offline")
+                    profile.finish_scope(commit=managed)
+                else: state(managed)
             _wait_link(120)
             if commit:
                 _d, up, how = captest.measure(secs=UP_SECS)
@@ -466,12 +547,18 @@ def _run(low=None, notify=True, trigger="manual", apply=True, bands=None):
             st["why"] = "%s restore failed: %r" % (st["why"], e)
             complete = False
         legs = list(st["legs"])
+        coverage = None
+        if not apply:
+            decision = _decision(legs)
+            measured = {leg.get("band") for leg in legs if leg.get("load_comparable")}
+            coverage = {"baseline": None in measured, "requested_bands": requested_bands,
+                        "missing_bands": [band for band in requested_bands if band not in measured]}
         h = next((x.get("health") for x in legs if x.get("health")), {})
         res = {"trigger": st["why"], "time": stamp(), "started": st["started"], "seconds": round(time.time() - t0, 1),
                "version": VERSION, "apply": apply, "complete": complete, "fallback": fallback, "discoveries": discoveries,
-               "legs": legs, "a": a or {}, "b": b or {}, "decision": decision, "restored": restored, "up": up,
+               "legs": legs, "a": a or {}, "b": b or {}, "decision": decision, "coverage": coverage, "restored": restored, "up": up,
                "any_5g": any(x.get("has5g") for x in legs),
-               "verdict": "modem good" if any(x.get("ok") for x in legs) else ("modem bad" if h.get("sim") is False else "provider issue")}
+               "verdict": "modem good" if any(x.get("ok") for x in legs) else ("modem bad" if h.get("sim") is False else "inconclusive" if not apply else "provider issue")}
         st["result"] = res; state({"morning" if apply else "morning_trial": res})
         if notify:
             try: alert.report(_msg(res))
@@ -481,7 +568,7 @@ def _run(low=None, notify=True, trigger="manual", apply=True, bands=None):
         st["running"] = None; st["stage"] = "done"
 
 
-def run(low=None, trigger="manual", notify=True, apply=True, bands=None):
+def run(low=None, trigger="manual", notify=True, apply=True, bands=None, cell=None, nr=None):
     """Start the morning check -> (started, why). Busy while it runs (the guard/captest/night wait). A manual run counts as the
     day's check (no scheduled catch-up right after it)."""
     with common.test_start_lock:
@@ -492,7 +579,7 @@ def run(low=None, trigger="manual", notify=True, apply=True, bands=None):
         if apply:
             state({"morning_last": time.strftime("%Y-%m-%d", time.localtime())})
         st.update(running=trigger, result=None, started=stamp(), legs=[], why=trigger, stage="start")
-        threading.Thread(target=_run, args=(low, notify, trigger, apply, bands), daemon=True).start()
+        threading.Thread(target=_run, args=(low, notify, trigger, apply, bands, cell, nr), daemon=True).start()
     return True, trigger
 
 

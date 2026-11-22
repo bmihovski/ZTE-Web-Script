@@ -10,7 +10,7 @@ import re, threading, time
 
 from keeper import absmoke, acs, brain, captest, common, guard, locktest, morning
 from keeper.common import E, event, log, state
-from keeper.devices.zte import antennas, checkin, locks, ps as ps_mod, settings, watchdog, web
+from keeper.devices.zte import antennas, checkin, locks, profile, ps as ps_mod, settings, watchdog, web
 from keeper.devices.zte.locks import lock_value, locks_apply, nr_value   # noqa: F401 (driver interface)
 
 NAME, MAKER = "ZTE", "ZTE"
@@ -65,6 +65,7 @@ def row(vals):
            "nr_rsrp": num(g("NR5G_RSRP")), "nr_rsrq": num(g("NR5G_RSRQ")), "nr_sinr": num(g("NR5G_SINR")), "nr_rssi": num(g("NR5G_RSSI")),
            "nr_ssb_rsrp": num(g("NR5G_SSB_RSRP")), "nr_ssb_sinr": num(g("NR5G_SSB_SINR")),
            "lte_cell": "%s/%s" % (g("LTE_EARFCN"), g("LTE_PCI")) if num(g("LTE_EARFCN")) and num(g("LTE_PCI")) else "",   # "" = no LTE service
+           "lte_band_config": vals.get(CI + "LockLTEBand"),
            "lte_site": eci(g("CELLID")), "lte_rsrp": num(g("LTE_RSRP")), "lte_rsrq": num(g("LTE_RSRQ")),
            "lte_sinr": num(g("LTE_SINR")), "lte_rssi": num(g("LTE_RSSI")), "lte_ca": " ".join(ca),
            "lte_neighbours": " ".join("%s/%s:%s" % t for t in nb if t[1]), "rrc": g("RRC"),
@@ -84,6 +85,7 @@ def row(vals):
 
 def minute_jobs():
     """Resume an interrupted smoke before the normal guard and daytime jobs."""
+    if profile.pending(): return [profile.recover]
     if state().get("ab_smoke_restore"): return [absmoke.recover]
     return [locktest.cut_night_on_traffic, antennas.maybe_sweep, guard.lock_guard, guard.quality_ab,
             morning.maybe_morning, captest.maybe_test, captest.weekly]
@@ -125,7 +127,7 @@ def offline_reboot():
 
 def offline_unlock_lte():
     """LTE lock off + reboot on the web page (LAN): the modem is offline and not informing, so no TR-069 session (guard.offline_release)."""
-    locks.web_lock_reboot(0, 0)
+    profile.offline_release()
 
 
 def nr_on(row, cell):
@@ -141,6 +143,9 @@ def start_note():
 def on_start():
     """Keeper start: a lock test interrupted by a restart left its locks on the ZTE - take them off again (a 5G test also pinned an
     LTE anchor, so both legs are cleared; a plain LTE test / the format learning only touched LTE)."""
+    if profile.pending():
+        profile.recovery["pending"] = True
+        return  # the exact profile journal supersedes legacy cleanup
     t = state().get("lock_test")
     if not t: return
     label = t.get("cell") if isinstance(t, dict) else t
@@ -249,6 +254,6 @@ def config():
     return {"antennas": antennas.ant_cfg(), "antennas_effective": eff, "antennas_source": src, "antennas_cell": rec,
             "antennas_env": {"auto": antennas.AUTO, "ant5": antennas.ANT5, "ant6": antennas.ANT6},
             "sweep_days": antennas.SWEEP_DAYS, "sweep_running": antennas.sweep_st["running"], "last_sweep": s().get("last_sweep"),
-            "lte_lock_fmt": s().get("lte_lock_fmt"), "zte_locks_raw": locks.seen["raw"], "checkin_days": checkin.CHECKIN_DAYS,
+            "lte_lock_fmt": s().get("lte_lock_fmt"), "zte_locks_raw": locks.seen["raw"], "profile_restore_pending": profile.pending(), "checkin_days": checkin.CHECKIN_DAYS,
             "lock_upgrades": LOCK_UPGRADES, "tr143": s().get("tr143"), "watchdog": s().get("watchdog"),
             "web_settings": s().get("web_settings"), "web_warnings": settings.audit()}

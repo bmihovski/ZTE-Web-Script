@@ -80,8 +80,8 @@ def lock_do(changes, why, count=True):
     what = " + ".join("%s lock %s" % ("lte" if k == "lte" else "5g", "removed" if v == "none" else v) for k, v in sorted(changes.items()))
     def run():
         try:
-            devices.current().locks_apply(changes.get("lte"), changes.get("nr"))
-            if count: guard["reboots"] = [t for t in guard["reboots"] if time.time() - t < 86400] + [time.time()]   # count the reboot only after it was issued
+            method = devices.current().locks_apply(changes.get("lte"), changes.get("nr"))
+            if count and method != "unchanged": guard["reboots"] = [t for t in guard["reboots"] if time.time() - t < 86400] + [time.time()]   # count the reboot only after it was issued
             guard["changed_at"] = time.time()
             guard.update(bad=0, nosvc=0, nr_bad=0, nr_back=0)
             log("%s: %s" % (what, why)); event({"event": what, "why": why})
@@ -106,6 +106,12 @@ def lock_reconcile(now, row=None):
             continue                                  # idle without 5G is normal in NSA: the lock is not lost, do not re-apply (one reboot each time)
         w = state().get(key); lv = dev.lock_value(key) if w else None
         has = holds(lv[1], w["cell"]) if lv else None
+        if has and key == "lte_lock" and hasattr(dev, "profile") and dev.profile.low_band(w["cell"]):
+            try:
+                raw = dev.profile.snapshot()
+                has = bool(raw["prior_band"] and raw["raw"][dev.profile.BAND] == dev.profile.low_band(w["cell"]))
+            except RuntimeError:
+                continue
         if has is None: continue
         label, raw = lv
         if w["state"] in ("released", "pending") and has:
@@ -344,7 +350,7 @@ def lock_request(cell, kind="lte"):
     key = KEYS[kind]
     if cell == "none":
         had = state().get(key); state({key: None})
-        if had: lock_do({kind: "none"}, "removed on request")
+        if had or (kind == "lte" and state().get("lte_prior_band")): lock_do({kind: "none"}, "removed on request")
         return {key: None}
     if kind == "nr":
         try: nr_band(cell.split("@")[1])

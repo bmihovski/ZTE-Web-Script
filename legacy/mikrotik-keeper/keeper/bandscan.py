@@ -30,12 +30,28 @@ def _med(rows, key):
     return statistics.median(xs) if xs else None
 
 
+def cell_on_band(cell, band):
+    """Match a complete LTE cell identifier against the EARFCN range for this band."""
+    return bool(re.fullmatch(r"\d+/\d+", cell or "") and brain.band_of(cell.split("/")[0]) == "B" + band)
+
+
+def confirmed(row, band, require_mask=False):
+    """Reject conflicting primary, carrier and configured-band fields from a scan read."""
+    cell = row.get("lte_cell")
+    if not cell_on_band(cell, band):
+        return False
+    if (require_mask or "lte_band_config" in row) and row.get("lte_band_config") != band:
+        return False
+    primary = re.match(r"B(\d+)/(\d+/\d+):", row.get("lte_ca") or "")
+    return not primary or primary.groups() == (band, cell)
+
+
 def summarize(band, rows, net=None):
     """The samples of one band -> its most seen serving cell, that cell's median RSRP/RSRQ/SINR, every neighbour (best RSRP), the
     most seen 5G cell + its ARFCN/SINR/RSRP, and the band's internet quality (the probe's call-ready/loss/p95/jitter; `net` = an
     internet test's result under load, overriding). No sample on the band = no quality (`None`, not 0 %)."""
     bb = "B%s" % band
-    on = [r for r in rows if r.get("lte_cell") and brain.band_of(r["lte_cell"].split("/")[0]) == bb]
+    on = [r for r in rows if confirmed(r, band)]
     out = {"band": band, "bw_mhz": None, "serving": "", "serving_band": "", "rsrp": None, "rsrq": None, "sinr": None, "neighbours": "",
            "samples": len(on), "note": "", "nr_cell": "", "nr_arfcn": "", "nr_sinr": None, "nr_rsrp": None,
            "call_ok": None, "lat_p95": None, "jitter_ms": None, "loss_pct": None, "down_mbps": None}
@@ -46,9 +62,9 @@ def summarize(band, rows, net=None):
     for r in on:
         for t in (r.get("lte_neighbours") or "").split():
             k, _, v = t.partition(":"); v = brain.f(v)
-            if v is not None: nb[k] = max(nb.get(k, v), v)
+            if v is not None and re.fullmatch(r"\d+/\d+", k): nb[k] = max(nb.get(k, v), v)
     bws = [int(m.group(2)) for r in mine for m in [re.match(r"B\d+/(\d+/\d+):\S*?@(\d+)", r.get("lte_ca") or "")] if m and m.group(1) == cell]
-    nr = [r for r in on if r.get("nr_cell") and r.get("nr_cell") != "no5G"]
+    nr = [r for r in mine if re.fullmatch(r"\d+/\d+", r.get("nr_cell") or "")]
     nrc = collections.Counter(r["nr_cell"] for r in nr).most_common(1)[0][0] if nr else ""
     nmine = [r for r in nr if r["nr_cell"] == nrc]
     net = net or {}
@@ -61,7 +77,7 @@ def summarize(band, rows, net=None):
     out.update(serving=cell, serving_band=bb, rsrp=med("lte_rsrp"), rsrq=med("lte_rsrq"), sinr=med("lte_sinr"),
                bw_mhz=collections.Counter(bws).most_common(1)[0][0] if bws else None,   # as logged ('@5'), never the band's usual value
                neighbours=" ".join("%s:%g" % kv for kv in nb.items()),
-               nr_cell=nrc, nr_arfcn=next((r.get("nr_arfcn") for r in nmine if r.get("nr_arfcn")), "") or (nrc.split("/")[0] if "/" in nrc else ""),
+               nr_cell=nrc, nr_arfcn=nrc.split("/")[0],
                nr_sinr=_med(nmine, "nr_sinr"), nr_rsrp=_med(nmine, "nr_rsrp"),
                call_ok=call_ok, lat_p95=q("lat_p95"), jitter_ms=q("jitter_ms"), loss_pct=q("loss_pct"),
                down_mbps=net.get("down_mbps"))
@@ -76,16 +92,21 @@ def scan(bands, run=None):
     run = run or st.get("run") or stamp()
     try:
         for b in bands:
-            st["running"] = b; t0 = time.time()
+            st["running"] = b
             if not acs.tr069_set([(PARAM, "xsd:string", b)]):
                 record("band_scans", COLS, {"time": stamp(), "band": b, "note": "LockLTEBand=%s not accepted by the modem" % b, "run": run}); continue
-            on_band = lambda: any(brain.ts(r) >= t0 - 1 and brain.band_of((r.get("lte_cell") or "").split("/")[0]) == "B%s" % b for r in list(brain.HIST))
-            while time.time() < t0 + WAIT_S or (not on_band() and time.time() < t0 + 2 * WAIT_S): time.sleep(min(1, WAIT_S / 3))   # window, not a guess
+            history = list(brain.HIST)
+            mark = history[-1] if history else None
+            started = time.monotonic()
+            def observations():
+                return [row for row in brain.samples_since(mark) if confirmed(row, b, require_mask=True)]
+            while time.monotonic() < started + WAIT_S or (not observations() and time.monotonic() < started + 2 * WAIT_S):
+                time.sleep(min(1, WAIT_S / 3))
             net = {}
-            if TEST_S > 0:
+            if TEST_S > 0 and observations():
                 try: net = brain.internet_test(seconds=TEST_S)                 # load: the NSA 5G leg must be up for the pair + quality
                 except Exception as e: log("band scan B%s internet test failed: %r" % (b, e))
-            res = summarize(b, [r for r in list(brain.HIST) if brain.ts(r) >= t0 - 1], net=net); res.update(time=stamp(), run=run)
+            res = summarize(b, observations(), net=net); res.update(time=stamp(), run=run)
             if res.get("nr_cell") and res.get("serving"):                    # learn the pair even if the monitor missed the 5G leg
                 try:
                     brain.track({"time": res["time"], "lte_cell": res["serving"], "nr_cell": res["nr_cell"], "nr_arfcn": res["nr_arfcn"],

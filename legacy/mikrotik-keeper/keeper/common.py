@@ -218,6 +218,6 @@ def register_busy(name, check, fast=True):
     _busy[name] = (check, fast)
 
 
-def busy(fast_only=False):
+def busy(fast_only=False, exclude=None):
     """Name of a running job, or None. Jobs that reboot / re-configure the modem start only when this is None."""
-    return next((n for n, (check, fast) in _busy.items() if (fast or not fast_only) and check()), None)
+    return next((n for n, (check, fast) in _busy.items() if n != exclude and (fast or not fast_only) and check()), None)

@@ -13,7 +13,11 @@ store.add(DATA, "band_scans", {"time": ts, "band": "8", "serving": "3774/394", "
 store.add(DATA, "band_scans", {"time": ts, "band": "20", "serving": "6400/112", "nr_cell": "156510/534", "nr_arfcn": "156510",
                                "call_ok": "100.0", "loss_pct": "0.0", "lat_p95": "68.4", "jitter_ms": "28.3", "down_mbps": "8.31", "note": ""})
 common.state({"lte_lock": {"cell": "340@100", "state": "active"}, "nr_lock": {"cell": "534@636576", "state": "active"}, "dev": False})
-z = devices.current(); calls = []
+# This is the device-neutral smoke orchestration fixture. low_profile exercises the ZTE journal.
+import types
+z = types.SimpleNamespace(LOCKS_REBOOT=True)
+absmoke.devices = types.SimpleNamespace(current=lambda: z)
+calls = []
 def apply(l, n):
     calls.append((l, n))
     acs.st["boots"] += 1

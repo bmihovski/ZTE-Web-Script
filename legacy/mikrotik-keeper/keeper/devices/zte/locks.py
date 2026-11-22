@@ -99,9 +99,18 @@ def lock_lte(spec):
     return lte_lock_reboot(*guard.spec_cells(spec)[0])
 
 
-def locks_apply(lte=None, nr=None):
+def locks_apply(lte=None, nr=None, *, band=None):
     """Set the LTE and/or 5G lock (`'pci@channel'`, 'none' = remove, None = leave), then ONE reboot. TR-069 first, web fallback.
     Only `lte` (nr None) is the LTE lock test / the night restore; both legs go in one SetParameterValues, so one reboot carries them."""
+    from keeper.devices.zte import profile
+    derived = profile.low_band(lte)
+    if band is not None and str(band) != derived:
+        raise ValueError("LTE band restriction conflicts with cell EARFCN")
+    saved = state()
+    if saved.get("profile_rollback"):
+        raise RuntimeError("radio profile recovery pending")
+    if derived or saved.get("lte_prior_band") or saved.get("profile_restore"):
+        return profile.apply(lte, nr)
     if lte is None and nr is None: return None
     if nr is None: return lock_lte(lte)                  # LTE only (lock tests, night restore)
     pairs, fmt = [], None
@@ -142,3 +151,5 @@ def on_values(vals):
     """Remember the lock values of this read (for the guard, the format learning and /status)."""
     seen["lock_val"] = vals.get(LOCK_PARAM)
     seen["raw"] = {k: vals.get(CI + k) for k in ("LockLTECell", "LockNr5gCell", "LockLTEBand", "LockNr5gNSABand")}
+    from keeper.devices.zte import profile
+    profile.observed(vals)

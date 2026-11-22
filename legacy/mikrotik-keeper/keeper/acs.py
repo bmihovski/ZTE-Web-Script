@@ -67,7 +67,11 @@ def text(el, name):
 
 
 def gpv(names):
-    """GetParameterValues body."""
+    """Request each name once. An existing subtree already includes its descendants."""
+    names = list(dict.fromkeys(names))
+    subtrees = tuple(name for name in names if name.endswith("."))
+    names = [name for name in names
+             if not any(name != subtree and name.startswith(subtree) for subtree in subtrees)]
     return ('<cwmp:GetParameterValues><ParameterNames soap-enc:arrayType="xsd:string[%d]">%s</ParameterNames></cwmp:GetParameterValues>'
             % (len(names), "".join("<string>%s</string>" % esc(n) for n in names)))
 
@@ -95,16 +99,30 @@ OFFLINE_S = 150.0        # no inform this long: the modem is offline (e.g. locke
 OFFLINE_WAIT_S = 20.0    # ... so wait only this long before the caller's fallback (the web page over the LAN), not 180 s (2026-11-21)
 
 
-def tr069_set(pairs, reboot=False, timeout=180):    # after a refusal: tr["refused"] = [(name, code, why)] from the modem's fault
+write_lock = threading.Lock()
+write_receipt = threading.local()
+
+
+def tr069_set(pairs, reboot=False, timeout=180):
+    with write_lock:
+        result = _queue_set(pairs, reboot, timeout)
+        write_receipt.boots = tr.get("ack_boots") if result else None
+        return result
+
+
+def _queue_set(pairs, reboot, timeout):    # after a refusal: tr["refused"] = [(name, code, why)] from the modem's fault
     """Queue SetParameterValues for the next session and wait for the answer (fast mode makes that <= ~10 s).
     reboot=True: a TR-069 Reboot follows in the same session once the values are accepted. True when the modem accepted them."""
-    tr["ev"].clear(); tr["ok"] = None; tr["refused"] = []
-    if reboot: brain.ctx["pending"] = "reboot"
-    tr["writes"] = list(pairs)
+    with lock:
+        tr["ev"].clear(); tr["ok"] = None; tr["refused"] = []
+        tr["write_reboot"] = reboot
+        tr["writes"] = list(pairs)
     if st["last_inform"] and time.monotonic() - st["last_inform"] > OFFLINE_S: timeout = min(timeout, OFFLINE_WAIT_S)
     if not tr["ev"].wait(timeout):
-        tr["writes"] = []; brain.ctx["pending"] = None if reboot else brain.ctx.get("pending")
-        return False
+        with lock:
+            if not tr["ev"].is_set():
+                tr.update(writes=[], sent=[], write_reboot=False)
+                return False
     return bool(tr["ok"])
 
 
@@ -187,7 +205,10 @@ def handle(body):
         dev.on_rpc(kind, msg, st["step"])
         return reboot_if_pending()
     if kind == "SetParameterValuesResponse":
-        if tr["sent"]: tr["ok"] = True; tr["sent"] = []; tr["ev"].set()
+        if tr["sent"]:
+            tr["ack_boots"] = st["boots"]
+            if tr.pop("write_reboot", False): brain.ctx["pending"] = "reboot"
+            tr["ok"] = True; tr["sent"] = []; tr["ev"].set()
         return reboot_if_pending()
     if kind == "RebootResponse":
         log("reboot accepted by the %s" % dev.NAME); event({"event": "reboot sent"})
@@ -278,7 +299,9 @@ def watchdog():
         try:
             brain.note_health()
             dev = devices.current()
-            if not guard.offline_release(quiet) and not guard.lte_held() and not common.busy() and hasattr(dev, "offline_health"):
+            if hasattr(dev, "profile") and dev.profile.pending():
+                dev.profile.recover()
+            elif not guard.offline_release(quiet) and not guard.lte_held() and not common.busy() and hasattr(dev, "offline_health"):
                 brain.offline_decide(quiet, dev.offline_health, dev.offline_reboot, getattr(dev, "offline_ps", None))     # no lock: reboot only on the modem's evidence, a PS reconnect first
         except Exception as e: log("offline check failed: %r" % e)
         warned = silence(quiet, warned, common.busy())

@@ -7,7 +7,7 @@ const vars = re => eval(src.match(re)[0].replace(/var /g, 'global.'));
 vars(/var NGBR_COLUMNS[\s\S]*?\]\];\n/); vars(/var LTE_BANDS[\s\S]*?\]\];\nvar NR_BANDS[\s\S]*?\]\];/);
 vars(/var ALIGN_METRICS = \[[\s\S]*?\n\];/); vars(/var EXP_COLS[^\n]*\n/); vars(/var EXP_FIELDS[\s\S]*?\]\];/); vars(/var TONE_TARGET[^\n]*\n/); vars(/var TONE_RES[^\n]*\n/);
 global.TONE_AVG_MS = 1500; global.TOOLS_AVG_MS = 3000; global.TOOLS_HISTORY_MS = 300000;
-for (const f of ['esc_html', 'exp_serving', 'exp_arm', 'exp_tick', 'exp_finish', 'exp_render', 'ngbr_num', 'ngbr_sort_value', 'ngbr_cmp', 'arfcn_to_band', 'sinr_or_unknown', 'connected_cells', 'render_ngbr_cells',
+for (const f of ['esc_html', 'lte_serving_earfcn', 'exp_serving', 'exp_arm', 'exp_tick', 'exp_finish', 'exp_render', 'ngbr_num', 'ngbr_sort_value', 'ngbr_cmp', 'arfcn_to_band', 'sinr_or_unknown', 'connected_cells', 'render_ngbr_cells',
                  'tools_avg', 'tools_num', 'tools_render', 'sparkline', 'branch_warning', 'records_table', 'tone_range', 'tone_level', 'tone_voice'])
   eval('global.' + f + '=' + grab(f).replace('function ' + f, 'function'));
 let html = {}; global.$ = sel => ({ html(v) { html[sel] = v; }, length: 1 });
@@ -105,6 +105,32 @@ t('learned cell id: ping-pong does not save the lagging id', () => {
   for (let i = 0; i < 3; i++) { visit('154', '100'); visit('70', '100'); }
   assert(cell_ids['lte:3350:112'] === undefined, JSON.stringify(cell_ids));
   visit('70', '200'); visit('70', '200'); visit('70', '200'); assert.strictEqual(cell_ids['lte:3350:112'], 200); lte_pci = '154'; cell_id = '318269'; });
+t('B8 transition never learns or offers EARFCN 0 for PCI 112', () => {
+  const keys = ['ngbr_seen', 'ngbr_hist', 'cell_ids', 'cell_id_streak', 'lte_ca_pcell_freq',
+    'wan_active_channel', 'lte_pci', 'lte_band', 'wan_active_band', 'lte_ca_pcell_band', 'lte_multi_ca_scell_info', 'cell_id'];
+  const saved = Object.fromEntries(keys.map(k => [k, global[k]]));
+  try {
+    Object.assign(global, { ngbr_seen: {}, ngbr_hist: {}, cell_ids: {}, cell_id_streak: {},
+      lte_ca_pcell_freq: '0', wan_active_channel: '3774', lte_pci: '70',
+      lte_band: '8', wan_active_band: '8', lte_ca_pcell_band: '8', lte_multi_ca_scell_info: '1,112,1,8,0,5.0;', cell_id: '406877' });
+    let h;
+    for (let i = 0; i < 3; i++) h = render_ngbr_cells('0,112,-15,-79,-50;3350,112,-16,-89,-54');
+    assert(!h.includes("<td>0</td><td>112</td>"), h);
+    assert(!cell_ids['lte:0:112'], JSON.stringify(cell_ids));
+    assert.strictEqual(cell_ids['lte:3774:112'], 406877);
+    assert(h.includes('<td>3350</td><td>112</td>'));
+    assert.strictEqual(connected_cells()[0].arfcn, '3774');
+    assert.strictEqual(exp_serving({lte_ca_pcell_freq:'0', wan_active_channel:'3774', lte_pci:'70', lte_band:'8'}, false), '3774:112');
+    lte_ca_pcell_freq = '3350';
+    assert.strictEqual(connected_cells()[0].arfcn, '3774');
+    wan_active_channel = '0'; lte_ca_pcell_freq = '0';
+    assert(!connected_cells().some(c => !c.nr && c.arfcn === '0'));
+    lte_band = '1'; lte_ca_pcell_band = '1'; wan_active_band = 'B1';
+    assert.strictEqual(connected_cells()[0].arfcn, '0');
+  } finally {
+    Object.assign(global, saved);
+  }
+});
 t('alignment table survives missing base/peak after reset', () => { tools.hist = { nr_sinr: [{ t: Date.now(), v: 5 }] }; tools.base = {}; tools.peak = {}; tools_render(); });
 t('labels are escaped', () => { const h = records_table([{ time: 't', label: '<b>x', lte_rsrp: -90 }], ['lte_rsrp'], 'd'); assert(h.includes('&lt;b&gt;x') && !h.includes('<b>x')); });
 t('lock experiment: delay, lost target waits, completes after 60 s', () => {

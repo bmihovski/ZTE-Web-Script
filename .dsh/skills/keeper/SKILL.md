@@ -36,6 +36,16 @@ the docstrings and this skill in sync.
   baseline pins the best anchor across the tested cells, and a clear winning row auto-applies the 5G cell **and** its anchor
   (`anchor=` overrides the mapping for every cell).
 
+- Explicit ZTE B8/B20 cell locks restrict LTE to that EARFCN's band until replacement or release. The keeper saves the
+  previous LTE band list and journals temporary band/cell settings for Stop and restart. Use
+  `POST /morning?apply=0&cell=394@3774&nr=534@156510` for a quiet, restore-only comparison. Inspect the radio observations
+  for both transfer windows and the final lock readback before interpreting loaded quality. A low-band wake timeout reports
+  LTE attachment separately from n28 pairing.
+
+- ZTE band discovery uses fresh observations with the requested band readback and matching serving EARFCN. If the reported
+  primary CA cell disagrees with the serving cell, skip the observation. Neighbours and pair evidence stay keyed by full PCI
+  and EARFCN, so PCI 112 at 3350 and 3774 stays distinct. On-demand TR-069 reads reuse values covered by a regular subtree request.
+
 ## Workflow
 
 1. Add/extend a scenario first (fail it), then the code. If the scenario **patches** a function, also call the real body somewhere —
@@ -92,9 +102,11 @@ the docstrings and this skill in sync.
   Other neighbours rank by RSRP. Only probe another backup when the previous one cannot measure with 5G. The first working backup
   fills the band's second slot. A locked cell has a 90 s web/online budget and a 90 s 5G wake budget. Two reachability failures in
   seven days suppress that exact LTE lock in morning discovery. A successful measurement clears the persisted per-device streak.
-  Cell locks preserve CA. Discover B20/B8 on Saturday or when the unlocked screen is poor or unavailable, and use the fallback
+  High-band cell locks allow CA. Discover B20/B8 on Saturday or when the unlocked screen is poor or unavailable, and use the fallback
   when every high screen is poor. Low tests allow the natural n28 pairing. `POST /morning?apply=0&low=1` compares all bands under
   full down/up load, records observed radio paths and scores in `/morning` → `trial`, and restores the keeper-managed locks.
+  Each ZTE comparison transfer spans two fast informs plus five seconds at minimum. Inspect `trial.coverage` for missing
+  bands. A failed configuration change with rollback pending ends the comparison and restores the starting profile.
 - **Capacity test traffic guard:** the modem's iperf bypasses the router's WAN port. Defer scheduled runs when that port already
   carries traffic above the idle limits. The in-transfer guard discards a contaminated capacity result or a loaded lock-test
   leg. `/captest` records the latest skipped capacity test under `traffic_skip`. A morning comparison can retry once on the same

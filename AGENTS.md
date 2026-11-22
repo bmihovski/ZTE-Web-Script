@@ -88,10 +88,21 @@ Durable project memory. Read this first; the details live in the keeper docs.
 - **Morning fallback and comparison:** failure of the unlocked screen can open B20/B8 discovery. A healthy high-band leg
   suppresses the automatic low test. Use `POST /morning?apply=0&low=1` for fresh loaded comparisons with managed locks restored
   and the separate result at `/morning` → `trial`.
+  Check `trial.coverage` for missing bands. ZTE comparison transfers span at least two fast informs plus five seconds, and
+  a lock change with rollback pending ends the run so the starting configuration can be restored.
 - **Local traffic during modem speed tests:** scheduled tests wait for quiet. RouterOS WAN traffic above the idle limits during
   transfers invalidates capacity samples and loaded lock-test measurements. An invalid sample cannot move the learned ceiling.
 - **Morning discovery and isolation:** neighbours need two fresh usable RSRP readings in the selected band before a lock attempt.
   Morning and capacity tests reserve the modem under the same start lock so their background jobs cannot overlap.
+
+- Explicit ZTE B8/B20 cell locks restrict LTE to that EARFCN's band until replacement or release. The keeper saves the
+  previous LTE band list and journals temporary band/cell settings for Stop and restart. Use
+  `POST /morning?apply=0&cell=394@3774&nr=534@156510` for a quiet, restore-only comparison. Inspect the radio observations
+  for both transfer windows and the final lock readback before interpreting loaded quality.
+
+- ZTE band discovery uses fresh observations with the requested band readback and matching serving EARFCN. If the reported
+  primary CA cell disagrees with the serving cell, skip the observation. Neighbours and pair evidence stay keyed by full PCI
+  and EARFCN, so PCI 112 at 3350 and 3774 stays distinct. On-demand TR-069 reads reuse values covered by a regular subtree request.
 
 ## Workflow
 

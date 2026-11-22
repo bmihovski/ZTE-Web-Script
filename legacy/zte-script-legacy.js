@@ -7,7 +7,7 @@
  * 
  */
 
-console.log("Loading ZTE Script v" + "2026-11-22-#34");
+console.log("Loading ZTE Script v" + "2026-11-22-#35");
 
 siginfo =
     "wan_active_band,wan_active_channel,wan_lte_ca,wan_apn,wan_ipaddr," +
@@ -657,6 +657,26 @@ class LteCaCellInfo
     }
 }
 
+function lte_serving_earfcn(a)
+{
+    var primary = String(a.lte_ca_pcell_freq ?? "").trim();
+    var active = String(a.wan_active_channel ?? "").trim();
+    var reportedBand = [a.lte_band, a.wan_active_band, a.lte_ca_pcell_band]
+        .map(value => String(value || "").trim().match(/^(?:LTE\s*)?(?:B(?:AND)?\s*)?(\d+)$/i))
+        .find(match => match && Number(match[1]) > 0);
+    var band = reportedBand ? "B" + Number(reportedBand[1]) : "";
+
+    // During band selection the modem can return "0" in one slot with the previous PCI.
+    // EARFCN 0 is usable when both channel fields and the reported B1 agree.
+    if (primary === "0" && active === "0") return band === "B1" ? "0" : "";
+    var usable = new Set([primary, active].filter(channel => {
+        if (!/^\d+$/.test(channel) || Number(channel) === 0) return false;
+        var mapped = arfcn_to_band(channel, false);
+        return !band || mapped === "?" || mapped === band;
+    }));
+    return usable.size === 1 ? usable.values().next().value : "";
+}
+
 function parse_lte_cell_info()
 {
     //Object { lte_multi_ca_scell_sig_info: "-44.0,-3.0,19.5,0,2;", lte_multi_ca_scell_info: "1,XX,2,3,1525,15.0" }
@@ -687,10 +707,12 @@ function parse_lte_cell_info()
     if (lte_main_band == "")
         lte_main_band = "??";
 
+    var servingChannel = lte_serving_earfcn(globalThis);
+    var mappedBand = arfcn_to_band(servingChannel, false);
     lte_cells.push(new LteCaCellInfo(
         parseInt(lte_pci, 16),
-        "B" + lte_main_band,
-        lte_ca_pcell_freq == "" ? wan_active_channel : lte_ca_pcell_freq,
+        mappedBand === "?" ? "B" + lte_main_band : mappedBand,
+        servingChannel,
         (lte_ca_pcell_bandwidth != "" ? lte_ca_pcell_bandwidth : bandwidth).replace("MHz", "").replace(".0", ""),
         lte_rssi,
         lte_rsrp_1,
@@ -718,7 +740,7 @@ function parse_lte_cell_info()
         var have_scell_sig_info = scell_sig_infos.length > i;
         var scell_sig_info = have_scell_sig_info ? scell_sig_infos[i].split(",") : undefined;
 
-        if (scell_info.length < 6)
+        if (scell_info.length < 6 || Number(scell_info[4]) === 0)
             continue;
 
         if (have_scell_sig_info && scell_sig_info.length < 3)
@@ -993,14 +1015,15 @@ function sinr_or_unknown(v, scell = false)
 function connected_cells()
 {
     var cells = [];
-    if (is_lte && wan_active_channel && !isNaN(parseInt(lte_pci, 16)))
-        cells.push({ nr: false, arfcn: lte_ca_pcell_freq || wan_active_channel, pci: String(parseInt(lte_pci, 16)),
+    var servingChannel = lte_serving_earfcn(globalThis);
+    if (is_lte && servingChannel && !isNaN(parseInt(lte_pci, 16)))
+        cells.push({ nr: false, arfcn: servingChannel, pci: String(parseInt(lte_pci, 16)),
                      rsrp: lte_rsrp, rsrq: lte_rsrq, sinr: lte_snr, rssi: lte_rssi });
 
     var sig = (lte_multi_ca_scell_sig_info || "").split(";").filter(Boolean);
     (lte_multi_ca_scell_info || "").split(";").filter(Boolean).forEach(function(info, i) {
         var d = info.split(","), g = (sig[i] || "").split(",");  // d: idx,pci,?,band,earfcn,bw  g: rsrp,rsrq,sinr,rssi
-        if (d.length < 5) return;
+        if (d.length < 5 || Number(d[4]) === 0) return;
         cells.push({ nr: false, arfcn: d[4], pci: d[1], rsrp: g[0] == "-44.0" ? "" : (g[0] || ""), rsrq: g[1] || "",
                      sinr: g[2] || "", rssi: g[3] || "" });
     });
@@ -1030,7 +1053,8 @@ function render_ngbr_cells(raw)
     var refresh = raw !== null;
     (raw || "").split(";").forEach(function(cell) {
         var p = cell.split(",").map(function(x) { return x.trim(); });
-        if (p.length < 4 || p[0] === "") return;
+        // Neighbour entries lack independent band evidence for an EARFCN of zero.
+        if (p.length < 4 || !/^\d+$/.test(p[0]) || !/^\d+$/.test(p[1]) || Number(p[0]) === 0) return;
         // ponytail: NR = ARFCN above LTE range; never seen in NSA, kept in case firmware adds it
         var nr = parseInt(p[0]) > 65535;
         ngbr_seen[(nr ? "nr" : "lte") + ":" + p[0] + ":" + p[1]] = {
@@ -1058,14 +1082,14 @@ function render_ngbr_cells(raw)
         var d = c.split(",");
         if (d.length >= 5) nr_ca[d[4] + ":" + d[1]] = true;
     });
-    var lte_serving = (lte_ca_pcell_freq || wan_active_channel) + ":" + parseInt(lte_pci, 16);
+    var lte_serving = exp_serving(globalThis, false);
     var nr_serving = nr5g_action_channel + ":" + parseInt(nr5g_pci, 16);
 
     // learn cell id of the cell we are actually connected to (get_status already made cell_id decimal)
     if (refresh)
     {
         var learned = false;
-        [["lte", "lte:" + lte_serving, is_lte ? cell_id : ""], ["nr", "nr:" + nr_serving, is_5g ? nr5g_cell_id : ""]].forEach(function(y) {
+        [["lte", "lte:" + lte_serving, is_lte && lte_serving ? cell_id : ""], ["nr", "nr:" + nr_serving, is_5g ? nr5g_cell_id : ""]].forEach(function(y) {
             var id = parseInt(y[2]), prev = cell_id_streak[y[0]], x = [y[1]];
             if (isNaN(id) || /NaN/.test(y[1])) { delete cell_id_streak[y[0]]; return; }
             var st = cell_id_streak[y[0]] = (prev && prev.key == y[1] && prev.id == id) ? { key: y[1], id: id, n: prev.n + 1 } : { key: y[1], id: id, n: 1 };
@@ -1178,7 +1202,7 @@ function load_device_extras()
 var TOOLS_HISTORY_MS = 5 * 60 * 1000;    // sparkline window
 var TOOLS_AVG_MS = 3000;                 // smoothing window for "now" (router values jump)
 var ALIGN_CMD = "Z5g_rsrp,Z5g_rsrq,Z5g_SINR,Z5g_rssi,5g_rx0_rsrp,5g_rx1_rsrp,lte_rsrp,lte_rsrq,lte_snr,lte_rssi,lte_rsrp_1,lte_rsrp_2,lte_rsrp_3,lte_rsrp_4," +
-                "network_type,wan_active_channel,lte_ca_pcell_freq,lte_pci,nr5g_action_channel,nr5g_pci,realtime_rx_thrpt,realtime_tx_thrpt,signal_quality";
+                "network_type,wan_active_channel,wan_active_band,lte_band,lte_ca_pcell_band,lte_ca_pcell_freq,lte_pci,nr5g_action_channel,nr5g_pci,realtime_rx_thrpt,realtime_tx_thrpt,signal_quality";
 // [key, router field, label, unit, "n" = neutral: higher is not automatically better]
 var ALIGN_METRICS = [
     ["quality", "signal_quality", "ZTE quality (0-4)", "/4"],
@@ -1747,8 +1771,10 @@ var exp_run = null;
 
 function exp_serving(a, nr)
 {
-    return nr ? a.nr5g_action_channel + ":" + parseInt(a.nr5g_pci, 16)
-              : (a.lte_ca_pcell_freq || a.wan_active_channel) + ":" + parseInt(a.lte_pci, 16);
+    if (nr) return a.nr5g_action_channel + ":" + parseInt(a.nr5g_pci, 16);
+    var channel = lte_serving_earfcn(a);
+    var pci = parseInt(a.lte_pci, 16);
+    return channel && !isNaN(pci) ? channel + ":" + pci : "";
 }
 
 // delay_ms: ignore readings for this long (lets the reboot take the old connection down first)
@@ -1760,10 +1786,12 @@ function exp_arm(nr, arfcn, pci, label, delay_ms)
 
 function exp_measure_now()
 {
-    if (!is_lte || isNaN(parseInt(lte_pci, 16)) || !(lte_ca_pcell_freq || wan_active_channel)) { alert("No LTE serving cell reported right now."); return; }
-    var label = prompt("Label for this measurement", "LTE PCI " + parseInt(lte_pci, 16) + " @ " + (lte_ca_pcell_freq || wan_active_channel));
+    var serving = exp_serving(globalThis, false);
+    if (!is_lte || !serving) { alert("No LTE serving cell reported right now."); return; }
+    var [channel, pci] = serving.split(":");
+    var label = prompt("Label for this measurement", "LTE PCI " + pci + " @ " + channel);
     if (label === null) return;
-    exp_arm(false, lte_ca_pcell_freq || wan_active_channel, parseInt(lte_pci, 16), label);
+    exp_arm(false, channel, pci, label);
 }
 
 function exp_tick(a, now)
@@ -1896,7 +1924,7 @@ function ant_record(c, samples, metric)
         return u.join(" > ");
     };
     rec.nr_cell = cells(function(a) { var p = parseInt(a.nr5g_pci, 16); return a.nr5g_action_channel && !isNaN(p) ? a.nr5g_action_channel + "/" + p : ""; });
-    rec.lte_cell = cells(function(a) { var p = parseInt(a.lte_pci, 16); var f = a.lte_ca_pcell_freq || a.wan_active_channel; return f && !isNaN(p) ? f + "/" + p : ""; });
+    rec.lte_cell = cells(function(a) { return exp_serving(a, false).replace(":", "/"); });
     rec.score = ant_score(rec, metric);
     return rec;
 }
@@ -2705,7 +2733,8 @@ function lte_cell_lock(reset = false, preset = null) {
     if (reset) {
         lockParameters = ["0", "0"];
     } else {
-        var defaultPciEarfcn = parseInt(lte_pci, 16) + "," + (lte_ca_pcell_freq || wan_active_channel);
+        var serving = exp_serving(globalThis, false);
+        var defaultPciEarfcn = serving ? serving.split(":").reverse().join(",") : "";
         var cellLockDetails = preset
             ? (confirm("Lock LTE to PCI " + preset.split(",")[0] + " on EARFCN " + preset.split(",")[1] + "?") ? preset : null)
             : prompt("Please input PCI,EARFCN, separated by ',' char (example 116,3350). "+ 

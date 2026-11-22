@@ -222,7 +222,13 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
         " (LTE anchor %s)" % (pin or "per 5G cell, baseline %s" % base_pin if rat == "nr" else pin) if rat == "nr" else "",
         " at heading %s" % heading if rat == "nr" and heading and not align else "", ", ".join(plan),
         len(plan) * (LT_MEASURE_MIN + LT_SETTLE_S / 60 + 2)))
+    profile = getattr(dev, "profile", None)
+    scope = None
+    needs_scope = profile and (state().get("lte_prior_band") or profile.low_band((state().get("lte_lock") or {}).get("cell")) or any(profile.low_band(c) for c in
+                               (plan if rat == "lte" else pins.values())))
     try:
+        if needs_scope:
+            scope = profile.begin_scope("lock_test")
         for lock in plan:
             if deadline and lt["done"] and time.time() + step_s() > deadline:   # it would not finish before the window ends: stop here
                 res = lt_eval(lock, [], "not tested: the night window ends at %s" % time.strftime("%H:%M", time.localtime(deadline)), rat)
@@ -241,8 +247,8 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
             phase("%s: setting the lock%s" % (lock, ", rebooting (~2 min)" if dev.LOCKS_REBOOT else " (script, ~1 min)"))
             try:
                 try:
-                    if rat == "nr": dev.locks_apply(step_pin, lock)   # ONE change: the pinned anchor + the 5G cell (one reboot on the ZTE)
-                    else: dev.locks_apply(lock, "none" if night and nr_mine else None)   # night: 5G free - the anchor's own pairing
+                    if rat == "nr": method = dev.locks_apply(step_pin, lock)   # ONE change: the pinned anchor + the 5G cell (one reboot on the ZTE)
+                    else: method = dev.locks_apply(lock, "none" if night and nr_mine else None)   # night: 5G free - the anchor's own pairing
                     # (2026-11-18: the B20 night run kept the 5G lock on 534/n78 -> every step "no5G": our lock, not the network)
                 except RuntimeError as e:              # refused: record it, go on with the next one
                     res = lt_eval(lock, [], "lock not set: %s" % e, rat, pin=step_pin)
@@ -251,7 +257,7 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
                     event({"event": "lock test %s" % lock, "to": "not set", "why": str(e)}); log("lock test %s: %s" % (lock, e))
                     continue
                 boot_s = None
-                if dev.LOCKS_REBOOT:
+                if dev.LOCKS_REBOOT and method != "unchanged":
                     t0 = time.monotonic()
                     while acs.st["boots"] == boots and time.monotonic() - t0 < LT_BOOT_WAIT_S and not lt["cut"]: time.sleep(2)
                     note = "" if acs.st["boots"] > boots else "no boot inform within %d s" % LT_BOOT_WAIT_S
@@ -324,20 +330,32 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
                     lt["iperf"] = True                                # the test's own traffic (raise + load): never a call-risk alarm
                     h0 = list(brain.HIST); mark = h0[-1] if h0 else None    # the last sample before the raise
                     load_windows = []
+                    verify_load = bool(scope)
                     try:
                         if LT_RAISE_S > 0:
                             try: brain.internet_test(seconds=LT_RAISE_S)   # download-only: the 5G leg attaches if the anchor carries it
                             except Exception as e: log("lock test %s: raise download failed: %r" % (lock, e))
                         t_load = time.time()
                         try:
-                            if lte_loaded:
+                            if lte_loaded or verify_load:
                                 dn, up, how = captest.measure(load_windows=load_windows)
                             else:
                                 dn, up, how = captest.measure()
                             log("lock test %s: loaded iperf3 down %s / up %s Mbit/s (%s)" % (lock, dn, up, how))
                         except Exception as e: log("lock test %s: iperf3 failed: %r" % (lock, e))
                     finally: lt["iperf"] = False; lt["iperf_end"] = time.monotonic()
-                    if lte_loaded:
+                    if lte_loaded or verify_load:
+                        if verify_load:
+                            target = profile.snapshot()["raw"]
+                            requested_nr = lock if rat == "nr" else profile.spec(target[profile.NR])
+                            proof = profile.transfer_evidence(load_windows, target, step_pin if rat == "nr" else lock, requested_nr)
+                            if len(load_windows) != 2 or not proof["verified"]:
+                                note = "; ".join(x for x in (note, "unverified serving pair during transfers") if x)
+                                res = lt_eval(lock, [], note, rat, ant, step_pin, a5, a6)
+                                res.update(mode=step_mode(night, align, heading, rat), run=lt["run"])
+                                record("lock_tests", LT_COLS, res)
+                                lt["done"].append(res)
+                                continue
                         if len(load_windows) == 2:
                             loaded = brain.probe_windows(load_windows, min_points=2)
                         loaded["load_s"] = round(sum(end - start for start, end in load_windows), 1) if load_windows else ""
@@ -388,8 +406,13 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
         w = state().get("lte_lock") or {}
         back = w["cell"] if night and w.get("state") == "active" else None       # night: put the guard's lock straight back (one reboot)
         nr_back = nr_mine if night and rat != "nr" else None                    # ... and your 5G lock with it (the steps freed 5G)
+        scope_complete = False
         try:
-            if rat == "nr":
+            if needs_scope:
+                if scope:
+                    profile.finish_scope()
+                    scope_complete = len(lt["done"]) == len(plan) and not lt["cut"]
+            elif rat == "nr":
                 dev.locks_apply("none", "none"); log("lock test: LTE anchor and 5G lock removed%s" % (", rebooting" if dev.LOCKS_REBOOT else ""))
             else:
                 dev.locks_apply(back or "none", nr_back); log("lock test: %s%s, rebooting" % ("LTE lock %s put back" % back if back else "LTE lock removed",
@@ -466,7 +489,7 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
                         if failed: lines.append("  not ranked (not seen / off target): " +
                                                 ", ".join(f + anchor_hint(f, _pin(f)) + _cross(f) for f in failed))
                         applied = None; anchored = None
-                        if gain and fresh and brain.AUTO == "on" and best["lock"] != cur:
+                        if gain and fresh and brain.AUTO == "on" and best["lock"] != cur and (not needs_scope or scope_complete):
                             try:
                                 guard.lock_request(best["lock"], "nr"); applied = best["lock"]
                                 want = (best.get("pin") or "").strip()   # the winning PAIR: the 5G cell and the LTE anchor that serves it
@@ -516,7 +539,7 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
                     except (ValueError, TypeError): fresh = False
                     lines = ["%s daytime lock test" % common.device_name(), "* best " + dd(best)] + (["  unlocked baseline: " + dd(base).split(": ", 1)[1]] if base else [])
                     applied = None
-                    if gain and fresh and brain.AUTO == "on" and best["lock"] != cur:
+                    if gain and fresh and brain.AUTO == "on" and best["lock"] != cur and (not needs_scope or scope_complete):
                         try: guard.lock_request(best["lock"]); applied = best["lock"]
                         except Exception as e: lines.append("auto-apply failed: %r" % e)
                     if applied: lines.append("-> AUTO-APPLIED %s (beats the unlocked baseline under load)" % applied)
@@ -528,7 +551,7 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
             log("lock test report/auto-apply failed: %r - locks are reset, the guard re-locks" % e)
         for key in guard.KEYS.values():
             w = state().get(key)
-            if w and w.get("state") == "active" and not (key == "lte_lock" and back): state({key: dict(w, state="pending")})   # guard re-locks when idle
+            if not needs_scope and w and w.get("state") == "active" and not (key == "lte_lock" and back): state({key: dict(w, state="pending")})   # guard re-locks when idle
 
 
 def start(cells, align=False, rat="lte", anchor=None, heading="", night=False):

@@ -7,7 +7,7 @@ DATA = "/tmp/zte-keeper-test-tr"; shutil.rmtree(DATA, ignore_errors=True); os.ma
 os.environ.update(NIGHT_SCREEN="off", SWEEP_DAYS="0", DATA=DATA, ZTE_HOST="127.0.0.1:18150", ZTE_PASS_HASH=m.S(m.PW))
 sys.path.insert(0, ROOT)
 from keeper import acs, api, brain, common, guard, locktest, monitor, store; from keeper.devices import zte as zdev; from keeper.devices.zte import antennas, locks as zlocks
-zte = {"lock": "", "reflect": True, "reboots": 0, "intervals": [], "refuse": "999"}
+zte = {"band": "1,3,8,20", "boot_due": False, "lock": "", "reflect": True, "reboots": 0, "intervals": [], "refuse": "999"}
 def web_lock():                           # what the web page's LTE_LOCK_CELL_SET stored, as the ZTE shows it over TR-069
     s = [x[3] for x in m.st["sets"] if x[1] == "LTE_LOCK_CELL_SET"]
     return None if not s else ("" if s[-1] == "0@0" else s[-1].replace("@", ","))
@@ -16,12 +16,13 @@ ENV = '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" xmlns:cwm
 def session():
     n = len([x for x in m.st["sets"] if x[1] == "LTE_LOCK_CELL_SET"])
     if n != seen_web[0] and zte["reflect"]: seen_web[0] = n; zte["lock"] = web_lock()
+    evt = "1 BOOT" if zte.pop("boot_due", False) else "2 PERIODIC"
     with acs.lock:
-        acs.handle(ENV % ("<cwmp:Inform><Event><EventStruct><EventCode>2 PERIODIC</EventCode></EventStruct></Event><CurrentTime>" + time.strftime("%Y-%m-%dT%H:%M:%S-02:00") + "</CurrentTime><ParameterList/></cwmp:Inform>"))
-        acs.handle("")
+        acs.handle(ENV % ("<cwmp:Inform><Event><EventStruct><EventCode>" + evt + "</EventCode></EventStruct></Event><CurrentTime>" + time.strftime("%Y-%m-%dT%H:%M:%S-02:00") + "</CurrentTime><ParameterList/></cwmp:Inform>"))
+        zte["get_params"], _ = acs.handle("")
         r, _ = acs.handle(ENV % ("<cwmp:GetParameterValuesResponse><ParameterList>%s</ParameterList></cwmp:GetParameterValuesResponse>" % "".join(
             "<ParameterValueStruct><Name>%s</Name><Value>%s</Value></ParameterValueStruct>" % kv for kv in [
-                (zlocks.LOCK_PARAM, zte["lock"]), ("Device.ManagementServer.PeriodicInformInterval", zte["intervals"][-1] if zte["intervals"] else "60"),
+                (zlocks.LOCK_PARAM, zte["lock"]), (zlocks.NR_PARAM, zte.get("nr", "")), (zlocks.CI + "LockLTEBand", zte["band"]), ("Device.ManagementServer.PeriodicInformInterval", zte["intervals"][-1] if zte["intervals"] else "60"),
                 ("Device.ManagementServer.PeriodicInformEnable", "1"), ("Device.ManagementServer.UpgradesManaged", "1"), ("Device.DeviceInfo.UpTime", "9000")])))
         while r:
             if "SetParameterValues" in r:
@@ -29,10 +30,14 @@ def session():
                 if zte["refuse"] in vals.get(zlocks.LOCK_PARAM, "x"):
                     r, _ = acs.handle(ENV % "<s:Fault><detail><cwmp:Fault><FaultCode>9007</FaultCode><FaultString>Invalid parameter value</FaultString></cwmp:Fault></detail></s:Fault>"); continue
                 if zlocks.LOCK_PARAM in vals: zte["lock"] = vals[zlocks.LOCK_PARAM]
+                if zlocks.CI + "LockLTEBand" in vals:
+                    zte["band"] = vals[zlocks.CI + "LockLTEBand"]
+                    zte["group"] = vals
                 if zlocks.NR_PARAM in vals: zte["nr"] = vals[zlocks.NR_PARAM]
                 if "Device.ManagementServer.PeriodicInformInterval" in vals: zte["intervals"].append(vals["Device.ManagementServer.PeriodicInformInterval"])
                 r, _ = acs.handle(ENV % "<cwmp:SetParameterValuesResponse><Status>1</Status></cwmp:SetParameterValuesResponse>")
             elif "<cwmp:Reboot>" in r:
+                if zte.get("profile_test"): zte["boot_due"] = True
                 zte["reboots"] += 1; r, _ = acs.handle(ENV % "<cwmp:RebootResponse/>")
             else: break
 stop = threading.Event()
@@ -49,6 +54,13 @@ assert "10" in zte["intervals"]                                         # fast m
 time.sleep(0.5); assert zte["intervals"][-1] == "60"                    # ... and back afterwards
 assert common.state().get("lock_test") is None
 assert api.config()["zte_locks_raw"]["LockLTECell"] == "340,1550" and api.config()["lte_lock_fmt"]["lock"] == "{pci},{earfcn}"
+# An on-demand subtree read piggybacks on the regular read without asking the
+# modem for the same subtree or a covered parameter twice.
+for path in (zlocks.CI, zlocks.LOCK_PARAM):
+    got = acs.adhoc_read(path, timeout=2)
+    assert got[zlocks.LOCK_PARAM] == "340,1550", got
+    assert zte["get_params"].count("<string>%s</string>" % zlocks.CI) == 1, zte["get_params"]
+    assert "<string>%s</string>" % zlocks.LOCK_PARAM not in zte["get_params"], zte["get_params"]
 # unlock over TR-069
 assert zlocks.lte_lock_reboot(0, 0) == "tr069" and zte["lock"] == "0,0" and zte["reboots"] == 2 and web_sets() == ["434@1550", "0@0"]   # clear writes 0,0 over TR-069 (not an empty string -> no web fallback)
 # LTE + 5G lock in one SetParameterValues, one reboot; 5G unlock = ""
@@ -66,10 +78,17 @@ common.state({"lock_test": None})
 common.state({"lte_lock_fmt": None}); zte["reflect"] = False; zte["lock"] = ""
 acs.wait_informs.__defaults__ = (1, 3)
 assert zlocks.lte_lock_reboot("434", "1550") == "web" and not common.state().get("lte_lock_fmt")
+# Real ACS serialisation, grouped acceptance, BOOT and subsequent GPV readback.
+zte["profile_test"] = True
+common.state({"lte_lock_fmt": fmt})
+assert zlocks.locks_apply("394@3774", "534@156510") == "tr069"
+assert {k: zte["group"][zlocks.CI + k] for k in ("LockLTEBand", "LockLTECell", "LockNr5gCell")} == {
+    "LockLTEBand": "8", "LockLTECell": "394,3774", "LockNr5gCell": "534,156510,28,15"}
+assert zlocks.locks_apply("none", "none") == "tr069" and zte["band"] == "1,3,8,20"
 stop.set()
 import csv; from keeper import store
 ev = [e["event"] for e in store.rows(DATA, "events")]; print(ev)
-assert ev.index("lock format learned") < ev.index("lock format unknown") and ev.count("reboot sent") == 4   # 4 TR-069 reboots
+assert ev.index("lock format learned") < ev.index("lock format unknown") and ev.count("reboot sent") == 6   # 4 TR-069 reboots
 print("OK test_tr069lock")
 
 # the ZTE watchdog is web-only (the TR-069 tree has no watchdog object, 2026-11-21): read it over the web page, store it, and
