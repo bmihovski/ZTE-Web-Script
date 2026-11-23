@@ -209,6 +209,22 @@ assert wrong_nr["failure"] == "no_5g" and not wrong_nr["has5g"], wrong_nr
 assert "LTE 394@3774 attached" in wrong_nr["error"] and "534@156510" in wrong_nr["error"], wrong_nr
 assert "cell not reachable" not in wrong_nr["error"] and wrong_nr.get("load_s") is None, wrong_nr
 
+# Scheduled legs use HTTPS to screen the path. A failed HTTPS transfer can
+# coexist with successful latency probes and must keep the download error.
+brain.HIST.clear()
+brain.wake = lambda **kw: brain.HIST.append({"time": stamp(), "lte_cell": "100/202", "nr_cell": "636576/534"})
+brain.internet_test = lambda **kw: {"down_mbps": None, "call_ok": 1, "loss_pct": 0.0,
+                                    "lat_p95": 23.3, "jitter_ms": 4.5, "error": "HTTPS connection timed out"}
+messages = []
+brain.wait_online = lambda **kw: True
+real_log, morning.log = morning.log, messages.append
+scheduled = morning._leg("B1 #2 202@100", "202@100", "534@636576", band="1", role="second")
+morning.log = real_log
+assert scheduled["ok"] and scheduled["has5g"] and scheduled["down_mbps"] is None, scheduled
+assert scheduled.get("https_error") == "HTTPS connection timed out", scheduled
+assert "HTTPS connection timed out" in messages[-1] and "iperf3" not in messages[-1], messages
+assert "HTTPS download unavailable" in morning._msg({"legs": [scheduled], "restored": {}})
+
 # Evidence from the full live comparison on 2026-11-22: five 10 s downloads
 # finished between informs. Full comparisons need the same duration floor
 # as a one-cell comparison, while a failed lock must unwind straight to restore.

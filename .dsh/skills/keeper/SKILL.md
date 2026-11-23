@@ -105,6 +105,8 @@ the docstrings and this skill in sync.
   High-band cell locks allow CA. Discover B20/B8 on Saturday or when the unlocked screen is poor or unavailable, and use the fallback
   when every high screen is poor. Low tests allow the natural n28 pairing. `POST /morning?apply=0&low=1` compares all bands under
   full down/up load, records observed radio paths and scores in `/morning` → `trial`, and restores the keeper-managed locks.
+  On regular legs, an unavailable HTTPS download rate keeps its reason in `https_error` and leaves successful latency probes
+  usable. Per-leg iperf3 fields appear in loaded comparison logs.
   Each ZTE comparison transfer spans two fast informs plus five seconds at minimum. Inspect `trial.coverage` for missing
   bands. A failed configuration change with rollback pending ends the comparison and restores the starting profile.
 - **Capacity test traffic guard:** the modem's iperf bypasses the router's WAN port. Defer scheduled runs when that port already

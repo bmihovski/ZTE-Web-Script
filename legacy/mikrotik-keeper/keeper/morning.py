@@ -261,6 +261,8 @@ def _leg(name, lte, nr, band=None, role="", compare=False):
                 res.update({"ok": net.get("down_mbps") is not None or net.get("call_ok") == 1, "down_mbps": net.get("down_mbps"),
                             "call_ok": net.get("call_ok"), "loss_pct": net.get("loss_pct"), "lat_p95": net.get("lat_p95"),
                             "jitter_ms": net.get("jitter_ms"), "health": h, "has5g": seen_pair()})
+                if res["down_mbps"] is None:
+                    res["https_error"] = net.get("error") or "HTTPS probe returned no download rate"
                 if band and not res["ok"] and brain.f(res["loss_pct"]) == 100:
                     res.update(failure="no_internet", error="no internet during the probe")
                 seen = [_real_nr(row, nr_band) for row in brain.samples_since(mark)]
@@ -280,9 +282,16 @@ def _leg(name, lte, nr, band=None, role="", compare=False):
     res["seconds"] = round(time.time() - t0, 1); st["legs"].append(res)
     if not compare:
         _note_reachability(res)
-    log("morning %s: ok=%s 5g=%s HTTPS down=%s call=%s p95=%s; iperf3 down=%s up=%s %s" % (
-        name, res["ok"], res["has5g"], res.get("down_mbps"), res.get("call_ok"), res.get("lat_p95"),
-        res.get("load_down_mbps"), res.get("load_up_mbps"), res["error"]))
+    https_down = res.get("down_mbps")
+    https = "HTTPS down=%s" % (https_down if https_down is not None else "unavailable")
+    if res.get("https_error"):
+        https += " (%s)" % res["https_error"]
+    load = ""
+    if compare:
+        down, up = res.get("load_down_mbps"), res.get("load_up_mbps")
+        load = " | iperf3 down=%s up=%s" % (down, up) if down is not None and up is not None else " | iperf3 unavailable"
+    log(("morning %s: ok=%s 5g=%s %s call=%s p95=%s%s %s" % (
+        name, res["ok"], res["has5g"], https, res.get("call_ok"), res.get("lat_p95"), load, res["error"])).rstrip())
     if profile and state().get("profile_rollback"):
         raise RuntimeError("%s: %s; ending the run to restore the original configuration" % (name, res["error"]))
     return res
@@ -449,8 +458,10 @@ def _msg(r):
     for x in r.get("legs") or []:
         if not x.get("ok"):
             out.append("%s: %s" % (x.get("leg"), x.get("error") or "no internet")); continue
-        out.append("%s: %s Mbit/s, call %s, p95 %s, jitter %s, %s%s" % (
-            x.get("leg"), x.get("down_mbps"), x.get("call_ok"), x.get("lat_p95"), x.get("jitter_ms"),
+        down = x.get("down_mbps")
+        https = "HTTPS %s Mbit/s" % down if down is not None else "HTTPS download unavailable"
+        out.append("%s: %s, call %s, p95 %s, jitter %s, %s%s" % (
+            x.get("leg"), https, x.get("call_ok"), x.get("lat_p95"), x.get("jitter_ms"),
             "5G" if x.get("has5g") else "no 5G", ", up %s" % x.get("iperf_up") if x.get("iperf_up") else ""))
     a, b = r.get("a") or {}, r.get("b") or {}
     out.append("A: %s (5G %s), B: %s (5G %s)" % (a.get("lte", "-"), "yes" if a.get("has5g") else "no",

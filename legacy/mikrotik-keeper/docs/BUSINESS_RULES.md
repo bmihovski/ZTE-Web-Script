@@ -209,7 +209,8 @@ at `/docs`.
   The cache persists per device, a successful measurement clears the streak, and control errors add no failure evidence.
   A = the best measured #1, B = the best measured backup. A band with only one measured leg contributes it to A. A new pair must
   clearly improve on a usable unlocked baseline. If no configuration qualifies, restore the keeper-managed locks. The regular
-  probe uses a short download and latency checks. On Saturday (`MORNING_LOW_SATURDAY`), or when the unlocked screen fails or is poor,
+  probe uses a short HTTPS download and latency checks. An unavailable HTTPS rate keeps its diagnostic in `https_error`
+  while valid latency probes still count. The regular per-leg log omits iperf3 fields. On Saturday (`MORNING_LOW_SATURDAY`), or when the unlocked screen fails or is poor,
   discover B20 then B8 while the CPE is unlocked. The automatic fallback tests low only when all high screens fail the quality
   bar (down < `MORNING_LOW_DOWN` 20, binary call-ready below `MORNING_LOW_CALL` 90, or unavailable), then stops after the first low
   band that meets it. `low=1` and Saturday test both low bands. Low tests let NR attach naturally and require n28, and low backups
