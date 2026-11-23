@@ -83,7 +83,8 @@ Durable project memory. Read this first; the details live in the keeper docs.
   baseline and no clear internet-quality regression. Treat SINR and RSRP as diagnostics.
 - **Morning discovery:** test the serving cell and queue two backups per band. A measured NSA pair gets priority by quality only
   with at least 10 minutes, loss ≤ 2% and jitter ≤ 20 ms. Order other neighbours by RSRP. Try the next backup when the first cannot
-  measure with 5G. A locked leg gets 90 s for online readiness and 90 s to wake 5G. Two reachability failures in seven days suppress
+  measure with 5G. A locked leg gets 90 s for online readiness. High bands get 90 s to wake 5G. B8 and B20 use one
+  WAN-guarded, unscored 30 s modem download to wake n28. Require fresh exact LTE and n28 observations before scoring. Two reachability failures in seven days suppress
   that `PCI@EARFCN` in the per-device morning cache.
 - **Morning fallback and comparison:** failure of the unlocked screen can open B20/B8 discovery. A healthy high-band leg
   suppresses the automatic low test. Use `POST /morning?apply=0&low=1` for fresh loaded comparisons with managed locks restored

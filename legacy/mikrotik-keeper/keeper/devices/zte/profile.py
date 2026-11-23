@@ -282,20 +282,30 @@ def offline_release():
         return method
 
 
-def transfer_evidence(windows, target, lte, nr, natural_band=None):
+def config_matches(raw, lte, nr):
+    restricted = low_band(lte)
+    return (spec(raw[LTE]) == lte and spec(raw[NR]) == nr
+            and (not restricted or raw[BAND] == restricted))
+
+
+def serving_matches(row, target, lte, nr, natural_band=None, expected_nr=None):
+    """Check the configured locks and the serving cells in the same read."""
+    lte_cell, nr_cell = row["lte_cell"], row["nr_cell"]
+    return (row["boots"] == acs.st["boots"] and matches(row, target)
+            and "/" in lte_cell and "/" in nr_cell
+            and (lte == "none" or lte_cell == brain.anchor_key(lte))
+            and (nr == "none" or nr_cell == brain.anchor_key(nr))
+            and (not expected_nr or nr_cell == expected_nr)
+            and (not natural_band or brain.nr_band_of(nr_cell.split("/")[0]) == natural_band))
+
+
+def transfer_evidence(windows, target, lte, nr, natural_band=None, expected_nr=None):
     """Require a matching radio observation inside each successful transfer, including the control."""
     observations = list(radio)
     groups = [[r for r in observations if start <= r["time"] < end] for start, end in windows]
     rows = [r for group in groups for r in group]
     anchors = {r["lte_cell"] for r in rows}
     pairs = {r["nr_cell"] for r in rows}
-    restricted = low_band(lte)
-    configured = (spec(target[LTE]) == lte and spec(target[NR]) == nr and
-                  (not restricted or target[BAND] == restricted))
-    valid = (configured and bool(groups) and all(groups) and len(anchors) == len(pairs) == 1
-             and all(matches(r, target) and "/" in r["lte_cell"] and "/" in r["nr_cell"]
-                     and (lte == "none" or r["lte_cell"] == brain.anchor_key(lte))
-                     and (nr == "none" or r["nr_cell"] == brain.anchor_key(nr))
-                     and (not natural_band or brain.nr_band_of(r["nr_cell"].split("/")[0]) == natural_band)
-                     and r["boots"] == acs.st["boots"] for r in rows))
+    valid = (config_matches(target, lte, nr) and bool(groups) and all(groups) and len(anchors) == len(pairs) == 1
+             and all(serving_matches(row, target, lte, nr, natural_band, expected_nr) for row in rows))
     return {"verified": bool(valid), "samples_per_transfer": list(map(len, groups)), "observations": rows}

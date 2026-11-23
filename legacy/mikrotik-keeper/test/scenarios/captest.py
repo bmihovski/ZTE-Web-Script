@@ -298,6 +298,18 @@ assert [x[:3] for x in seen] == [("a:1", c.CONN, True), ("b:2", c.CONN, True), (
 assert (common.state().get("captest_hist") or []) == h0
 c.st["running"] = True; assert c.measure() == (None, None, "a capacity test is running"); c.st["running"] = False
 
+# One protected download can wake NSA without entering capacity history.
+seen.clear()
+def warm(srv, secs, conn, rev, *, load_windows, protect):
+    seen.append((srv, secs, rev, protect, c.st["running"]))
+    load_windows.append((100, 130))
+    return 8.25, "ok", []
+c._iperf_once = warm
+windows = []
+assert c.measure(secs=30, load_windows=windows, download_only=True) == (8.25, None, "down a:1")
+assert seen == [("a:1", 30, True, True, True)] and windows == [(100, 130)], (seen, windows)
+assert (common.state().get("captest_hist") or []) == h0 and not c.st["running"]
+
 # Router-side load is separate from the modem's own iperf. A fast LAN transfer postpones the due slot.
 saved_url = sqm.URL
 sqm.URL = "http://router.invalid"

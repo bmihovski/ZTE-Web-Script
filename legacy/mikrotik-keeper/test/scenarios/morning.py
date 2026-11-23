@@ -233,7 +233,7 @@ class ComparisonProfile:
     def snapshot(self): return {"raw": {self.LTE: "", self.NR: ""}}
     def begin_scope(self, owner): return self.snapshot()
     def low_band(self, lte): return None
-    def transfer_evidence(self, windows, target, lte, nr, nr_band):
+    def transfer_evidence(self, windows, target, lte, nr, nr_band, expected_nr=None):
         return {"verified": False, "samples_per_transfer": [0, 1], "observations": []}
     def finish_scope(self):
         state({"profile_rollback": None})
@@ -253,6 +253,62 @@ morning._record_load(leg, None, None)
 assert transfer_durations == [2 * acs.FAST_INTERVAL + 5], transfer_durations
 assert "no fresh radio sample" in leg["error"] and leg.get("load_down_mbps") is None, leg
 
+# B8 can show LTE-only at idle and acquire n28 partway through modem download.
+# Exercise the real radio validation on a warm-up followed by the scored probe.
+from keeper.devices.zte import profile as radio_profile
+z.profile = radio_profile
+radio_profile.radio.clear()
+raw = {"LockLTEBand": "8", "LockLTECell": "112,3774", "LockNr5gCell": ""}
+radio_profile.latest = (time.monotonic(), acs.st["boots"], raw)
+seen = []
+n28 = "156510/534"
+target = "3774/112"
+
+def radio(lte=target, nr=n28, when=None):
+    radio_profile.radio.append(dict(raw, time=time.time() if when is None else when,
+                                    boots=acs.st["boots"], lte_cell=lte, nr_cell=nr))
+def warm_download(secs=None, load_windows=None, *, download_only=False):
+    seen.append(("iperf", secs, download_only))
+    now = time.time()
+    load_windows.append((now - 30, now))
+    radio(nr="no5G", when=now - 24)
+    radio(nr=n28, when=now - 1)
+    return 8.25, None, "down Sofia"
+def quick_probe(**kw):
+    seen.append("probe")
+    radio()
+    return {"down_mbps": 12, "call_ok": 1, "loss_pct": 0, "lat_p95": 35, "jitter_ms": 6}
+morning.captest.measure = warm_download
+brain.wake = lambda **kw: None
+brain.internet_test = quick_probe
+res = morning._leg("B8 112@3774", "112@3774", "none", band="8", role="first")
+assert seen == [("iperf", 30, True), "probe"], (seen, res)
+assert res["ok"] and res["observed_nr"] == n28 and res["warmup"]["nr_cell"] == n28, res
+assert "load_down_mbps" not in res, res
+
+seen.clear()
+def wrong_pair(secs=None, load_windows=None, *, download_only=False):
+    seen.append("warm")
+    now = time.time()
+    load_windows.append((now - 30, now))
+    radio(nr="156510/309", when=now - 1)
+    return 8.25, None, "down Sofia"
+radio_profile.latest = (time.monotonic(), acs.st["boots"], dict(raw, LockNr5gCell="534,156510,28,15"))
+# Keep the configured lock correct while the modem reports a different serving NR cell.
+raw["LockNr5gCell"] = "534,156510,28,15"
+morning.captest.measure = wrong_pair
+res = morning._leg("B8 112@3774", "112@3774", "534@156510", band="8", role="first", compare=True)
+assert seen == ["warm"] and not res["ok"] and res["failure"] == "no_5g" and "534@156510" in res["error"], res
+assert "load_down_mbps" not in res
+
+def lan_busy(**kw):
+    raise LocalTraffic("local traffic during warm-up")
+morning.captest.measure = lan_busy
+res = morning._leg("B8 112@3774", "112@3774", "534@156510", band="8", role="first")
+assert not res["ok"] and not res.get("failure") and res["error"] == "local traffic during warm-up", res
+morning.captest.measure = loaded
+
+z.profile = ComparisonProfile()
 z.calls.clear()
 def failed_lock(lte, nr):
     z.calls.append((lte, nr))

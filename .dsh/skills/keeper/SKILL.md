@@ -100,7 +100,9 @@ the docstrings and this skill in sync.
   Backups need two fresh RSRP readings of at least `MORNING_MIN_RSRP` (−110 dBm), and the serving cell needs usable signal.
   Pairs with at least 10 measured minutes, loss ≤ 2% and jitter ≤ 20 ms rank by measured quality, then same site and signal.
   Other neighbours rank by RSRP. Only probe another backup when the previous one cannot measure with 5G. The first working backup
-  fills the band's second slot. A locked cell has a 90 s web/online budget and a 90 s 5G wake budget. Two reachability failures in
+  fills the band's second slot. A locked cell has a 90 s web/online budget. High bands get a 90 s 5G wake window. On B8 and
+  B20, one guarded 30 s modem download wakes n28 before scoring. Verify the same exact LTE/N28 pair during the probe or both
+  scored transfers and keep the warm-up observations separate. Two reachability failures in
   seven days suppress that exact LTE lock in morning discovery. A successful measurement clears the persisted per-device streak.
   High-band cell locks allow CA. Discover B20/B8 on Saturday or when the unlocked screen is poor or unavailable, and use the fallback
   when every high screen is poor. Low tests allow the natural n28 pairing. `POST /morning?apply=0&low=1` compares all bands under

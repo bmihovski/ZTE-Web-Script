@@ -204,7 +204,10 @@ at `/docs`.
   Lock #1 and the first backup individually (cell locking keeps CA) for a 25 s probe. Try the next backup only when the current
   one cannot measure internet with a real 5G cell observed during its wake/probe. Each failed attempt is recorded. Locked legs
   share `MORNING_DEAD_S` (90 s) between web readiness and fresh online probes, then wait up to `MORNING_5G_WAIT_S` (90 s) under
-  wake traffic for 5G. Expiry skips the download and leaves quality empty. After `MORNING_DEAD_N` (2) consecutive reachability
+  wake traffic for 5G on high bands. On B8 and B20, after LTE is online, one 30-second modem iperf3 download wakes n28.
+  It uses the local traffic guard and keeps its observations in `warmup`. A fresh read of the exact LTE cell and matching n28
+  opens the scored probe. The same pair must be observed during both scored transfers, and the warm-up supplies no quality,
+  speed score or capacity ceiling. An unconfirmed pair leaves quality empty. After `MORNING_DEAD_N` (2) consecutive reachability
   failures (offline or no 5G) in `MORNING_DEAD_DAYS` (7), skip the exact `PCI@EARFCN` for morning locks until the evidence expires.
   The cache persists per device, a successful measurement clears the streak, and control errors add no failure evidence.
   A = the best measured #1, B = the best measured backup. A band with only one measured leg contributes it to A. A new pair must

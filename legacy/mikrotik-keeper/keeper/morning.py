@@ -36,7 +36,8 @@ PROBE_S, UP_SECS = int(E("MORNING_PROBE_S", "25")), int(E("MORNING_UP_SECS", "8"
 BAND_WAIT_S = float(E("MORNING_BAND_WAIT_S", "125"))
 MIN_RSRP = float(E("MORNING_MIN_RSRP", "-110"))
 WAKE_S, WAKE_LEAD_S = float(E("MORNING_WAKE_S", "25")), float(E("MORNING_WAKE_LEAD_S", "5"))   # keep traffic on so the NSA 5G is up
-FIVE_G_WAIT_S = float(E("MORNING_5G_WAIT_S", "90"))     # after a boot the NSA leg is added ~1 min later: wait for it under wake
+FIVE_G_WAIT_S = float(E("MORNING_5G_WAIT_S", "90"))     # high-band NSA wake window
+LOW_WAKE_S = 30                                      # unscored modem download before a low-band probe
 LINK_WAIT_S = float(E("MORNING_LINK_WAIT_S", "120"))
 CANDIDATES = max(0, int(E("MORNING_CANDIDATES", "2")))
 PAIR_MAX_LOSS = float(E("MORNING_PAIR_MAX_LOSS", "2"))
@@ -139,6 +140,35 @@ def _q(l):
                                 l.get("loss_pct"), l.get("lat_p95"), l.get("jitter_ms"))
 
 
+def _warm_low(leg, profile):
+    """Let traffic raise n28 before scoring any part of a low-band leg."""
+    lte, nr = leg["lte"], leg["nr"]
+    target = profile.snapshot()["raw"]
+    if not profile.config_matches(target, lte, nr):
+        raise RuntimeError("low-band lock readback does not match the requested configuration")
+    warm = leg["warmup"] = {"seconds": LOW_WAKE_S}
+    windows = []
+    log("morning %s: warming n28 with a %d s modem download" % (leg["leg"], LOW_WAKE_S))
+    down, _, how = captest.measure(secs=LOW_WAKE_S, load_windows=windows, download_only=True)
+    warm.update(method=how, observations=[])
+    if down is None or not windows:
+        raise RuntimeError("n28 warm-up download failed (%s)" % how)
+    started, finished = windows[0]
+    warm["transfer_s"] = round(finished - started, 1)
+    rows = [row for row in list(profile.radio) if row["time"] >= started]
+    warm["observations"] = rows
+    last = rows[-1] if rows else {}
+    if (last.get("boots") != acs.st["boots"] or last.get("lte_cell") != brain.anchor_key(lte)
+            or not profile.matches(last, target)):
+        raise RuntimeError("no matching LTE configuration at the end of the n28 warm-up")
+    if not profile.serving_matches(last, target, lte, nr, "n28"):
+        label = "n28 " + nr if nr != "none" else "n28"
+        leg["failure"] = "no_5g"
+        raise RuntimeError("LTE %s attached but %s was not present at the end of the %d s warm-up" % (lte, label, LOW_WAKE_S))
+    warm["nr_cell"] = last["nr_cell"]
+    return last["nr_cell"]
+
+
 def _record_load(leg, mark, nr_band):
     """Measure comparable throughput and transfer-window quality, and record the radio path observed on this leg."""
     windows = []
@@ -157,16 +187,10 @@ def _record_load(leg, mark, nr_band):
         down, up, how = captest.measure(secs=transfer_s, load_windows=windows)
     quality = brain.probe_windows(windows, min_points=2) if len(windows) == 2 else {}
     rows = brain.samples_since(mark)
-    lte_cells = Counter(r["lte_cell"] for r in rows if r.get("lte_cell"))
-    anchor = lte_cells.most_common(1)[0][0] if lte_cells else ""
-    target = brain.anchor_key(leg["lte"]) if leg["lte"] != "none" else anchor
-    nr_cells = Counter(_real_nr(r, nr_band) for r in rows if r.get("lte_cell") == target)
-    nr_cells.pop("", None)
-    nr = nr_cells.most_common(1)[0][0] if nr_cells else ""
-    transfer_rows = [row for row in rows if any(start <= brain.ts(row) < end for start, end in windows)]
-    transfer_matches = sum(1 for row in transfer_rows if row.get("lte_cell") == target and _real_nr(row, nr_band) == nr)
+    proof = None
     if profile:
-        proof = profile.transfer_evidence(windows, target_config, leg["lte"], leg["nr"], nr_band)
+        warmed_nr = (leg.get("warmup") or {}).get("nr_cell")
+        proof = profile.transfer_evidence(windows, target_config, leg["lte"], leg["nr"], nr_band, expected_nr=warmed_nr)
         leg["radio"] = proof
         leg["transfer_seconds"] = [round(end - start, 1) for start, end in windows]
         if len(windows) != 2:
@@ -179,10 +203,21 @@ def _record_load(leg, mark, nr_band):
         if not proof["verified"]:
             leg["error"] = "unverified band or serving cells during down/up transfers"
             return
+        if warmed_nr:
+            rows = proof["observations"]   # the warm-up and idle gaps cannot count towards loaded stability
+    lte_cells = Counter(r["lte_cell"] for r in rows if r.get("lte_cell"))
+    anchor = lte_cells.most_common(1)[0][0] if lte_cells else ""
+    target = brain.anchor_key(leg["lte"]) if leg["lte"] != "none" else anchor
+    nr_cells = Counter(_real_nr(r, nr_band) for r in rows if r.get("lte_cell") == target)
+    nr_cells.pop("", None)
+    nr = nr_cells.most_common(1)[0][0] if nr_cells else ""
+    if proof:
         transfer_rows = proof["observations"]
-        nr = transfer_rows[0]["nr_cell"]
-        anchor = transfer_rows[0]["lte_cell"]
+        anchor, nr = transfer_rows[0]["lte_cell"], transfer_rows[0]["nr_cell"]
         transfer_matches = len(transfer_rows)
+    else:
+        transfer_rows = [row for row in rows if any(start <= brain.ts(row) < end for start, end in windows)]
+        transfer_matches = sum(1 for row in transfer_rows if row.get("lte_cell") == target and _real_nr(row, nr_band) == nr)
     leg.update(load_method=brain.LTE_LOAD_METHOD, load_s=round(sum(end - start for start, end in windows), 1),
                load_down_mbps=down, load_up_mbps=up, load_how=how, observed_anchor=anchor, observed_nr=nr,
                nr_samples=dict(nr_cells), radio_samples=len(rows), on_target_pct=round(100 * lte_cells[target] / len(rows), 1) if rows else None,
@@ -214,24 +249,19 @@ def _leg(name, lte, nr, band=None, role="", compare=False):
         else:
             _wait_link()
         if not res.get("failure"):
+            warmed_nr = _warm_low(res, profile) if nr_band and profile else None
             history = list(brain.HIST)
             mark = history[-1] if history else None
-            wake_start = time.time()
             target_lte = brain.anchor_key(lte)
             target_nr = brain.anchor_key(nr) if nr and nr != "none" else None
 
-            def wake_rows():
-                if profile and nr_band:
-                    return [row for row in list(profile.radio)
-                            if row["time"] >= wake_start and row["boots"] == acs.st["boots"]
-                            and row.get(profile.BAND) == band]
-                return brain.samples_since(mark)
-
             def seen_pair():
+                if warmed_nr:
+                    return True
                 if not nr_band:
                     return _has5g(mark)
                 return any(row.get("lte_cell") == target_lte and _real_nr(row, nr_band)
-                           and (not target_nr or row["nr_cell"] == target_nr) for row in wake_rows())
+                           and (not target_nr or row["nr_cell"] == target_nr) for row in brain.samples_since(mark))
 
             wake_for = FIVE_G_WAIT_S + WAKE_LEAD_S + PROBE_S + (480 if compare else 5)
             threading.Thread(target=brain.wake, kwargs={"seconds": wake_for, "stop": stop},
@@ -246,14 +276,15 @@ def _leg(name, lte, nr, band=None, role="", compare=False):
                 label = "n28 5G" if nr_band else "5G"
                 if target_nr and nr_band:
                     label += " " + nr
-                rows = wake_rows()
+                rows = brain.samples_since(mark)
                 attached = any(row.get("lte_cell") == target_lte for row in rows)
                 detail = "LTE %s attached" % lte if attached else "LTE %s not observed during wake" % lte
                 res.update(failure="no_5g", error="%s; no %s within %g s" % (detail, label, FIVE_G_WAIT_S))
                 if nr_band:
                     res["wake_radio"] = rows
             else:
-                time.sleep(WAKE_LEAD_S)
+                if not warmed_nr:
+                    time.sleep(WAKE_LEAD_S)
                 probe_start = time.time()
                 net = brain.internet_test(seconds=PROBE_S)
                 history = list(brain.HIST)
@@ -268,7 +299,8 @@ def _leg(name, lte, nr, band=None, role="", compare=False):
                 seen = [_real_nr(row, nr_band) for row in brain.samples_since(mark)]
                 res["observed_nr"] = next((nr for nr in reversed(seen) if nr), "")
                 if profile and profile.low_band(lte) and res["ok"]:
-                    proof = profile.transfer_evidence([(probe_start, time.time())], profile.snapshot()["raw"], lte, nr, nr_band)
+                    proof = profile.transfer_evidence([(probe_start, time.time())], profile.snapshot()["raw"], lte, nr,
+                                                      nr_band, expected_nr=warmed_nr)
                     res["probe_radio"] = proof
                     if not proof["verified"]:
                         raise RuntimeError("no confirmed low-band serving pair during probe")
