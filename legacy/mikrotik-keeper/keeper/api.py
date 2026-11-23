@@ -60,7 +60,8 @@ ROUTES = [   # method, path, summary, [(param, example, description)], capabilit
     ("post", "/low-band-trial", "Low-band A/B phase 1: start a one-band band scan (LOW_BANDS 8,20; LockLTEBand, no reboot, no cell lock; "
      "the network's low-band cell + n28; the internet test; full band list back). Only unlocked",
      [("band", "8", "LTE band number (LOW_BANDS)")], "lock_test"),
-    ("post", "/ab-smoke", "Start a diagnostic comparison and restore the managed locks after the test", [], "lock_test"),
+    ("post", "/ab-smoke", "Start a diagnostic comparison and restore the managed locks after the test",
+     [("antenna_lte", "", "One high-band LTE PCI@EARFCN, to measure all four n78 antenna modes with LTE unlocked and locked")], "lock_test"),
     ("post", "/ab-smoke-stop", "Stop the smoke and restore the managed locks after any in-flight reboot", [], "lock_test"),
     ("get", "/ab-refresh", "Read-only: the one-call refresh (band scan -> A/B smoke -> one Telegram) state/result", [], None),
     ("post", "/ab-refresh", "One call: the full band scan (B1,B3,B7,B8,B20,B28), then the full A/B smoke, then ONE Telegram with both; "
@@ -347,7 +348,11 @@ class H(BaseHTTPRequestHandler):
                 ok, why = lowband.start(g("band"))
                 code, res = 202 if ok else 409, {"started": ok, "band" if ok else "why": why}
             elif path == "/ab-smoke":       # full five-switch A/B test, with locks; the wife runs it when critical
-                ok, why = absmoke.run("manual")
+                antenna_lte = g("antenna_lte")
+                if antenna_lte and (not re.fullmatch(guard.SPEC_RE, antenna_lte)
+                                    or brain.band_of(antenna_lte.split("@")[1]) not in ("B1", "B3", "B7")):
+                    raise ValueError("antenna_lte requires a B1, B3 or B7 PCI@EARFCN")
+                ok, why = absmoke.run("antenna trial", antenna_lte=antenna_lte) if antenna_lte else absmoke.run("manual")
                 code, res = 202 if ok else 409, {"started": ok, "why": why}
             elif path == "/ab-smoke-stop":
                 stopping = absmoke.stop()

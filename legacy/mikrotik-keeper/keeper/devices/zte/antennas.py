@@ -16,9 +16,10 @@ WAKE_S (60 - wake traffic per mode when the target 5G cell is not up), SWEEP_MAX
 unstable), ANT_SET_TRIES (3) / ANT_SET_RETRY_S (2 - retries for the antenna goforms, re-login between),
 ANT_READY_TIMEOUT_S (300 - wait for the web after a boot), SWEEP_READY_TIMEOUT_S (120 - wait for the web before a sweep).
 """
+from contextlib import contextmanager
 import threading, time
 
-from keeper import brain, common, locktest
+from keeper import acs, brain, common, locktest
 from keeper.common import E, event, log, record, stamp, state
 from keeper.devices.zte import settings as ws
 from keeper.devices.zte import watchdog as wd
@@ -86,7 +87,7 @@ def apply():
         except Exception as e: log("watchdog read failed: %r" % e)
         try: ws.read_with(w)                         # the web-only settings (audit): same session, cheap
         except Exception as e: log("web settings read failed: %r" % e)
-        bad = w.set_ant(a["auto"], a["ant5"], a["ant6"])
+        bad = w.set_ant(a["auto"], a["ant5"], a["ant6"], verify=True)
     finally:
         w.logout()
     return "apply failed: %s" % bad if bad else None
@@ -112,7 +113,7 @@ def apply_after_boot(uptime, keep=None):
             a, src, rec = effective()
             name = "auto-select" if a["auto"] == "1" else mode_name(a["ant5"], a["ant6"])
             log("applied: %s (auto=%s ant5=%s ant6=%s, %s)" % (name, a["auto"], a["ant5"], a["ant6"], src))
-            event({"event": "applied", "to": "%s, %s" % (name, src)})
+            event({"event": "applied", "to": "%s, %s" % (name, src), "why": "antenna readback verified"})
             if rec and brain.AUTO != "on":                 # AUTO=dryrun: name the record, apply nothing from it
                 log("AUTO=dryrun: 5G cell %s was measured with %s on %s (heading %s) - kept %s" % (
                     rec["cell"], rec["mode"], rec["time"], rec["heading"] or "?", name))
@@ -172,6 +173,51 @@ def _set_mode(w, a5, a6):
                 if err: log("re-login before the retry failed: " + err)
             except Exception as e: log("re-login before the retry failed: %r" % e)
     return bad
+
+
+@contextmanager
+def trial_session():
+    """Keep boot-time antenna writes out of the measurement windows."""
+    with web_lock:
+        w = Web()
+        err = w.login()
+        if err:
+            raise RuntimeError(err)
+        try:
+            def set_mode(a5, a6):
+                bad = _set_mode(w, a5, a6)
+                if bad:
+                    raise RuntimeError("antenna mode refused: %s" % bad)
+            yield set_mode
+        finally:
+            w.logout()
+
+
+def restore_trial_mode(mode):
+    """Restore the journaled effective settings after an antenna trial."""
+    if not ready(timeout=SWEEP_READY_TIMEOUT_S):
+        raise RuntimeError("modem web interface unavailable for antenna restore")
+    with web_lock:
+        w = Web()
+        err = w.login()
+        if err:
+            raise RuntimeError(err)
+        try:
+            bad = w.set_ant(mode["auto"], mode["ant5"], mode["ant6"], verify=True)
+            if bad:
+                raise RuntimeError("antenna settings could not be verified: %s" % ", ".join(bad))
+        finally:
+            w.logout()
+
+
+def verify_morning():
+    """Confirm the configured mode on the modem for this morning leg, including without a reboot."""
+    mode, source, _ = effective()
+    boot = acs.st["boots"]
+    restore_trial_mode(mode)
+    if boot != acs.st["boots"]:
+        raise RuntimeError("modem rebooted during antenna verification")
+    return dict(mode, source=source, boot=boot, verified=True)
 
 
 def _row(trigger, a5, a6, rd, bad="", net=None, internet=False, extra="", no_target=False, set_failed=False):

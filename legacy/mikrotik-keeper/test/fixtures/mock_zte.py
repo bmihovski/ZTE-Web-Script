@@ -38,6 +38,12 @@ class H(http.server.BaseHTTPRequestHandler):
             elif k == "cr_version": out[k] = ""
             elif k == "ppp_status": out[k] = "ppp_connected" if time.time() >= st["ppp_up_at"] else "ppp_disconnected"   # public, like the real ZTE
             elif k == "system_uptime": out[k] = str(int(time.time() - st["boot"])) if logged else ""
+            elif logged and k == "ant_switch_enable":
+                out[k] = next((s[3] for s in reversed(st["sets"]) if s[1] == "WAN_ANT_SWITCH_SET"), "")
+            elif logged and k in ("ant_switch_idx", "ant_switch_state"):
+                step = next((s for s in reversed(st["sets"]) if s[1] == "BSP_ANTENNA_STATE_SET"), None)
+                out[k] = (step[2] if k == "ant_switch_idx" else
+                          "bad" if step[2] == "5" and st.get("antenna_echo_bad") else step[3]) if step else ""
             else: out[k] = f.get(k, "") if logged else ""
         self.reply(out)
     def do_POST(self):

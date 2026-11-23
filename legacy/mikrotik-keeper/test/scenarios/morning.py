@@ -327,4 +327,29 @@ trial = state()["morning_trial"]
 assert z.calls == [("none", "none"), ("434@1550", "534@636576")], z.calls
 assert not trial["complete"] and trial["restored"] == {"lte": "none", "nr": "none"}, trial
 assert trial["coverage"]["missing_bands"] == ["3", "20", "8"] and len(trial["legs"]) == 2, trial
+
+# The scheduled path must confirm the mode before using an unlocked n78 baseline.
+z.locks_apply = lambda *_: "unchanged"
+seen = []
+def verify_morning():
+    seen.append("verified")
+    return {"auto": "0", "ant5": "4", "ant6": "4", "source": "kept", "boot": acs.st["boots"]}
+def verified_probe(**kwargs):
+    assert seen == ["verified"], seen
+    seen.append("probe")
+    return {"down_mbps": 30, "call_ok": 1}
+z.antennas = types.SimpleNamespace(verify_morning=verify_morning)
+brain.internet_test = verified_probe
+leg = morning._leg("no lock", "none", "none")
+assert leg["ok"] and leg["antenna_mode"]["ant5"] == "4" and seen == ["verified", "probe"], leg
+
+def bad_mode():
+    raise RuntimeError("antenna readback mismatch")
+z.antennas.verify_morning = bad_mode
+brain.internet_test = lambda **kwargs: (_ for _ in ()).throw(AssertionError("unverified baseline was probed"))
+morning._run(low=False, notify=False)
+result = state()["morning"]
+assert not result["complete"] and len(result["legs"]) == 1 and result["restored"] == {"lte": "none", "nr": "none"}, result
+assert "antenna readback mismatch" in result["legs"][0]["error"], result
+assert result["verdict"] == "inconclusive", result
 print("OK test_morning")

@@ -68,6 +68,9 @@ Durable project memory. Read this first; the details live in the keeper docs.
 - **A/B smoke is diagnostic:** the panel uses `/ab`, `/ab-smoke`, and `/ab-smoke-stop`. It restores the managed pair on finish,
   stop, or recovery after interruption. Automatic quality A/B still runs on persistent poor quality and can use a current-method
   loaded candidate observed on another site.
+- **Loaded n78 antenna trial:** `POST /ab-smoke?antenna_lte=434@1550` tests all four modes unlocked and on one high-band LTE
+  lock, leaving NR automatic. `GET /ab` → `antenna_trial` records radio readback, per-cell signal and loaded quality. The restore
+  journal covers the original profile and antenna mode.
 - **Measurement reset:** put `data/.reset-measurements` on the container mount while idle and restart. Startup clears measurements
   and learned ranking caches, compacts SQLite, and consumes the marker. Keep managed locks, antenna settings, site notes, app
   lists and SQM inputs. Minute samples store typed cell identifiers and numeric metrics with a compact payload for other fields.
@@ -78,6 +81,8 @@ Durable project memory. Read this first; the details live in the keeper docs.
 - **SQM phases 3 / 4 are closed by data** (2026-11-17: busy latency ~ idle + 1-2 ms, setups < 2 % apart); the weekly Telegram
   summary (`CAPTEST_WEEKLY`) carries the evidence - reopen only on its numbers (rules in BUSINESS_RULES).
 - The keeper applies the antenna mode once per boot; a superseded boot worker stands down (generation checked after the wait).
+- ZTE morning measurements confirm the configured antenna mode by modem readback before the unlocked and high-band probes. An
+  unverified baseline ends the run and restores the starting profile.
 - **Daytime ZTE LTE lock tests:** settle for CA, wake NSA with a short download, then measure quality during the two successful
   iperf transfers. Use the same run's complete score to choose the LTE lock. A winner needs at least 5 points over the unlocked
   baseline and no clear internet-quality regression. Treat SINR and RSRP as diagnostics.

@@ -106,6 +106,11 @@ The keeper measures, analyses and decides; the userscript only shows the results
   current mode. (The 5G lock test's own sweep differs: it internet-tests every mode and the quality decides - see the lock test.) `AUTO=on`: the winner is kept (state.json) and set after every boot; dryrun: recommends and puts the current mode back.
   Every `SWEEP_DAYS` (7) when idle and the ZTE is up > 15 min, or on demand (`POST /antenna-sweep`, panel button). ~2 min; the
   browser's ZTE session is logged out meanwhile. Results: `antenna_sweeps.csv`, `GET /antenna-sweeps`, an `antenna sweep` event.
+- For a loaded antenna comparison with restoration, use `POST /ab-smoke?antenna_lte=434@1550`. It runs the four n78 modes
+  with LTE unlocked and on the specified LTE anchor, with NR automatic in both profiles. Read throughput, loaded quality and
+  per-cell signal at `GET /ab` under `antenna_trial`.
+- The default morning run confirms the configured ZTE antenna mode before the unlocked and high-band probes and includes
+  the readback in each measured leg.
 - **Lock test, LTE and 5G** (`locktest.py`): `POST /lock-test?cells=434@1550,340@100` (LTE, panel: "Run LTE lock test") or
   `POST /lock-test?rat=nr&cells=534@636576,747@629988` (5G, panel: "Run 5G lock test"). One cell per entry; a typo, a `;` list or an
   unknown 5G band is refused with 400 (never silently dropped). Runs a baseline (LTE: unlocked; 5G: the

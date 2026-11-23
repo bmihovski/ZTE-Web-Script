@@ -89,6 +89,27 @@ profile.finish_scope()
 assert not profile.pending() and len(writes) == count
 assert common.state()["lte_prior_band"] == original["LockLTEBand"]
 
+# Antenna restoration stays journaled when only the keeper restarted and the radio profile itself is unchanged.
+from keeper.devices.zte import antennas
+original_mode = {"auto": "0", "ant5": "1", "ant6": "4"}
+profile.begin_scope("smoke", antennas=original_mode)
+profile.latest = None
+report()
+restore_mode = antennas.restore_trial_mode
+try:
+    def refuse_restore(mode):
+        assert mode == original_mode
+        raise RuntimeError("antenna restore refused")
+    antennas.restore_trial_mode = refuse_restore
+    fails(profile.finish_scope, "antenna restore refused")
+    assert profile.pending() and common.state()["profile_restore"]["antennas"] == original_mode
+    antennas.restore_trial_mode = lambda mode: restored_modes.append(mode)
+    restored_modes = []
+    profile.finish_scope()
+    assert restored_modes == [original_mode] and not profile.pending()
+finally:
+    antennas.restore_trial_mode = restore_mode
+
 # An offline LTE release uses the web mask, reads back staged fields and leaves NR alone.
 forms = []
 class Page:

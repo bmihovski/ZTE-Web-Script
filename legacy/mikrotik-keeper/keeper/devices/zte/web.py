@@ -45,13 +45,24 @@ class Web:
         if r != "0": return "login refused (wrong hash)" if r == "3" else "login failed (%s)" % r
         return None
 
-    def set_ant(self, auto, a5, a6):
-        """Antenna auto-select (`'1'`/`'0'`) and, when off, antennas 5 / 6 (`'1'` omni, `'4'` directional). Returns the goforms that failed."""
+    def set_ant(self, auto, a5, a6, *, verify=False):
+        """Set auto-select and the manual modes. When verifying, read each antenna before the next write replaces its echo."""
         sets = [{"goformId": "WAN_ANT_SWITCH_SET", "ant_switch_enable": auto}]
         if auto == "0":
             sets += [{"goformId": "BSP_ANTENNA_STATE_SET", "antenna_name": "5", "state": a5},
                      {"goformId": "BSP_ANTENNA_STATE_SET", "antenna_name": "6", "state": a6}]
-        return [s["goformId"] for s in sets if self.post(s).get("result") != "success"]
+        bad = []
+        for form in sets:
+            if self.post(form).get("result") != "success":
+                bad.append(form["goformId"])
+            elif verify and "antenna_name" in form:
+                readback = self.get("ant_switch_idx,ant_switch_state")
+                if (str(readback.get("ant_switch_idx")) != form["antenna_name"]
+                        or str(readback.get("ant_switch_state")) != form["state"]):
+                    bad.append("antenna %s readback mismatch" % form["antenna_name"])
+            elif verify and str(self.get("ant_switch_enable").get("ant_switch_enable")) != auto:
+                bad.append("antenna auto-select readback mismatch")
+        return bad
 
     def logout(self):
         """Free the single web session for the browser (errors ignored)."""

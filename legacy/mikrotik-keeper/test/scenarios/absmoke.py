@@ -5,7 +5,7 @@ import os, sys, tempfile, time
 here = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.abspath(os.path.join(here, "..", ".."))
 DATA = tempfile.mkdtemp(); os.environ.update(DATA=DATA, DEVICE="zte", ZTE_HOST="127.0.0.1:9")
 sys.path.insert(0, ROOT)
-from keeper import absmoke, acs, alert, brain, common, devices, guard, store
+from keeper import absmoke, acs, alert, brain, captest, common, devices, guard, store
 import threading
 ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 600))
 store.add(DATA, "band_scans", {"time": ts, "band": "8", "serving": "3774/394", "nr_cell": "156510/534", "nr_arfcn": "156510",
@@ -99,4 +99,66 @@ assert not absmoke.stop()
 assert absmoke._classify([{"ok": False, "error": "no boot inform"}])["verdict"] == "inconclusive"
 assert absmoke._classify([{"ok": False, "measured": True, "health": {"sim": True, "registered": True}, "leg": "no lock"}])["verdict"] == "mobile uplink suspected"
 assert absmoke._classify([{"ok": True, "leg": "no lock"}, {"ok": False, "measured": True, "leg": "current lock"}])["verdict"] == "configuration suspected"
+
+# The antenna trial uses the same restore scope but holds NR automatic on both LTE profiles.
+original = {"raw": {"lte": "", "nr": ""}}
+control = {"auto": "0", "ant5": "4", "ant6": "4"}
+restores = []
+z.profile = types.SimpleNamespace(LTE="lte", NR="nr", low_band=lambda lte: None,
+    spec=lambda raw: raw or "none", finish_scope=lambda: restores.append(original))
+z.antennas = types.SimpleNamespace(effective=lambda: (control, "kept", None))
+def begin_scope(owner, antennas):
+    assert owner == "smoke" and antennas == control
+    return original
+z.profile.begin_scope = begin_scope
+captest.sqm.URL = "mock"
+matrix = []
+def antenna_profile(name, lte, stop, reverse=False):
+    assert not stop.is_set()
+    matrix.append((name, lte, reverse))
+    modes = [{"ant5": a5, "ant6": a6, "call_ok_pct": 100, "config_verified": True}
+             for a5, a6 in [("1", "1"), ("4", "1"), ("1", "4"), ("4", "4")]]
+    return {"leg": name, "lte": lte, "nr": "none", "modes": modes[::-1] if reverse else modes}
+absmoke._antenna_profile = antenna_profile
+calls.clear()
+assert absmoke.run("test antenna", notify=False, antenna_lte="434@1550")[0]
+deadline = time.monotonic() + 5
+while absmoke.st["running"] and time.monotonic() < deadline: time.sleep(0.01)
+res = common.state().get("antenna_ab")
+assert res and len(res["legs"]) == 2 and all(len(x["modes"]) == 4 for x in res["legs"]), res
+assert matrix == [("no lock", "none", False), ("LTE lock", "434@1550", True)], matrix
+assert restores == [original] and res["restored"] == {"lte": "none", "nr": "none"}, res
+assert res["verdict"] == "measured" and calls == [("434@1550", "none")]
+assert absmoke.status()["antenna_trial"] == res
+
+# Real sample validation, including a serving cell change during an otherwise valid LTE-lock measurement.
+from keeper.devices.zte import profile
+raw = {profile.BAND: "1,3,7", profile.LTE: "434,1550", profile.NR: ""}
+def measure(secs, load_windows, server):
+    assert secs >= 2 * acs.FAST_INTERVAL + 5 and server == "primary"
+    load_windows.extend([(100, 125), (130, 155)])
+    for t, cell, sinr in [(101, "636576/534", 4), (106, "636576/534", 2), (116, "636576/534", 3), (132, "636576/786", -6)]:
+        profile.radio.append(dict(raw, time=t, boots=acs.st["boots"], lte_cell="1550/434", nr_cell=cell,
+                                  nr_sinr=sinr, nr_rsrp=-86, nr_rsrq=-13))
+    for t in (101, 106, 132, 138):
+        brain.lat_buf.append((t, 20, "fixture"))
+    return 120, 24, "down primary, up primary"
+captest.measure = measure
+captest.wait_lan_quiet = lambda: True
+result = absmoke._antenna_load(profile, raw, "434@1550", ("1", "4"), "primary")
+assert result["config_verified"] and not result["radio"]["verified"] and result["nr_switches"] == 1, result
+assert result["call_ok_pct"] == 100 and result["down_mbps"] == 120 and result["n78_samples"] == 4, result
+assert result["nr_signal"]["636576/534"] == {"samples": 3, "nr_sinr": 3, "nr_rsrp": -86, "nr_rsrq": -13}, result
+
+# Traffic after a completed download must discard its window before retrying the same mode.
+def interrupted(**opts):
+    opts["load_windows"].append((5, 30))
+    captest.measure = measure
+    raise captest.LocalTraffic("local traffic during upload")
+profile.radio.clear()
+brain.lat_buf.clear()
+captest.measure = interrupted
+result = absmoke._antenna_load(profile, raw, "434@1550", ("1", "4"), "primary")
+assert result["transfer_windows"] == [(100, 125), (130, 155)], result
+assert result["load_retries"] == ["local traffic during upload"] and result["config_verified"], result
 print("OK test_absmoke")

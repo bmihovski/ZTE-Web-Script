@@ -278,6 +278,9 @@ at `/docs`.
 ## Antenna modes
 
 - Modes are antennas 5/6: `1` omni, `4` directional (n78 only). `ANT_AUTO`/`ANT5`/`ANT6` are the env defaults.
+- Before measuring the unlocked or high-band morning leg, including in the scheduled run, set and verify the configured ZTE
+  mode. Read back auto-select and each manual receiver mode on the same boot, and record them as `antenna_mode` for the leg.
+  An unverified high leg is skipped. An unverified unlocked baseline ends the run and restores the initial profile.
 - **Applied at boot:** `effective()` = the locked 5G cell's newest good lock-test mode when `AUTO=on` (see below), else the kept
   mode from the panel/sweep, else the env. One apply per boot (the ZTE sends two informs per boot; a superseded worker stands down).
 - **Per-cell mode** (`locktest.cell_mode`): the newest lock-test row for the locked cell with `rat=nr`, the cell match, stored
@@ -289,6 +292,12 @@ at `/docs`.
 - The scheduled/manual antenna sweep (`POST /antenna-sweep`) is a different thing: 4 modes by median 5G SINR, kept with `AUTO=on`
   only if `SWEEP_MIN_GAIN_DB` better. Current `SWEEP_DAYS=0`: on demand only (the env default is 7). The lock test's sweep is the
   internet-tested one above.
+- A restore-only antenna trial (`POST /ab-smoke?antenna_lte=434@1550`) compares all four manual n78 combinations with LTE
+  unlocked and on the specified high-band LTE anchor. NR remains automatic in both profiles. Use the same modem iperf server,
+  WAN traffic checks and loaded probe windows. A contaminated measurement gets one retry after the WAN quiets. Record the
+  configured locks, serving cells, n78 samples, observed cell changes and per-cell SINR/RSRP/RSRQ. Read `GET /ab` → `antenna_trial`
+  for the results. On Stop, finish the in-flight measurement before restoring
+  the original profile and antenna mode. The journal keeps the restore pending across a restart. This trial does not save a winner.
 
 ## Capacity tests and the shaper (SQM)
 

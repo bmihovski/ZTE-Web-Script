@@ -518,10 +518,10 @@ def _iperf_once(server, secs, conn, reverse, load_windows=None, protect=False):
     return sp, "%s (%s)%s, %d streams %d s" % (why, ", ".join(notes), cpu_note(), conn, secs), st["ip3_snaps"]     # ends in 'N s': valid()
 
 
-def measure(secs=None, load_windows=None, *, download_only=False):
+def measure(secs=None, load_windows=None, *, download_only=False, server=None):
     """A lock-test step's throughput, now and synchronous: the modem's iperf3 down (CONN streams) then up (UP_CONN), the first server
     that answers. -> (down, up, which servers). Optionally collect one estimated transfer interval per successful direction.
-    With download_only, make one download attempt on the primary server to warm up NSA.
+    Use an explicit server when every leg must take the same path. With download_only, make one download attempt to warm up NSA.
     Never a ceiling, not in captest_hist (2026-11-18: the night cells' score needs it)."""
     if st["running"]: return None, None, "a capacity test is running"
     st["running"] = True; out, how = {}, []
@@ -529,8 +529,9 @@ def measure(secs=None, load_windows=None, *, download_only=False):
         directions = (("down", True, CONN),)
         if not download_only:
             directions += (("up", False, UP_CONN),)
+        servers = [server] if server else IPERFS[:1] if download_only else IPERFS
         for d, rev, conn in directions:
-            for srv in IPERFS[:1] if download_only else IPERFS:
+            for srv in servers:
                 sp, why, _ = _iperf_once(srv, secs or ISECS, conn, rev, load_windows=load_windows, protect=load_windows is not None)
                 if sp:
                     out[d] = sp

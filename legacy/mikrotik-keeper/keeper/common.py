@@ -166,7 +166,7 @@ def state(update=None):
     return s
 
 
-RESET_STATE_KEYS = ("morning", "morning_trial", "morning_dead", "morning_last", "ab_smoke", "ab_refresh",
+RESET_STATE_KEYS = ("morning", "morning_trial", "morning_dead", "morning_last", "ab_smoke", "ab_refresh", "antenna_ab",
                     "night_plan", "night_armed", "night_armed_at", "night_last", "night_remind_last",
                     "night_smoke", "night_scan", "day_last", "day_smoke")
 

@@ -2,7 +2,7 @@
 import threading
 import time
 
-from keeper import VERSION, abplan, acs, alert, brain, common, devices, guard
+from keeper import VERSION, abplan, acs, alert, brain, captest, common, devices, guard
 from keeper.common import E, event, log, stamp, state
 
 BOOT_S = float(E("AB_SMOKE_BOOT_S", "180"))
@@ -105,6 +105,68 @@ def _nr_for(anchor, row):
     return "none"
 
 
+def _antenna_load(profile, target, lte, mode, server):
+    """Use the same transfer windows, probes and radio checks as a loaded lock comparison."""
+    result = dict(zip(("ant5", "ant6"), mode))
+    windows = []
+    try:
+        if not captest.wait_lan_quiet():
+            raise RuntimeError("LAN traffic did not quiet")
+        seconds = max(captest.ISECS, 2 * acs.FAST_INTERVAL + 5)
+        try:
+            down, up, how = captest.measure(secs=seconds, load_windows=windows, server=server)
+        except captest.LocalTraffic as exc:
+            result["load_retries"] = [str(exc)]
+            if not captest.wait_lan_quiet():
+                raise
+            windows.clear()
+            down, up, how = captest.measure(secs=seconds, load_windows=windows, server=server)
+        if len(windows) != 2:
+            raise RuntimeError("iperf3 did not complete both transfers (%s)" % how)
+        radio = profile.transfer_evidence(windows, target, lte, "none", "n78")
+        rows = radio["observations"]
+        signals = {}
+        for row in rows:
+            cell = row["nr_cell"]
+            if brain.nr_band_of(cell.split("/")[0]) == "n78":
+                signals.setdefault(cell, []).append(row)
+        nr = [r["nr_cell"] for r in rows]
+        config_ok = all(r["boots"] == acs.st["boots"] and profile.matches(r, target)
+                        and (lte == "none" or r["lte_cell"] == brain.anchor_key(lte)) for r in rows)
+        config_ok = config_ok and all(radio["samples_per_transfer"]) and profile.config_matches(target, lte, "none")
+        result.update(brain.probe_windows(windows, min_points=2), down_mbps=down, up_mbps=up, load_how=how,
+                      radio=radio, config_verified=config_ok, transfer_windows=windows,
+                      nr_switches=sum(a != b for a, b in zip(nr, nr[1:])),
+                      n78_samples=sum(len(group) for group in signals.values()),
+                      nr_signal={cell: dict(samples=len(group), **{
+                          k: brain.med([brain.f(r.get(k)) for r in group])
+                          for k in ("nr_sinr", "nr_rsrp", "nr_rsrq")})
+                          for cell, group in signals.items()})
+    except RuntimeError as exc:
+        result["error"] = str(exc)
+    return result
+
+
+def _antenna_profile(name, lte, stop, reverse=False):
+    dev = devices.current()
+    profile = dev.profile
+    target = profile.snapshot()["raw"]
+    if not profile.config_matches(target, lte, "none"):
+        raise RuntimeError("LTE/NR configuration does not match the antenna trial")
+    modes = []
+    order = dev.antennas.SWEEP_MODES
+    with dev.antennas.trial_session() as set_mode:
+        for mode in reversed(order) if reverse else order:
+            if stop.is_set():
+                break
+            st["progress"] = dict(st["progress"], phase=dev.antennas.mode_name(*mode), modes=list(modes))
+            set_mode(*mode)
+            if stop.wait(dev.antennas.SWEEP_SETTLE):
+                break
+            modes.append(_antenna_load(profile, target, lte, mode, captest.IPERFS[0]))
+    return {"leg": name, "lte": lte, "nr": "none", "modes": modes}
+
+
 def _classify(legs):
     reachable = [x for x in legs if x.get("ok")]
     measured = [x for x in legs if x.get("measured")]
@@ -163,21 +225,22 @@ def _restore(pair):
     state({"ab_smoke_restore": None})
 
 
-def _run(original, notify):
+def _run(original, notify, antenna_lte=None):
     started = stamp()
     t0 = time.monotonic()
     stop = st["cancel"]
     trigger = st["running"]
     legs = []
-    restored, restore_error = None, ""
+    restored, restore_error, error = None, "", ""
     changed = False
     scope = None
     profile = getattr(devices.current(), "profile", None)
     try:
         if profile:
-            scope = profile.begin_scope("smoke")
+            scope = (profile.begin_scope("smoke", antennas=devices.current().antennas.effective()[0])
+                     if antenna_lte else profile.begin_scope("smoke"))
             original = tuple(profile.spec(scope["raw"][k]) for k in (profile.LTE, profile.NR))
-        plan = _plan(original)
+        plan = [("no lock", "none", "none"), ("LTE lock", antenna_lte, "none")] if antenna_lte else _plan(original)
         st["plan"] = plan
         for step, (name, lte, nr) in enumerate(plan, 1):
             if stop.is_set(): break
@@ -187,9 +250,15 @@ def _run(original, notify):
             if switch and not changed:
                 if not scope: state({"ab_smoke_restore": list(original)})
                 changed = True
-            result = _leg(name, lte, nr, switch, stop)
+            if antenna_lte:
+                if switch:
+                    _switch(lte, nr, stop)
+                result = _antenna_profile(name, lte, stop, reverse=step > 1)
+            else:
+                result = _leg(name, lte, nr, switch, stop)
             if not stop.is_set(): legs.append(result)
     except Exception as e:
+        error = str(e)
         log("ab smoke failed: %r" % e)
     finally:
         st["progress"] = dict(st["progress"] or {}, phase="restoring", legs=list(legs))
@@ -202,12 +271,23 @@ def _run(original, notify):
             st["retry_at"] = time.monotonic() + 60
             log("ab smoke restore pending: %r" % e)
         try:
-            summary = _classify(legs)
+            if antenna_lte:
+                summary = {"verdict": "incomplete" if error or restore_error or len(legs) != 2 else "measured",
+                           "error": error, "anchor": antenna_lte}
+                if summary["verdict"] == "measured" and any(
+                        len(leg["modes"]) != 4 or any(not mode.get("config_verified") or mode.get("call_ok_pct") in (None, "")
+                                                      for mode in leg["modes"]) for leg in legs):
+                    summary["verdict"] = "incomplete"
+            else:
+                summary = _classify(legs)
             if stop.is_set(): summary.update(verdict="stopped", detail="Stopped by the operator.")
             res = dict(summary, trigger=trigger, time=stamp(), started=started, version=VERSION,
                        seconds=round(time.monotonic() - t0, 1), legs=legs, restored=restored, restore_error=restore_error)
-            st["result"] = res
-            state({"ab_smoke": res})
+            if antenna_lte:
+                state({"antenna_ab": res})
+            else:
+                st["result"] = res
+                state({"ab_smoke": res})
             if notify:
                 try: alert.report(_msg(res))
                 except Exception as e: log("ab smoke telegram failed: %r" % e)
@@ -217,10 +297,14 @@ def _run(original, notify):
                 st.update(running=None, progress=None, plan=None, cancel=None)
 
 
-def run(trigger="manual", notify=True):
+def run(trigger="manual", notify=True, antenna_lte=None):
     """Reserve the modem before publishing a run so other probes defer."""
     with common.test_start_lock:
         saved = state()
+        if antenna_lte and not getattr(devices.current(), "profile", None):
+            return False, "antenna trials require the ZTE modem"
+        if antenna_lte and (not captest.IPERFS or not captest.sqm.URL):
+            return False, "antenna trials require iperf and WAN traffic checks"
         why = common.busy()
         if why: return False, "busy: " + why
         if (saved.get("quality_ab") or {}).get("phase") in ("trial", "keep"):
@@ -231,7 +315,7 @@ def run(trigger="manual", notify=True):
             return False, "managed locks are pending"
         original = _managed_pair(saved)
         st.update(running=trigger, progress={"phase": "planning", "legs": []}, plan=None, result=None, cancel=threading.Event())
-        threading.Thread(target=_run, args=(original, notify), daemon=True).start()
+        threading.Thread(target=_run, args=(original, notify and not antenna_lte, antenna_lte), daemon=True).start()
     return True, trigger
 
 
@@ -282,4 +366,5 @@ def status():
     return {"running": current["running"], "progress": current["progress"], "active": active,
             "plan": [dict(leg=name, lte=lte, nr=nr, lte_band=profile.low_band(lte) if profile else None) for name, lte, nr in plan],
             "stopping": bool(current["cancel"] and current["cancel"].is_set()),
-            "restore_pending": bool(saved.get("ab_smoke_restore") or (saved.get("profile_restore") or {}).get("owner") == "smoke"), "result": current["result"] or saved.get("ab_smoke")}
+            "restore_pending": bool(saved.get("ab_smoke_restore") or (saved.get("profile_restore") or {}).get("owner") == "smoke"),
+            "result": current["result"] or saved.get("ab_smoke"), "antenna_trial": saved.get("antenna_ab")}

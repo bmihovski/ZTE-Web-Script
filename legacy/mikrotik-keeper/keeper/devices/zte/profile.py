@@ -42,7 +42,7 @@ def observed(vals):
             from keeper.devices import zte
             row = zte.row(vals)
             radio.append(dict(time=time.time(), boots=acs.st["boots"], **raw,
-                              **{k: row[k] for k in ("lte_cell", "nr_cell", "lte_ca")}))
+                              **{k: row[k] for k in ("lte_cell", "nr_cell", "lte_ca", "nr_sinr", "nr_rsrp", "nr_rsrq")}))
         changed.notify_all()
 
 
@@ -212,12 +212,14 @@ def apply(lte, nr, web=False):
         return method
 
 
-def begin_scope(owner=None):
+def begin_scope(owner=None, antennas=None):
     with serial:
         if pending():
             raise RuntimeError("previous radio profile restore pending")
         original = snapshot()
         original["owner"] = owner
+        if antennas is not None:
+            original["antennas"] = antennas
         state({"profile_restore": original})
         recovery["pending"] = True
         return original
@@ -232,6 +234,9 @@ def finish_scope(commit=None):
             return
         if commit is None:
             _write(target)
+            if target.get("antennas"):
+                from keeper.devices.zte.antennas import restore_trial_mode
+                restore_trial_mode(target["antennas"])
             if not brain.wait_online(timeout=90, since=time.time()):
                 raise RuntimeError("profile restore pending: no fresh internet probes")
             update = dict(target.get("managed") or {})

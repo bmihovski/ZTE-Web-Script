@@ -174,4 +174,17 @@ assert antennas.antenna_sweep("manual") is None, "a failing sweep returns None"
 assert any(x[1] == "LOGOUT" for x in m.st["sets"]), ("no LOGOUT after a mid-sweep error", m.st["sets"])
 assert antennas.sweep_st["running"] is False
 _ant._measure = _rm
+
+# An acknowledged write alone does not prove that both antenna settings took effect.
+assert antennas.verify_morning()["ant6"] == "4"
+m.st["antenna_echo_bad"] = True
+try:
+    antennas.verify_morning()
+except RuntimeError as exc:
+    assert "antenna 5 readback" in str(exc), exc
+else:
+    raise AssertionError("an incorrect antenna 5 readback was accepted")
+finally:
+    m.st["antenna_echo_bad"] = False
+assert m.st["sets"][-1][1] == "LOGOUT"
 print("OK test_sweep")

@@ -32,6 +32,8 @@ the docstrings and this skill in sync.
   measured (web failure skips it too) is not a baseline: the ranking drops it and nothing is auto-applied against it.
 - **Per-cell antenna mode requires a lock:** the locked 5G cell's newest good lock-test mode applies at boot with `AUTO=on`; else the
   kept mode (panel/sweep); else the env. One apply per boot.
+- Before scoring the ZTE morning baseline or a high-band leg, confirm the configured antenna mode with modem readback. A failed
+  baseline check restores the starting profile. The morning check records the mode and the boot it was verified on.
 - **A 5G lock is a pair:** each NR step pins its 5G cell's `best_anchor` (an NSA cell is served only under some anchors), the
   baseline pins the best anchor across the tested cells, and a clear winning row auto-applies the 5G cell **and** its anchor
   (`anchor=` overrides the mapping for every cell).
@@ -70,6 +72,9 @@ the docstrings and this skill in sync.
   `POST /ab-smoke-stop` interrupts measurement and restores after an in-flight reboot.
   Report inconclusive when there is no fresh evidence. The smoke never commits a new winner. A persisted restoration request
   survives an interrupted run. A/B alternatives need a complete current-method score, or an observed n28 pair for a low scan.
+- For an n78 antenna matrix, use `POST /ab-smoke?antenna_lte=434@1550` and read `/ab` → `antenna_trial`. NR remains automatic
+  under both the unlocked and LTE-locked profiles. Check the transfer evidence, per-cell signal and observed NR changes before
+  comparing loaded quality. The restore journal covers both the original locks and the effective antenna mode.
 - **Power-off workflow:** scheduled night tests, weekly arming, and Saturday confirmation are retired. The cold-boot clock
   and lock guard are still required. Disable `LOCK_PAUSE` in production when the router is off overnight.
 - **Clean measurement history:** a one-shot `data/.reset-measurements` startup marker clears samples, results and learned

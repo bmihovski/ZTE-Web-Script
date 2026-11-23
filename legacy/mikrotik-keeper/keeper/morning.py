@@ -285,8 +285,20 @@ def _leg(name, lte, nr, band=None, role="", compare=False):
             else:
                 if not warmed_nr:
                     time.sleep(WAKE_LEAD_S)
+                antennas = getattr(dev, "antennas", None)
+                antenna_mode = None
+                if antennas and not nr_band:
+                    try:
+                        antenna_mode = res["antenna_mode"] = antennas.verify_morning()
+                    except Exception as exc:
+                        res["antenna_mode_error"] = str(exc)
+                        raise RuntimeError("morning antenna mode unverified: %s" % exc) from exc
                 probe_start = time.time()
                 net = brain.internet_test(seconds=PROBE_S)
+                if antenna_mode and antenna_mode["boot"] != acs.st["boots"]:
+                    antenna_mode["verified"] = False
+                    res["antenna_mode_error"] = "modem rebooted during the probe"
+                    raise RuntimeError(res["antenna_mode_error"])
                 history = list(brain.HIST)
                 h = brain.row_health(history[-1] if history else {})
                 res.update({"ok": net.get("down_mbps") is not None or net.get("call_ok") == 1, "down_mbps": net.get("down_mbps"),
@@ -307,6 +319,10 @@ def _leg(name, lte, nr, band=None, role="", compare=False):
                     res["observed_nr"] = proof["observations"][-1]["nr_cell"]
                 if compare and res["ok"]:
                     _record_load(res, mark, nr_band)
+                    if antenna_mode and antenna_mode["boot"] != acs.st["boots"]:
+                        antenna_mode["verified"] = False
+                        res["antenna_mode_error"] = "modem rebooted during the comparison"
+                        raise RuntimeError(res["antenna_mode_error"])
     except Exception as e:
         res.update(ok=False, error=str(e))
     finally:
@@ -440,7 +456,7 @@ def _decision(legs):
     measured = []
     baseline_how = next((leg.get("load_how") for leg in legs if leg["lte"] == "none"), None)
     for leg in legs:
-        if not leg.get("load_s"):
+        if leg.get("antenna_mode_error") or not leg.get("load_s"):
             continue
         nr = leg.get("observed_nr") or ""
         row = dict(lock=leg["lte"], minutes=leg["radio_samples"], on_target_pct=leg["on_target_pct"],
@@ -529,6 +545,8 @@ def _run(low=None, notify=True, trigger="manual", apply=True, bands=None, cell=N
         if cell and (not captest.sqm.URL or not captest.wait_lan_quiet()):
             raise RuntimeError("local traffic before comparison")
         baseline = _leg("no lock", "none", "none", compare=not apply)
+        if baseline.get("antenna_mode_error"):
+            raise RuntimeError("unverified antenna mode on the unlocked baseline")
         saturday = low is None and LOW_SAT and time.localtime().tm_wday == 5
         look_low = low is True or saturday or (low is None and not _healthy(baseline))
         st["stage"] = "discover"
@@ -597,11 +615,12 @@ def _run(low=None, notify=True, trigger="manual", apply=True, bands=None, cell=N
             coverage = {"baseline": None in measured, "requested_bands": requested_bands,
                         "missing_bands": [band for band in requested_bands if band not in measured]}
         h = next((x.get("health") for x in legs if x.get("health")), {})
+        verdict = ("modem good" if any(x.get("ok") for x in legs) else "modem bad" if h.get("sim") is False
+                   else "inconclusive" if not apply or any(x.get("antenna_mode_error") for x in legs) else "provider issue")
         res = {"trigger": st["why"], "time": stamp(), "started": st["started"], "seconds": round(time.time() - t0, 1),
                "version": VERSION, "apply": apply, "complete": complete, "fallback": fallback, "discoveries": discoveries,
                "legs": legs, "a": a or {}, "b": b or {}, "decision": decision, "coverage": coverage, "restored": restored, "up": up,
-               "any_5g": any(x.get("has5g") for x in legs),
-               "verdict": "modem good" if any(x.get("ok") for x in legs) else ("modem bad" if h.get("sim") is False else "inconclusive" if not apply else "provider issue")}
+               "any_5g": any(x.get("has5g") for x in legs), "verdict": verdict}
         st["result"] = res; state({"morning" if apply else "morning_trial": res})
         if notify:
             try: alert.report(_msg(res))
