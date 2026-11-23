@@ -127,7 +127,7 @@ try:
     # antenna config retries: a transient failure (browser page took the web session) is retried twice, then the exact goforms
     class WStub:
         def __init__(self, fail): self.n = 0; self.fail = fail
-        def set_ant(self, auto, a5, a6): self.n += 1; return ["BSP_ANTENNA_STATE_SET"] if self.n <= self.fail else []
+        def set_ant(self, auto, a5, a6, *, verify=False): self.n += 1; return ["BSP_ANTENNA_STATE_SET"] if self.n <= self.fail else []
         def login(self): return None
     w = WStub(2); assert antennas._set_mode(w, "4", "1") == "" and w.n == 3
     w = WStub(9); assert antennas._set_mode(w, "4", "1") == ["BSP_ANTENNA_STATE_SET"] and w.n == 3
@@ -187,4 +187,20 @@ else:
 finally:
     m.st["antenna_echo_bad"] = False
 assert m.st["sets"][-1][1] == "LOGOUT"
+
+# Each loaded mode has a fresh session, so an expired previous login cannot refuse its first write.
+logins = m.st["logins"]
+with antennas.trial_session() as set_mode:
+    set_mode("1", "4")
+    assert m.st["sets"][-1][1] == "LOGOUT", m.st["sets"][-3:]
+    m.st["sessions"].clear()
+    set_mode("4", "4")
+    assert m.st["sets"][-1][1] == "LOGOUT" and m.st["logins"] == logins + 2
+
+from keeper import alert
+messages = []
+alert.report = messages.append
+alert.WEB_CLOSE_S = 0
+assert antennas.antenna_sweep("manual", ui=True)
+assert len(messages) == 2 and "Close" in messages[0] and "You can reopen" in messages[1], messages
 print("OK test_sweep")

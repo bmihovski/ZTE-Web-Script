@@ -108,7 +108,13 @@ The keeper measures, analyses and decides; the userscript only shows the results
   browser's ZTE session is logged out meanwhile. Results: `antenna_sweeps.csv`, `GET /antenna-sweeps`, an `antenna sweep` event.
 - For a loaded antenna comparison with restoration, use `POST /ab-smoke?antenna_lte=434@1550`. It runs the four n78 modes
   with LTE unlocked and on the specified LTE anchor, with NR automatic in both profiles. Read throughput, loaded quality and
-  per-cell signal at `GET /ab` under `antenna_trial`.
+  per-cell signal at `GET /ab` under `antenna_trial`, or open **Loaded n78 antenna tests** in the Keeper panel. The panel shows
+  the per-mode loaded score and the reason any mode was skipped.
+- **Speed-test current profile** (`POST /ab-smoke?antenna_lte=current`) uses the same checks without changing the LTE or NR locks.
+  Each mode uses a fresh modem web login. The latest result is `GET /ab` → `antenna_sweep`. An incomplete mode reports the
+  available transfer and why the other direction failed.
+- Starting a smoke or antenna test from the ZTE panel gives you 20 seconds to close ZTE Helper, modem browser tabs and the
+  Android app. With Telegram configured, the completion report tells you when you can reopen them.
 - The default morning run confirms the configured ZTE antenna mode before the unlocked and high-band probes and includes
   the readback in each measured leg.
 - **Lock test, LTE and 5G** (`locktest.py`): `POST /lock-test?cells=434@1550,340@100` (LTE, panel: "Run LTE lock test") or

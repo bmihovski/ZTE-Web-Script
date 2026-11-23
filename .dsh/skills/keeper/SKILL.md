@@ -72,9 +72,16 @@ the docstrings and this skill in sync.
   `POST /ab-smoke-stop` interrupts measurement and restores after an in-flight reboot.
   Report inconclusive when there is no fresh evidence. The smoke never commits a new winner. A persisted restoration request
   survives an interrupted run. A/B alternatives need a complete current-method score, or an observed n28 pair for a low scan.
-- For an n78 antenna matrix, use `POST /ab-smoke?antenna_lte=434@1550` and read `/ab` → `antenna_trial`. NR remains automatic
+- For an n78 antenna matrix, use **Compare unlocked and locked** in the panel or `POST /ab-smoke?antenna_lte=434@1550`. Read `/ab`
+  → `antenna_trial` for scores on complete, radio-verified modes and reasons for skipped modes. NR remains automatic
   under both the unlocked and LTE-locked profiles. Check the transfer evidence, per-cell signal and observed NR changes before
   comparing loaded quality. The restore journal covers both the original locks and the effective antenna mode.
+- Use **Speed-test current profile** or `POST /ab-smoke?antenna_lte=current` for loaded measurements across four verified antenna
+  modes while keeping the current LTE and NR locks. Read `/ab` → `antenna_sweep`. Each mode opens a fresh ZTE web login and logs
+  out before the transfer. An incomplete iPerf pair still reports the successful direction and the failure reason, with no score.
+- The ZTE smoke, loaded antenna and signal sweep buttons send `ui=1`. The keeper gives the operator 20 seconds to close the
+  modem clients, with a Telegram start notice and an all-clear in the completion report. Restore recovery sends the all-clear
+  if the initial report said restoration was pending.
 - **Power-off workflow:** scheduled night tests, weekly arming, and Saturday confirmation are retired. The cold-boot clock
   and lock guard are still required. Disable `LOCK_PAUSE` in production when the router is off overnight.
 - **Clean measurement history:** a one-shot `data/.reset-measurements` startup marker clears samples, results and learned

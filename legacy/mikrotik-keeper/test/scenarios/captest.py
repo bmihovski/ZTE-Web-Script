@@ -298,6 +298,14 @@ assert [x[:3] for x in seen] == [("a:1", c.CONN, True), ("b:2", c.CONN, True), (
 assert (common.state().get("captest_hist") or []) == h0
 c.st["running"] = True; assert c.measure() == (None, None, "a capacity test is running"); c.st["running"] = False
 
+# A successful download must not hide the actual failure to measure the upload.
+def partial(srv, secs, conn, rev, **kw):
+    return (140.0, "ok", []) if rev else (None, "Status=ServerBusy", [])
+c._iperf_once = partial
+down, up, detail = c.measure(server="a:1")
+assert down == 140.0 and up is None
+assert "down a:1" in detail and "up failed (a:1: Status=ServerBusy)" in detail, detail
+
 # One protected download can wake NSA without entering capacity history.
 seen.clear()
 def warm(srv, secs, conn, rev, *, load_windows, protect):

@@ -68,9 +68,13 @@ Durable project memory. Read this first; the details live in the keeper docs.
 - **A/B smoke is diagnostic:** the panel uses `/ab`, `/ab-smoke`, and `/ab-smoke-stop`. It restores the managed pair on finish,
   stop, or recovery after interruption. Automatic quality A/B still runs on persistent poor quality and can use a current-method
   loaded candidate observed on another site.
+- UI-started ZTE smoke and antenna tests use `ui=1` for a 20-second app-close window and Telegram notices. Put the all-clear
+  in the existing report when present. When restoration is pending, send the all-clear after recovery.
 - **Loaded n78 antenna trial:** `POST /ab-smoke?antenna_lte=434@1550` tests all four modes unlocked and on one high-band LTE
   lock, leaving NR automatic. `GET /ab` → `antenna_trial` records radio readback, per-cell signal and loaded quality. The restore
-  journal covers the original profile and antenna mode.
+  journal covers the original profile and antenna mode. The panel shows per-mode scores and offers **Speed-test current profile**
+  (`antenna_lte=current`), which retains both cell locks and reports separately at `/ab` → `antenna_sweep`. Use a fresh ZTE web
+  session for each loaded mode so a long transfer cannot leave the next mode using an expired login.
 - **Measurement reset:** put `data/.reset-measurements` on the container mount while idle and restart. Startup clears measurements
   and learned ranking caches, compacts SQLite, and consumes the marker. Keep managed locks, antenna settings, site notes, app
   lists and SQM inputs. Minute samples store typed cell identifiers and numeric metrics with a compact payload for other fields.

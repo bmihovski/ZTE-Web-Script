@@ -4,7 +4,7 @@ import re
 import threading
 import time
 
-from keeper import acs, brain, common
+from keeper import acs, alert, brain, common
 from keeper.common import log, state
 from keeper.devices.zte import locks
 from keeper.devices.zte.web import Web, web_lock
@@ -212,7 +212,7 @@ def apply(lte, nr, web=False):
         return method
 
 
-def begin_scope(owner=None, antennas=None):
+def begin_scope(owner=None, antennas=None, web_notice=None):
     with serial:
         if pending():
             raise RuntimeError("previous radio profile restore pending")
@@ -220,6 +220,8 @@ def begin_scope(owner=None, antennas=None):
         original["owner"] = owner
         if antennas is not None:
             original["antennas"] = antennas
+        if web_notice:
+            original["web_notice"] = web_notice
         state({"profile_restore": original})
         recovery["pending"] = True
         return original
@@ -245,6 +247,7 @@ def finish_scope(commit=None):
         else:
             state(dict(commit, profile_restore=None))
         recovery["pending"] = False
+        return target
 
 
 def pending():
@@ -259,7 +262,9 @@ def recover(row=None):
         recovery.update(busy=True, next=time.monotonic() + 600)
     def work():
         try:
-            finish_scope()
+            target = finish_scope()
+            if target and target.get("web_notice"):
+                alert.web_test_end("%s: keeper finished recovering the starting settings." % target["web_notice"])
         except Exception as e:
             log("radio profile restore pending: %s" % e)
         finally:

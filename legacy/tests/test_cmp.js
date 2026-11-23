@@ -339,6 +339,45 @@ const loginRun = async (cookie, app, answer) => {
     assert.match(html['#keeper_ab_plan'], /A low.*Running/);
     assert.ok(src.indexOf('id="keeper_ab_plan"') < src.indexOf('Capacity &amp; shaper (SQM)</h4>'));
   }]);
+  cases.push(['keeper panel shows stored loaded antenna mode scores and skipped tests', async () => {
+    for (const f of ['keeper_table', 'keeper_antenna_trial_render']) eval('global.' + f + '=' + grab(f).replace('function ' + f, 'function'));
+    global.$ = sel => ({ html(v) { html[sel] = v; }, text(v) { html[sel] = v; }, prop() {} });
+    keeper_antenna_trial_render({started: '2026-11-23 15:12:54', verdict: 'incomplete', legs: [
+      {lte: 'none', modes: [{ant5: '4', ant6: '4', error: 'local traffic <retry>'}]},
+      {lte: '434@1550', modes: [{ant5: '1', ant6: '4', down_mbps: 162, up_mbps: 27.9, call_ok_pct: 100,
+        loss_pct: 0, lat_p95: 69.9, jitter_ms: 13.5, score: 90.9, radio: {verified: true}, config_verified: true,
+        nr_signal: {'636576/534': {nr_sinr: 12, nr_rsrp: -79, nr_rsrq: -12}}}]}]});
+    assert.match(html['#keeper_antenna_trial_status'], /2026-11-23.*incomplete/i);
+    assert.match(html['#keeper_antenna_trial_modes'], /Unlocked.*dir\/dir.*local traffic &lt;retry&gt;/);
+    assert.match(html['#keeper_antenna_trial_modes'], /434@1550.*omni\/dir.*162.*27\.9.*90\.9.*534@636576.*12.*-79.*-12/);
+    assert.ok(src.includes('id="keeper_antenna_trial_modes"'));
+    const comparison = html['#keeper_antenna_trial_modes'];
+    keeper_antenna_trial_render({started: '2026-11-23 20:10:00', verdict: 'measured', legs: [
+      {lte: 'none', modes: [{ant5: '4', ant6: '4', score: 90, config_verified: true, radio: {verified: true}}]}
+    ]}, '#keeper_antenna_loaded_sweep');
+    assert.match(html['#keeper_antenna_loaded_sweep_modes'], /Unlocked.*dir\/dir.*>90</);
+    assert.strictEqual(html['#keeper_antenna_trial_modes'], comparison);
+    assert.ok(src.includes("keeper_ab_action(false, 'current')"));
+  }]);
+  cases.push(['keeper UI asks the operator to close ZTE apps and explicitly requests notices', async () => {
+    for (const f of ['keeper_ab_action', 'keeper_sweep']) eval('global.' + f + '=' + grab(f).replace('function ' + f, 'function'));
+    vars(/var keeper_web_close = [^\n]*\n/);
+    global.keeper_ab_timer = null;
+    global.keeper_ab_request = 0;
+    global.keeper_ab_poll = () => {};
+    const requests = [];
+    let accepted = false;
+    global.confirm = prompt => { assert.match(prompt, /Close ZTE Helper.*Android app/s); return accepted; };
+    global.window = {confirm: global.confirm, clearTimeout() {}};
+    global.keeper_call = async (verb, path) => { requests.push([verb, path]); return {status: 202}; };
+    keeper_ab_action(false, 'current');
+    keeper_sweep();
+    assert.deepStrictEqual(requests, []);
+    accepted = true;
+    keeper_ab_action(false, 'current');
+    keeper_sweep();
+    assert.deepStrictEqual(requests, [['POST', '/ab-smoke?ui=1&antenna_lte=current'], ['POST', '/antenna-sweep?ui=1']]);
+  }]);
   for (const [name, fn] of antCases.concat(cases)) { try { await fn(); console.log('ok   ', name); } catch (e) { fails++; console.log('FAIL ', name, '-', e.message); } }
   console.log(fails ? fails + ' FAILED' : 'ALL PASSED');
   process.exit(fails ? 1 : 0);

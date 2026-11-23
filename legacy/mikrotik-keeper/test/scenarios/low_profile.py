@@ -5,7 +5,7 @@ import tempfile
 
 os.environ.update(DATA=tempfile.mkdtemp(), DEVICE="zte")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
-from keeper import acs, common, devices
+from keeper import acs, alert, common, devices
 from keeper.devices.zte import locks
 
 modem = {"LockLTEBand": "1,3,8,20,48", "LockLTECell": "394,100", "LockNr5gCell": ""}
@@ -92,7 +92,7 @@ assert common.state()["lte_prior_band"] == original["LockLTEBand"]
 # Antenna restoration stays journaled when only the keeper restarted and the radio profile itself is unchanged.
 from keeper.devices.zte import antennas
 original_mode = {"auto": "0", "ant5": "1", "ant6": "4"}
-profile.begin_scope("smoke", antennas=original_mode)
+profile.begin_scope("smoke", antennas=original_mode, web_notice="Loaded n78 sweep")
 profile.latest = None
 report()
 restore_mode = antennas.restore_trial_mode
@@ -105,8 +105,18 @@ try:
     assert profile.pending() and common.state()["profile_restore"]["antennas"] == original_mode
     antennas.restore_trial_mode = lambda mode: restored_modes.append(mode)
     restored_modes = []
-    profile.finish_scope()
-    assert restored_modes == [original_mode] and not profile.pending()
+    messages = []
+    original_report = alert.report
+    try:
+        alert.report = messages.append
+        profile.recover()
+        deadline = time.monotonic() + 5
+        while profile.recovery["busy"] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert restored_modes == [original_mode] and not profile.pending()
+        assert len(messages) == 1 and "You can reopen" in messages[0], messages
+    finally:
+        alert.report = original_report
 finally:
     antennas.restore_trial_mode = restore_mode
 

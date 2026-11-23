@@ -61,7 +61,8 @@ ROUTES = [   # method, path, summary, [(param, example, description)], capabilit
      "the network's low-band cell + n28; the internet test; full band list back). Only unlocked",
      [("band", "8", "LTE band number (LOW_BANDS)")], "lock_test"),
     ("post", "/ab-smoke", "Start a diagnostic comparison and restore the managed locks after the test",
-     [("antenna_lte", "", "One high-band LTE PCI@EARFCN, to measure all four n78 antenna modes with LTE unlocked and locked")], "lock_test"),
+     [("antenna_lte", "", "A high-band LTE PCI@EARFCN to compare unlocked and locked, or current to sweep the existing profile"),
+      ("ui", "0", "1 = give the operator time to close the ZTE apps and send start/end notices")], "lock_test"),
     ("post", "/ab-smoke-stop", "Stop the smoke and restore the managed locks after any in-flight reboot", [], "lock_test"),
     ("get", "/ab-refresh", "Read-only: the one-call refresh (band scan -> A/B smoke -> one Telegram) state/result", [], None),
     ("post", "/ab-refresh", "One call: the full band scan (B1,B3,B7,B8,B20,B28), then the full A/B smoke, then ONE Telegram with both; "
@@ -76,7 +77,8 @@ ROUTES = [   # method, path, summary, [(param, example, description)], capabilit
      ("nr", "", "Optional 5G PCI@ARFCN for the selected cell")], "morning"),
     ("post", "/dev", "?on=1|0: development mode - the automatic A/B is off and the tests are allowed; the wife can continue working "
      "while the issue is fixed later", [("on", "1", "1 = on, 0 = off")], None),
-    ("post", "/antenna-sweep", "Run the keeper's antenna sweep (close every ZTE web page first)", [], "sweep"),
+    ("post", "/antenna-sweep", "Run the keeper's antenna sweep (close every ZTE web page first)",
+     [("ui", "0", "1 = give the operator time to close the ZTE apps and send start/end notices")], "sweep"),
     ("post", "/cells/forget", "Drop cells from this device's registry (e.g. the other device's cells that got in)",
      [("cells", "500/341,3150/341", "EARFCN/PCI (5G: ARFCN/PCI), comma separated")], None),
     ("post", "/cells/refill", "Rebuild the 5G cell <-> LTE anchor mapping from the stored samples (registry only, no modem action)",
@@ -349,10 +351,11 @@ class H(BaseHTTPRequestHandler):
                 code, res = 202 if ok else 409, {"started": ok, "band" if ok else "why": why}
             elif path == "/ab-smoke":       # full five-switch A/B test, with locks; the wife runs it when critical
                 antenna_lte = g("antenna_lte")
-                if antenna_lte and (not re.fullmatch(guard.SPEC_RE, antenna_lte)
+                if antenna_lte not in ("", "current") and (not re.fullmatch(guard.SPEC_RE, antenna_lte)
                                     or brain.band_of(antenna_lte.split("@")[1]) not in ("B1", "B3", "B7")):
                     raise ValueError("antenna_lte requires a B1, B3 or B7 PCI@EARFCN")
-                ok, why = absmoke.run("antenna trial", antenna_lte=antenna_lte) if antenna_lte else absmoke.run("manual")
+                ok, why = absmoke.run("antenna trial" if antenna_lte else "manual",
+                                     antenna_lte=antenna_lte, ui=g("ui") == "1")
                 code, res = 202 if ok else 409, {"started": ok, "why": why}
             elif path == "/ab-smoke-stop":
                 stopping = absmoke.stop()
@@ -417,7 +420,7 @@ class H(BaseHTTPRequestHandler):
                 code, res = 202 if ok else (400 if not cells else 429), {"started": ok, "rat": rat, "anchor": anchor if ok else None,
                                                                         "heading": heading if ok else "", "plan": ["none"] + cells if ok else []}
             elif path == "/antenna-sweep":
-                ok = dev.antennas.start_sweep()
+                ok = dev.antennas.start_sweep(ui=g("ui") == "1")
                 code, res = 202 if ok else 429, {"started": ok}
             elif path == "/cells/forget":     # /cells/forget?cells=500/341,3150/341
                 cells = [c for c in g("cells").split(",") if re.fullmatch(r"\d{1,6}/\d{1,4}", c)]

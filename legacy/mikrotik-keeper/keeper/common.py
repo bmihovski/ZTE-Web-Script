@@ -9,7 +9,7 @@ Clock: the RB450 has no battery clock - after a power cut RouterOS starts with a
 internet (2026-10-30: 18:00 instead of 06:25 for 75 s). The keeper's clock counts as verified only while the modem's own clock
 (Inform CurrentTime) agrees with it; time-of-day actions (LOCK_PAUSE, night screen) wait for that. Intervals use time.monotonic().
 """
-import calendar, datetime, email.utils, json, os, re, threading, time, urllib.error, urllib.request
+import calendar, datetime, email.utils, json, os, re, sys, threading, time, urllib.error, urllib.request
 
 from keeper import alert, store
 
@@ -131,11 +131,13 @@ def rotate(path):
 
 
 def log(msg):
-    """Print (container log) and append to `keeper.log`."""
-    print(stamp(), msg, flush=True)
+    """Write one complete container log line and append the same message to `keeper.log`."""
     with _log_lock:
+        now = stamp()
+        sys.stdout.write("%s %s\n" % (now, msg))
+        sys.stdout.flush()
         path = os.path.join(DATA, "keeper.log"); rotate(path)
-        with open(path, "a") as f: f.write("%s,%s\n" % (stamp(), msg))
+        with open(path, "a") as f: f.write("%s,%s\n" % (now, msg))
 
 
 def raw(head, body):
@@ -167,6 +169,7 @@ def state(update=None):
 
 
 RESET_STATE_KEYS = ("morning", "morning_trial", "morning_dead", "morning_last", "ab_smoke", "ab_refresh", "antenna_ab",
+                    "antenna_sweep_loaded",
                     "night_plan", "night_armed", "night_armed_at", "night_last", "night_remind_last",
                     "night_smoke", "night_scan", "day_last", "day_smoke")
 

@@ -9,4 +9,22 @@ for m, p in ps.items():
     out = p.communicate(timeout=240)[0]
     if p.returncode: bad.append("%s exit %d\n%s" % (m, p.returncode, out[-3000:]))
 assert not bad, "\n".join(bad)
+
+# RouterOS expects one stdout line per keeper message, even with concurrent API handlers.
+import contextlib, io, tempfile
+sys.path.insert(0, ROOT)
+from keeper import common
+class Output(io.StringIO):
+    def __init__(self):
+        super().__init__()
+        self.writes = []
+    def write(self, value):
+        self.writes.append(value)
+        return super().write(value)
+
+with tempfile.TemporaryDirectory() as common.DATA:
+    output = Output()
+    with contextlib.redirect_stdout(output):
+        common.log("slow request: GET /events 2.2 s")
+    assert len(output.writes) == 1 and output.writes[0].endswith("GET /events 2.2 s\n"), output.writes
 print("OK test_self_checks (%s)" % ", ".join(MODULES))

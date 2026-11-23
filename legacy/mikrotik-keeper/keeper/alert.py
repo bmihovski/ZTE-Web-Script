@@ -6,6 +6,7 @@ import json, os, re, threading, time, urllib.parse, urllib.request
 
 TOKEN, CHAT = os.environ.get("TG_TOKEN", ""), os.environ.get("TG_CHAT", "")
 GAP = float(os.environ.get("ALERT_GAP_MIN", "30")) * 60
+WEB_CLOSE_S = 20
 CALL_REBOOT_GRACE_S = float(os.environ.get("CALL_REBOOT_GRACE_S", "900"))   # no call-risk alarm in the first 15 min after a modem reboot/deploy - the reconnect is not a call problem
 _last, sent, _retry = {}, [], []
 _send_lock = threading.Lock()          # serialise actual sends: no interleaved "telegram alert failed" prints during a reboot storm          # _retry: messages that failed (no internet, modem rebooting) - sent again later
@@ -39,6 +40,17 @@ def report(text, now=None):
     sent.append((now or time.time(), "report", text))
     threading.Thread(target=_post, args=(text,), daemon=True).start()
     return True
+
+
+def web_test_start(name):
+    report("%s starts in %d seconds. Close ZTE Helper, the modem web page and the ZTE Android app. "
+           "Wait for the keeper to say you can reopen them." % (name, WEB_CLOSE_S))
+
+
+def web_test_end(text, restore_pending=False):
+    advice = ("Keep the ZTE apps and modem web page closed while the keeper restores the settings."
+              if restore_pending else "You can reopen ZTE Helper, the modem web page and the ZTE Android app.")
+    report(text + "\n" + advice)
 
 
 def flush(now=None):

@@ -7,7 +7,7 @@
  * 
  */
 
-console.log("Loading ZTE Script v" + "2026-11-22-#35");
+console.log("Loading ZTE Script v" + "2026-11-23-#38");
 
 siginfo =
     "wan_active_band,wan_active_channel,wan_lte_ca,wan_apn,wan_ipaddr," +
@@ -2197,6 +2197,37 @@ function keeper_poll()
 /* ---- capacity & shaper: the limit now and why, the learned ceilings, the tests; manual tests to check the line ---- */
 var keeper_cap_note = "", keeper_cap_last_time = null;     // the manual test's progress / result line; the newest test's time
 var keeper_ab_timer, keeper_ab_request = 0;
+var keeper_antenna_anchor = "";
+function keeper_antenna_trial_render(trial, panel = "#keeper_antenna_trial")
+{
+    var rows = (trial && trial.legs || []).flatMap(function(leg) {
+        return (leg.modes || []).map(function(mode) {
+            var signals = mode.nr_signal || {};
+            return {
+                lte: leg.lte === "none" ? "Unlocked" : leg.lte,
+                mode: [mode.ant5, mode.ant6].map(function(v) { return v === "4" ? "dir" : "omni"; }).join("/"),
+                down_mbps: mode.down_mbps, up_mbps: mode.up_mbps, call_ready_pct: mode.call_ok_pct,
+                loss_pct: mode.loss_pct, p95_ms: mode.lat_p95, jitter_ms: mode.jitter_ms, score: mode.score,
+                nr_signal: Object.keys(signals).map(function(cell) {
+                    var v = signals[cell];
+                    return cell.split("/").reverse().join("@") + " · " +
+                        [v.nr_sinr, v.nr_rsrp, v.nr_rsrq].map(function(x) { return x == null || x === "" ? "—" : x; }).join(" / ");
+                }).join(" | "),
+                nr_changes: mode.nr_switches,
+                note: mode.error || (mode.config_verified && (mode.radio || {}).verified ? "" : "Radio path unverified")
+            };
+        });
+    });
+    var scored = rows.filter(function(row) { return row.score != null; }).length;
+    $(panel + "_status").text(trial ?
+        (trial.started || trial.time || "") + " · " + trial.verdict + " · " + scored + "/" + rows.length + " scored" +
+            (trial.error ? " · " + trial.error : "") + (trial.restore_error ? " · Restore pending: " + trial.restore_error : "") :
+        "No loaded antenna trial recorded");
+    $(panel + "_table").prop("hidden", !rows.length);
+    $(panel + "_modes").html(keeper_table(rows, ["lte", "mode", "down_mbps", "up_mbps", "call_ready_pct",
+        "loss_pct", "p95_ms", "jitter_ms", "score", "nr_signal", "nr_changes", "note"]));
+}
+
 function keeper_ab_render(d)
 {
     var active = d.active;
@@ -2208,7 +2239,7 @@ function keeper_ab_render(d)
     } else {
         $("#keeper_ab_active").text("Active profile unavailable");
     }
-    var labels = ["current lock", "A high", "B high", "no lock", "A low", "B low"];
+    var labels = ["Current profile", "current lock", "A high", "B high", "no lock", "A low", "B low"];
     var plan = d.plan || [];
     var rows = labels.flatMap(function(label) {
         var leg = plan.find(function(x) { return x.leg === label; });
@@ -2221,7 +2252,7 @@ function keeper_ab_render(d)
             return [{profile: label, lte: leg.lte === "none" ? "Unlocked" : leg.lte,
                 nr: leg.nr === "none" ? "Automatic" : leg.nr, availability: availability}];
         }
-        if (label === "current lock" || label === "no lock") return [];
+        if (["Current profile", "current lock", "no lock"].includes(label)) return [];
         return [{profile: label, availability: !d.plan ? "Unavailable" :
             (d.running && !plan.length ? "Planning" : label.endsWith("low") ? "Needs a B8/B20 scan with n28" : "Needs an eligible loaded lock test")}];
     });
@@ -2237,14 +2268,19 @@ function keeper_ab_poll()
         if (request !== keeper_ab_request) return;
         keeper_ab_render(d);
         var p = d.progress || {}, last = d.result || {}, running = Boolean(d.running);
+        var trial = d.antenna_trial;
+        var candidate = (d.plan || []).find(function(leg) { return leg.leg === "A high"; });
+        keeper_antenna_anchor = (candidate || {}).lte || (trial || {}).anchor || (d.active || {}).lte || "";
+        keeper_antenna_trial_render(trial);
+        keeper_antenna_trial_render(d.antenna_sweep, "#keeper_antenna_loaded_sweep");
         var phase = p.phase || "starting";
         var progress = (p.step ? "Step " + p.step + " of " + p.total + " · " + p.leg + " · " : "") + phase;
         var text = running ? (d.stopping ? "Stopping · " + progress : progress) :
             (d.restore_pending ? "Restore pending" : (last.verdict ? last.verdict + " · " + last.time + " · " + (last.detail || "") : "Ready"));
         $("#keeper_ab_status").text(text);
-        $("#keeper_ab_start").prop("disabled", running || Boolean(d.restore_pending));
+        $("#keeper_ab_start, #keeper_antenna_trial_start, #keeper_antenna_loaded_start").prop("disabled", running || Boolean(d.restore_pending));
         $("#keeper_ab_stop").prop("disabled", !running || Boolean(d.stopping) || phase === "restoring");
-        var results = running ? (p.legs || []) : (last.legs || []);
+        var results = running && d.running !== "antenna trial" ? (p.legs || []) : (last.legs || []);
         $("#keeper_ab_results").prop("hidden", !results.length);
         $("#keeper_ab_results_title").text(running ? "Completed legs" : "Last smoke result");
         $("#keeper_ab_legs").html(keeper_table(results,
@@ -2256,20 +2292,34 @@ function keeper_ab_poll()
         $("#keeper_ab_active").text("Active profile unavailable");
         $("#keeper_ab_plan").empty();
         $("#keeper_ab_results").prop("hidden", true);
-        $("#keeper_ab_start, #keeper_ab_stop").prop("disabled", true);
+        $("#keeper_ab_start, #keeper_ab_stop, #keeper_antenna_trial_start, #keeper_antenna_loaded_start").prop("disabled", true);
         keeper_ab_timer = window.setTimeout(keeper_ab_poll, 5000);
     });
 }
 
-function keeper_ab_action(stop)
+function keeper_antenna_trial_start()
 {
-    if (!stop && !window.confirm("Run A/B smoke? The modem may reboot while testing and will restore the current locks.")) return;
+    var anchor = window.prompt("High-band LTE cell to compare against unlocked (PCI@EARFCN)", keeper_antenna_anchor);
+    if (anchor && anchor.trim()) keeper_ab_action(false, anchor.trim());
+}
+
+var keeper_web_close = "Close ZTE Helper, modem browser tabs and the ZTE Android app after starting. Wait for the keeper’s completion message before reopening.";
+
+function keeper_ab_action(stop, antenna_lte)
+{
+    var question = "Run A/B smoke? The modem may reboot and will restore the starting settings.";
+    if (antenna_lte === "current") question = "Speed-test the four n78 modes on the current profile? The original antenna mode will be restored.";
+    else if (antenna_lte) question = "Test four n78 modes unlocked and on LTE " + antenna_lte +
+        "? The modem may reboot and will restore the starting settings.";
+    if (!stop && !window.confirm(question + "\n\n" + keeper_web_close)) return;
     window.clearTimeout(keeper_ab_timer);
     ++keeper_ab_request;
-    $("#keeper_ab_start, #keeper_ab_stop").prop("disabled", true);
-    keeper_call("POST", stop ? "/ab-smoke-stop" : "/ab-smoke").then(function(r) {
+    $("#keeper_ab_start, #keeper_ab_stop, #keeper_antenna_trial_start, #keeper_antenna_loaded_start").prop("disabled", true);
+    var path = stop ? "/ab-smoke-stop" : "/ab-smoke?ui=1" + (antenna_lte ? "&antenna_lte=" + encodeURIComponent(antenna_lte) : "");
+    keeper_call("POST", path).then(function(r) {
         if (r.status === 202) {
             $("#keeper_ab_note").text("");
+            if (!stop) $("#keeper_ab_status").text(keeper_web_close);
             keeper_ab_poll();
             return;
         }
@@ -2353,10 +2403,9 @@ function keeper_cap_result(kind, n, prev, t0)
 
 function keeper_sweep()
 {
-    if (!confirm("Run the 4 antenna modes now? Takes ~2 min; the ZTE web page gets logged out.")) return;
-    keeper_call("POST", "/antenna-sweep").then(function(r) {
-        $("#keeper_sweep_sum").text(r.status == 202 ? "antenna sweep started - results in ~2 min" : "a sweep is already running");
-        window.setTimeout(keeper_poll, 130000);
+    if (!confirm("Run the n78 signal sweep?\n\n" + keeper_web_close)) return;
+    keeper_call("POST", "/antenna-sweep?ui=1").then(function(r) {
+        $("#keeper_sweep_sum").text(r.status == 202 ? keeper_web_close : "The keeper is busy. Try again after the current test ends.");
     }).catch(function(e) { $("#keeper_sweep_sum").text("keeper not reachable: " + e.message); });
 }
 
@@ -3903,9 +3952,24 @@ function inject_html()
                 <div style="font-size:11px">Lock tests (keeper) - <a onclick="keeper_lock_test('lte')">Run LTE lock test</a> | <a onclick="keeper_lock_test('nr')">Run 5G lock test</a>:</div>
                 <div id="keeper_lt_sum" style="font-size:11px"></div>
                 <div class="keeper_scroll"><table class="tools_table" id="keeper_lt"></table></div>
-                <div style="font-size:11px">Antenna modes (5G n78), tested by the keeper - <a onclick="keeper_sweep()">Run antenna sweep now</a>:</div>
+                <div style="font-size:11px">n78 signal sweep · <a onclick="keeper_sweep()">Run signal sweep</a></div>
                 <div id="keeper_sweep_sum" style="font-size:11px"></div>
                 <div class="keeper_scroll"><table class="tools_table" id="keeper_sweeps"></table></div>
+                <div style="margin:8px 0 4px"><b>Loaded n78 antenna tests</b>
+                    <div style="font-size:11px">Score out of 100 from the loaded test. NR signal shows SINR (dB), RSRP (dBm) and RSRQ (dB).</div>
+                    <button id="keeper_antenna_loaded_start" onclick="keeper_ab_action(false, 'current')" disabled>Speed-test current profile</button>
+                    <span id="keeper_antenna_loaded_sweep_status" role="status">Loading antenna results</span>
+                </div>
+                <div id="keeper_antenna_loaded_sweep_table" hidden>
+                    <div class="keeper_scroll"><table class="tools_table" id="keeper_antenna_loaded_sweep_modes"></table></div>
+                </div>
+                <div style="margin:8px 0 4px">
+                    <button id="keeper_antenna_trial_start" onclick="keeper_antenna_trial_start()" disabled>Compare unlocked and locked</button>
+                    <span id="keeper_antenna_trial_status" role="status">Loading antenna results</span>
+                </div>
+                <div id="keeper_antenna_trial_table" hidden>
+                    <div class="keeper_scroll"><table class="tools_table" id="keeper_antenna_trial_modes"></table></div>
+                </div>
                 <div style="font-size:11px">Last events (why = the keeper's explanation):</div>
                 <div class="keeper_scroll"><table class="tools_table" id="keeper_events"></table></div>
             </details>

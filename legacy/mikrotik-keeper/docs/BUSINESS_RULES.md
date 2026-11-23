@@ -298,6 +298,18 @@ at `/docs`.
   configured locks, serving cells, n78 samples, observed cell changes and per-cell SINR/RSRP/RSRQ. Read `GET /ab` → `antenna_trial`
   for the results. On Stop, finish the in-flight measurement before restoring
   the original profile and antenna mode. The journal keeps the restore pending across a restart. This trial does not save a winner.
+  The panel's **Loaded n78 antenna trial** shows the saved results and a 0–100 loaded score for each mode with complete measurements
+  and a verified radio path. Modes with traffic, transfer or radio failures show their reason. The signal sweep has its own display.
+  If iPerf3 measures only one direction, keep that rate and its radio observations with the failed direction's diagnostic.
+  Leave the combined call-quality metrics and score empty.
+- **Speed-test current profile** (`POST /ab-smoke?antenna_lte=current`) uses the same loaded checks and verifies each antenna mode
+  before the transfers. It keeps the existing LTE and NR locks and restores the original antenna mode. Its results are stored
+  separately under `GET /ab` → `antenna_sweep`.
+- A loaded antenna test opens a fresh modem web session for each mode and logs out after readback. It reserves keeper web
+  writes across the measurement so a boot worker cannot change the mode mid-transfer.
+- The ZTE panel's A/B smoke and antenna test buttons send `ui=1`. The keeper sends a Telegram notice and gives the operator
+  20 seconds to close the modem clients before starting. The existing completion report includes the all-clear, or the keeper
+  sends a short result when the test has no report. If profile restoration is pending, the all-clear follows successful recovery.
 
 ## Capacity tests and the shaper (SQM)
 

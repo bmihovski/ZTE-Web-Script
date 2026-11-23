@@ -19,7 +19,7 @@ ANT_READY_TIMEOUT_S (300 - wait for the web after a boot), SWEEP_READY_TIMEOUT_S
 from contextlib import contextmanager
 import threading, time
 
-from keeper import acs, brain, common, locktest
+from keeper import acs, alert, brain, common, locktest
 from keeper.common import E, event, log, record, stamp, state
 from keeper.devices.zte import settings as ws
 from keeper.devices.zte import watchdog as wd
@@ -157,12 +157,12 @@ def _target_ok(rd, expected, n=3):
     return any((c != "no5G") if expected is None else (c == expected) for c in cells)
 
 
-def _set_mode(w, a5, a6):
+def _set_mode(w, a5, a6, *, verify=False):
     """Set one antenna mode, retrying ANT_SET_TRIES times: a browser page can take the single ZTE web session, and each retry logs
     in again (which takes it back). Returns "" or the list of goforms the ZTE refused (the exact reason)."""
     bad = []
     for i in range(max(1, ANT_SET_TRIES)):
-        try: bad = w.set_ant("0", a5, a6)
+        try: bad = w.set_ant("0", a5, a6, verify=verify)
         except Exception as e: bad = ["web error %r" % e]
         if not bad: return ""
         log("antenna set failed (%d/%d, %s): %s" % (i + 1, ANT_SET_TRIES, mode_name(a5, a6), bad))
@@ -177,20 +177,20 @@ def _set_mode(w, a5, a6):
 
 @contextmanager
 def trial_session():
-    """Keep boot-time antenna writes out of the measurement windows."""
+    """Keep other keeper web writes out of the measurements and log in separately for each mode."""
     with web_lock:
-        w = Web()
-        err = w.login()
-        if err:
-            raise RuntimeError(err)
-        try:
-            def set_mode(a5, a6):
-                bad = _set_mode(w, a5, a6)
+        def set_mode(a5, a6):
+            w = Web()
+            err = w.login()
+            if err:
+                raise RuntimeError(err)
+            try:
+                bad = _set_mode(w, a5, a6, verify=True)
                 if bad:
                     raise RuntimeError("antenna mode refused: %s" % bad)
-            yield set_mode
-        finally:
-            w.logout()
+            finally:
+                w.logout()
+        yield set_mode
 
 
 def restore_trial_mode(mode):
@@ -314,25 +314,33 @@ def _restore(w, cur):
     return ""
 
 
-def antenna_sweep(trigger):
+def antenna_sweep(trigger, ui=False):
     """Measure the 4 modes on the web page (~2 min, the browser's ZTE session is logged out meanwhile); keep the winner with AUTO=on.
     Rows go to `antenna_sweeps`. Returns the verdict text, "aborted: ..." or None."""
     with _sweep_lock:
         if sweep_st["running"]: return None
         sweep_st["running"] = True
     rows = []; w = None
+    verdict = "No result"
     try:
+        if ui:
+            alert.web_test_start("n78 signal sweep")
+            time.sleep(alert.WEB_CLOSE_S)
         with web_lock:
             if not ready(timeout=SWEEP_READY_TIMEOUT_S):
-                log("antenna sweep: the ZTE web is not reachable"); return "aborted: the ZTE web is not reachable"
+                verdict = "aborted: the ZTE web is not reachable"
+                log("antenna sweep: the ZTE web is not reachable"); return verdict
             w = Web(); err = w.login()
-            if err: log("antenna sweep: " + err); return None
+            if err:
+                verdict = "aborted: " + err
+                log("antenna sweep: " + err); return None
             cur = ant_cfg()
             rows, aborted = _measure(w, trigger)
             if aborted:                                # nothing measured is trustworthy: put the configured mode back, record nothing
                 aborted += _restore(w, cur)
                 w.logout(); log("antenna sweep aborted: " + aborted); event({"event": "antenna sweep (%s)" % trigger, "to": "aborted", "why": aborted})
-                return "aborted: " + aborted
+                verdict = "aborted: " + aborted
+                return verdict
             # winner: best median 5G SINR on the cell most modes saw (RSRP breaks ties); modes on another cell don't count
             main = max(set(r["nr_cell"] for r in rows), key=lambda c: sum(1 for r in rows if r["nr_cell"] == c))
             valid = [r for r in rows if r["nr_cell"] == main and r["sinr_p50"] is not None and not r["note"]]
@@ -361,6 +369,7 @@ def antenna_sweep(trigger):
                                                                " (%s)" % r["note"] if r["note"] else "") for r in rows)})
         return verdict
     except Exception as e:
+        verdict = "aborted: %s" % e
         log("antenna sweep failed: %r" % e)
         if w:                                    # free the ZTE's single web session even on an error (the browser is locked out otherwise)
             try: w.logout()
@@ -368,6 +377,8 @@ def antenna_sweep(trigger):
         return None
     finally:
         sweep_st["running"] = False
+        if ui:
+            alert.web_test_end("n78 signal sweep finished. %s" % verdict)
 
 
 def _q(r):
@@ -457,10 +468,10 @@ def sweep_for_test(expected, trigger="lock test"):
         sweep_st["running"] = False
 
 
-def start_sweep():
+def start_sweep(ui=False):
     """API: run a sweep now (in a thread). False if one is running."""
-    if sweep_st["running"]: return False
-    threading.Thread(target=antenna_sweep, args=("manual",), daemon=True).start()
+    if common.busy(): return False
+    threading.Thread(target=antenna_sweep, args=("manual", ui), daemon=True).start()
     return True
 
 

@@ -511,7 +511,11 @@ def _iperf_once(server, secs, conn, reverse, load_windows=None, protect=False):
         started = time.time()                         # CPE accepted Enable, the closest clock marker for transfer start
         st["ip3_started"] = ok
     if not ok: return None, "the modem refused the iperf3 settings: %s" % ", ".join(notes), st["ip3_snaps"]
-    if not _await_result(secs + 150, protect): return None, "iperf3: no result within %d s (%s)" % (secs + 150, ", ".join(notes)), st["ip3_snaps"]
+    if not _await_result(secs + 150, protect):
+        reads = st["ip3_snaps"]
+        last = reads[-1] if reads else {}
+        detail = "last Status=%s, Enable=%s" % (last.get("Status"), last.get("Enable")) if reads else "no modem reads"
+        return None, "iperf3: no fresh result within %d s (%s, %s)" % (secs + 150, ", ".join(notes), detail), reads
     sp, why = ip3_result(st["vals"], reverse)
     if sp and load_windows is not None:
         load_windows.append((started, min(time.time(), started + secs)))
@@ -521,7 +525,8 @@ def _iperf_once(server, secs, conn, reverse, load_windows=None, protect=False):
 def measure(secs=None, load_windows=None, *, download_only=False, server=None):
     """A lock-test step's throughput, now and synchronous: the modem's iperf3 down (CONN streams) then up (UP_CONN), the first server
     that answers. -> (down, up, which servers). Optionally collect one estimated transfer interval per successful direction.
-    Use an explicit server when every leg must take the same path. With download_only, make one download attempt to warm up NSA.
+    Include the causes for directions that exhaust their servers. Specify a server to keep the same path across confirmed legs.
+    With download_only, make one download attempt to warm up NSA.
     Never a ceiling, not in captest_hist (2026-11-18: the night cells' score needs it)."""
     if st["running"]: return None, None, "a capacity test is running"
     st["running"] = True; out, how = {}, []
@@ -531,6 +536,7 @@ def measure(secs=None, load_windows=None, *, download_only=False, server=None):
             directions += (("up", False, UP_CONN),)
         servers = [server] if server else IPERFS[:1] if download_only else IPERFS
         for d, rev, conn in directions:
+            failures = []
             for srv in servers:
                 sp, why, _ = _iperf_once(srv, secs or ISECS, conn, rev, load_windows=load_windows, protect=load_windows is not None)
                 if sp:
@@ -539,6 +545,11 @@ def measure(secs=None, load_windows=None, *, download_only=False, server=None):
                     break
                 if download_only:
                     how.append(why)
+                else:
+                    failures.append("%s: %s" % (srv, why))
+            else:
+                if failures:
+                    how.append("%s failed (%s)" % (d, "; ".join(failures)))
         return out.get("down"), out.get("up"), ", ".join(how) or "no iperf3 result"
     finally:
         st.update(running=False, base=None)
