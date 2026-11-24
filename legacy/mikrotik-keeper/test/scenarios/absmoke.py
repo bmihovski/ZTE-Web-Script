@@ -113,11 +113,16 @@ def begin_scope(owner, antennas, web_notice=None):
 z.profile.begin_scope = begin_scope
 captest.sqm.URL = "mock"
 matrix = []
+no_n78 = False
 def antenna_profile(name, lte, stop, reverse=False, nr="none"):
     assert not stop.is_set()
     matrix.append((name, lte, reverse))
-    modes = [{"ant5": a5, "ant6": a6, "call_ok_pct": 100, "config_verified": True}
+    modes = [dict(ant5=a5, ant6=a6, call_ok_pct=100, loss_pct=0, lat_p95=60, jitter_ms=12,
+                  down_mbps=120, up_mbps=24, config_verified=True, radio={"verified": True},
+                  n78_samples=4, nr_signal={"636576/534": {}})
              for a5, a6 in [("1", "1"), ("4", "1"), ("1", "4"), ("4", "4")]]
+    if no_n78:
+        modes[0].update(radio={"verified": False}, n78_samples=0, nr_signal={})
     return {"leg": name, "lte": lte, "nr": nr, "modes": modes[::-1] if reverse else modes}
 absmoke._antenna_profile = antenna_profile
 calls.clear()
@@ -148,6 +153,18 @@ assert sweep["legs"][0]["nr"] == "534@636576" and sweep["restored"] == {"lte": "
 assert common.state()["antenna_ab"] == previous and restores == [original, original]
 assert len(rep) == 2 and "Close" in rep[0] and "Android" in rep[0], rep
 assert "You can reopen" in rep[1] and "Loaded n78 sweep finished" in rep[1], rep
+
+# Complete LTE transfers on one mode cannot make the four-mode n78 comparison complete.
+no_n78 = True
+rep.clear()
+assert absmoke.run("antenna trial without n78", antenna_lte="current", ui=True)[0]
+deadline = time.monotonic() + 5
+while absmoke.st["running"] and time.monotonic() < deadline: time.sleep(0.01)
+sweep = absmoke.status()["antenna_sweep"]
+assert common.state()["antenna_sweep_loaded"]["verdict"] == "incomplete", sweep
+assert sweep["verdict"] == "incomplete" and "incomplete" in rep[-1] and "3/4 modes scored" in rep[-1], (sweep, rep)
+unscored = sweep["legs"][0]["modes"][0]
+assert unscored["score"] is None and unscored["down_mbps"] == 120 and "no n78" in unscored["error"], unscored
 
 # Real sample validation, including a serving cell change during an otherwise valid LTE-lock measurement.
 from keeper.devices.zte import profile
@@ -183,10 +200,15 @@ assert result["load_retries"] == ["local traffic during upload"] and result["con
 # Old stored runs expose a loaded score for complete, radio-verified windows after restart.
 stable = dict(result, radio=dict(result["radio"], verified=True), nr_signal={"636576/534": {}})
 failed = {"ant5": "4", "ant6": "4", "error": "local traffic"}
-common.state({"antenna_ab": {"legs": [{"leg": "LTE lock", "modes": [stable, result, failed]}]}})
-rows = absmoke.status()["antenna_trial"]["legs"][0]["modes"]
+missing_quality = dict(stable, jitter_ms=None)
+common.state({"antenna_ab": {"verdict": "measured",
+                             "legs": [{"leg": "LTE lock", "modes": [stable, result, failed, missing_quality]}]}})
+stored = absmoke.status()["antenna_trial"]
+rows = stored["legs"][0]["modes"]
 assert rows[0]["score"] == 88.0, rows[0]
-assert rows[1]["score"] is None and rows[2]["score"] is None, rows
+assert stored["verdict"] == "incomplete" and all(row["score"] is None for row in rows[1:]), stored
+assert [row.get("error") for row in rows[1:]] == ["n78 serving path unverified during transfers", "local traffic",
+                                                "incomplete loaded quality or throughput"], rows
 assert "score" not in common.state()["antenna_ab"]["legs"][0]["modes"][0]
 
 # Store the good direction and its observed cell even when the other transfer failed.

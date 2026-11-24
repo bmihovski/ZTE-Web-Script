@@ -303,16 +303,14 @@ def _run(original, notify, antenna_lte=None, ui=False):
                 expected = 1 if current_sweep else 2
                 summary = {"verdict": "incomplete" if error or restore_error or len(legs) != expected else "measured",
                            "error": error, "anchor": original[0] if current_sweep else antenna_lte}
-                if summary["verdict"] == "measured" and any(
-                        len(leg["modes"]) != 4 or any(not mode.get("config_verified") or mode.get("call_ok_pct") in (None, "")
-                                                      for mode in leg["modes"]) for leg in legs):
-                    summary["verdict"] = "incomplete"
             else:
                 summary = _classify(legs)
             if stop.is_set(): summary.update(verdict="stopped", detail="Stopped by the operator.")
             res = dict(summary, trigger=trigger, time=stamp(), started=started, version=VERSION,
                        seconds=round(time.monotonic() - t0, 1), legs=legs, restored=restored, restore_error=restore_error)
             if antenna_lte:
+                report = _antenna_report(res)
+                res["verdict"] = report["verdict"]
                 state({"antenna_sweep_loaded" if current_sweep else "antenna_ab": res})
             else:
                 st["result"] = res
@@ -320,7 +318,7 @@ def _run(original, notify, antenna_lte=None, ui=False):
             if notify or ui:
                 try:
                     if antenna_lte:
-                        scored = sum(m["score"] is not None for leg in _antenna_report(res)["legs"] for m in leg["modes"])
+                        scored = sum(m["score"] is not None for leg in report["legs"] for m in leg["modes"])
                         msg = "%s finished (%s). %d/%d modes scored." % (test_name, res["verdict"], scored, 4 * expected)
                         if restore_error:
                             msg += "\nRestore pending: " + restore_error
@@ -386,7 +384,7 @@ def recover(row):
 
 
 def _antenna_report(trial):
-    """Score stored mode measurements using the loaded score and verified radio paths."""
+    """Report loaded scores, or the reason a mode is unscored, and use them to determine completeness."""
     if not trial:
         return None
     legs = []
@@ -394,14 +392,29 @@ def _antenna_report(trial):
         modes = []
         for mode in leg["modes"]:
             score = None
-            if mode.get("config_verified") and (mode.get("radio") or {}).get("verified"):
-                channels = " ".join(cell.split("/")[0] for cell in mode.get("nr_signal", {}))
-                scored = brain.lt_score(dict(mode, nr_arfcn=channels))
-                if not scored["partial"]:
-                    score = scored["score"]
-            modes.append(dict(mode, score=score))
+            error = mode.get("error")
+            if not error:
+                if not mode.get("config_verified"):
+                    error = "LTE/NR configuration or in-transfer readback unverified"
+                elif not (mode.get("radio") or {}).get("verified"):
+                    error = ("n78 serving path unverified during transfers" if mode.get("n78_samples")
+                             else "no n78 observed during transfers")
+                else:
+                    channels = " ".join(cell.split("/")[0] for cell in mode.get("nr_signal", {}))
+                    scored = brain.lt_score(dict(mode, nr_arfcn=channels))
+                    score = None if scored["partial"] else scored["score"]
+                    if score is None:
+                        error = scored["gate"] or "incomplete loaded quality or throughput"
+            row = dict(mode, score=score)
+            if error:
+                row["error"] = error
+            modes.append(row)
         legs.append(dict(leg, modes=modes))
-    return dict(trial, legs=legs)
+    report = dict(trial, legs=legs)
+    if report.get("verdict") == "measured" and (not legs or any(
+            len(leg["modes"]) != 4 or any(mode["score"] is None for mode in leg["modes"]) for leg in legs)):
+        report["verdict"] = "incomplete"
+    return report
 
 
 def status():

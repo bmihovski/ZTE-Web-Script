@@ -166,10 +166,29 @@ for i in range(100):
     time.sleep(0.02)
 acs.handle(gpvr(dict(iv, **OLD)))                                                                        # started, still old: wait
 assert not c.st["ev"].is_set(), "an unchanged result after the start ended the wait"
-acs.handle(gpvr(dict(iv, **dict(OLD, **{I3 + "DownlinkSpeed": "151Mbits/sec", I3 + "DownlinkLastTest": "13/11/2026 22/43"}))))   # new minute
+acs.handle(gpvr(dict(iv, **OLD, **{I3 + "UplinkLastTest": "13/11/2026 22/42"})))
+assert not c.st["ev"].is_set(), "an upload timestamp ended the download wait"
+acs.handle(gpvr(dict(iv, **dict(OLD, **{I3 + "Enable": "1"}))))
+assert not c.st["ev"].is_set(), "Enable=1 with an old Complete result ended the wait"
+acs.handle(gpvr(dict(iv, **OLD)))
+assert not c.st["ev"].is_set(), "Enable toggling did not establish a fresh result"
+fresh = dict(OLD, **{I3 + "DownlinkSpeed": "151Mbits/sec", I3 + "DownlinkLastTest": "13/11/2026 22/43"})
+acs.handle(gpvr(dict(iv, **fresh, **{I3 + "Reverse": "0"})))
+assert not c.st["ev"].is_set(), "readback of the wrong settings ended the wait"
+acs.handle(gpvr(dict(iv, **fresh, **{I3 + "Reverse": "1"})))  # new minute, short transfer finished between reads
 th.join(5); assert out2["r"][0] == 151.0, out2
 assert len(load_windows) == 1 and 0 < load_windows[0][1] - load_windows[0][0] <= 10, load_windows
 c.st["running"] = False
+# A fresh upload can finish between informs with a blank result. Keep that terminal read for diagnosis.
+def ip3(**fields):
+    c._ip3_values({I3 + name: value for name, value in fields.items()})
+
+c.st.update(ip3_started=False, ip3_reverse=False, ip3_seen_running=False, vals=None)
+c.st["ev"].clear()
+ip3(Enable="0", Status="Complete", Reverse="0", UplinkLastTest="13/11/2026 22/43", UplinkSpeed="25Mbits/sec")
+c.st["ip3_started"] = True
+ip3(Enable="0", Status="Complete", Reverse="false", UplinkLastTest="13/11/2026 22/44", UplinkSpeed="", Report="")
+assert c.st["ev"].is_set() and c.ip3_result(c.st["vals"], False)[0] is None, c.st["vals"]
 assert c.ceilings([{"slot": "21:30", "down": 144.0, "down_how": "x, 4 streams 10 s", "server": "iperf3 a"}] * 2, "21:30") == {}   # pre-v2: no
 # scheduled run: download then the upload on the same server; the upload is shown but sets no ceiling (CAPTEST_UP=0)
 fake = lambda srv, secs, conn, rev: ((190.0, "dl, 4 streams 10 s", [{"x": 1}]) if rev else (26.5, "ul, 4 streams 10 s", [{"y": 1}]))

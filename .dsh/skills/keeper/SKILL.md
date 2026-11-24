@@ -79,6 +79,7 @@ the docstrings and this skill in sync.
 - Use **Speed-test current profile** or `POST /ab-smoke?antenna_lte=current` for loaded measurements across four verified antenna
   modes while keeping the current LTE and NR locks. Read `/ab` → `antenna_sweep`. Each mode opens a fresh ZTE web login and logs
   out before the transfer. An incomplete iPerf pair still reports the successful direction and the failure reason, with no score.
+  The API and notifications report `incomplete` if any required mode is unscored, including an LTE-only transfer or missing loaded probes.
 - The ZTE smoke, loaded antenna and signal sweep buttons send `ui=1`. The keeper gives the operator 20 seconds to close the
   modem clients, with a Telegram start notice and an all-clear in the completion report. Restore recovery sends the all-clear
   if the initial report said restoration was pending.
@@ -128,6 +129,9 @@ the docstrings and this skill in sync.
   leg. `/captest` records the latest skipped capacity test under `traffic_skip`. A morning comparison can retry once on the same
   cell after the LAN quiets, and `bands=` limits the comparison to the bands being rechecked.
   The morning start and capacity-probe start share the same modem reservation lock.
+- **iPerf freshness:** after the Enable acknowledgement, accept a new LastTest in the requested direction on a completed
+  transfer, or a genuine running-to-terminal transition. A bare Enable alongside old `Complete` is insufficient. A fresh
+  terminal result with a blank speed and report remains unscored.
 - Patching a function in tests hides its real body; add a real-body test.
 - The ZTE web has ONE session: an open page logs the keeper out; the antenna set retries 3× with a re-login, and the boot apply
   waits for the web (`CPE_READY_*`).

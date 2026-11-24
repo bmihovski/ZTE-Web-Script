@@ -300,6 +300,7 @@ at `/docs`.
   the original profile and antenna mode. The journal keeps the restore pending across a restart. This trial does not save a winner.
   The panel's **Loaded n78 antenna trial** shows the saved results and a 0–100 loaded score for each mode with complete measurements
   and a verified radio path. Modes with traffic, transfer or radio failures show their reason. The signal sweep has its own display.
+  The API and test notification report `measured` only when every required mode has a score. An unscored mode makes the run `incomplete`.
   If iPerf3 measures only one direction, keep that rate and its radio observations with the failed direction's diagnostic.
   Leave the combined call-quality metrics and score empty.
 - **Speed-test current profile** (`POST /ab-smoke?antenna_lte=current`) uses the same loaded checks and verifies each antenna mode
@@ -334,6 +335,10 @@ at `/docs`.
   upload result with 4). Scheduled at `CAPTEST_SLOTS` incl. night slots, only after 10 idle minutes, never while busy (lock test,
   night screen, sweep, A/B trial) or < 15 min after a boot. Optional Iperf3 settings the modem reports read-only (TR-143 probe,
   Writable flags) are never written; `tools/ip3_args.py` dry-runs the settings against them.
+- **iPerf completion:** compare the requested direction's LastTest with its last read before the Enable acknowledgement.
+  A fresh completion needs a new direction-specific timestamp or a witnessed running-to-terminal transition. An enabled
+  transfer can still show the previous `Complete` and speed. A fresh terminal read with no speed or receiver report
+  stays unscored and records the failure reason.
 - **Local traffic during capacity tests:** with RouterOS telemetry configured, use the routed WAN port's rates to separate LAN
   traffic from modem-originated iperf. Minute peaks and a recent rate can defer a scheduled probe within its slot. Check the WAN
   directly before and during each measured transfer. Traffic above the existing idle limits (default 2 Mbit/s down or 0.5 up),

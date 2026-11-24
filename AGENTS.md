@@ -74,7 +74,10 @@ Durable project memory. Read this first; the details live in the keeper docs.
   lock, leaving NR automatic. `GET /ab` → `antenna_trial` records radio readback, per-cell signal and loaded quality. The restore
   journal covers the original profile and antenna mode. The panel shows per-mode scores and offers **Speed-test current profile**
   (`antenna_lte=current`), which retains both cell locks and reports separately at `/ab` → `antenna_sweep`. Use a fresh ZTE web
-  session for each loaded mode so a long transfer cannot leave the next mode using an expired login.
+  session for each loaded mode so a long transfer cannot leave the next mode using an expired login. A loaded antenna run is
+  `incomplete` when any mode is unscored. Each unscored mode reports the reason.
+- **iPerf result freshness:** accept completion after this transfer's Enable acknowledgement, with a new timestamp in the
+  requested direction or a witnessed running-to-terminal transition. Keep fresh blank modem results as unscored diagnostics.
 - **Measurement reset:** put `data/.reset-measurements` on the container mount while idle and restart. Startup clears measurements
   and learned ranking caches, compacts SQLite, and consumes the marker. Keep managed locks, antenna settings, site notes, app
   lists and SQM inputs. Minute samples store typed cell identifiers and numeric metrics with a compact payload for other fields.

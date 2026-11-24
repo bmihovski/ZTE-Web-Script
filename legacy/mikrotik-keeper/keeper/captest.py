@@ -466,18 +466,31 @@ def start_iperf():
 
 
 def _ip3_values(vals):
-    """Every read while iperf3 runs is kept (we learn the ZTE's formats from them); done when a LastTest / Status / speed field
-    changed from the pre-start read and Status is not 'running'-like - or Enable went back to 0 after we saw it 1."""
+    """Keep the modem reads and release the wait only for a fresh result in the requested direction."""
     v = {k[len(IP3):]: x for k, x in vals.items() if k.startswith(IP3)}
     if not v: return
     st["ip3_snaps"].append(dict(v, _t=time.strftime("%H:%M:%S")))
-    if st.get("first"): st.update(first=False, ip3_base=v); return             # the read in the session that carries our write
-    if not st.get("ip3_started"): return              # before OUR Enable was accepted the modem shows the previous run's result
-    b = st.get("ip3_base") or {}; s = v.get("Status", "").lower()
-    if v.get("Enable") == "1" or s == "requested" or any(w in s for w in ("run", "progress")): st["ip3_seen_on"] = True
-    new = any(v.get(k) and v.get(k) != b.get(k) for k in ("DownlinkLastTest", "UplinkLastTest"))   # the minute of the run (MC889)
-    if (st.get("ip3_seen_on") or new) and (any(w == s for w in IPERF_DONE) or (new and v.get("Enable") != "1")):
-        st["vals"] = v; st["ev"].set()                # 2026-11-13 22:40: the old 22:17 'Complete 144' was taken before the start
+    if not st.get("ip3_started"):
+        st["ip3_base"] = v  # The read in the Enable-write session still belongs to the previous transfer.
+        return
+    if st["ev"].is_set(): return
+    reverse = st["ip3_reverse"]
+    reported_reverse = v.get("Reverse", "").strip().lower()
+    if reported_reverse in ("0", "false", "1", "true") and (reported_reverse in ("1", "true")) != reverse:
+        return
+    status = v.get("Status", "").strip().lower()
+    if status == "requested" or any(word in status for word in ("run", "progress")):
+        st["ip3_seen_running"] = True
+        return
+    enabled = v.get("Enable", "").strip().lower()
+    if enabled in ("1", "true"):
+        return  # Enable can precede the status update and coexist with the previous Complete result.
+    last_test = "DownlinkLastTest" if reverse else "UplinkLastTest"
+    new = v.get(last_test) and v[last_test] != (st.get("ip3_base") or {}).get(last_test)
+    terminal = status in IPERF_DONE
+    if (terminal and st["ip3_seen_running"]) or (new and (terminal or enabled in ("0", "false"))):
+        st["vals"] = v
+        st["ev"].set()
 
 
 def mbit(v):
@@ -504,7 +517,9 @@ def _iperf_once(server, secs, conn, reverse, load_windows=None, protect=False):
     """One iperf3 run by the modem against `server`: (Mbit/s or None, why, the reads)."""
     if protect:
         _require_quiet()
-    st.update(base=IP3, first=True, vals=None, ip3_snaps=[], ip3_base=None, ip3_seen_on=False, ip3_started=False, cpu=[]); st["ev"].clear()
+    st.update(base=IP3, vals=None, ip3_snaps=[], ip3_base=None, ip3_reverse=reverse,
+              ip3_seen_running=False, ip3_started=False, cpu=[])
+    st["ev"].clear()
     ok, notes = write_settings(iperf_params(server, secs, conn, reverse))
     if ok:
         st["ev"].clear(); ok, how = start_iperf(); notes.append(how)

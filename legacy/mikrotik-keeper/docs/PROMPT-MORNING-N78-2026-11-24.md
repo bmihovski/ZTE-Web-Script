@@ -1,0 +1,13 @@
+# Prompt for the next session
+
+Continue the ZTE keeper morning and n78 antenna audit in `/Users/boyanmihovski/Privatespace/ZTE-Web-Script`. Read `AGENTS.md`, `.dsh/skills/keeper/SKILL.md`, `legacy/mikrotik-keeper/docs/BUSINESS_RULES.md` and `legacy/mikrotik-keeper/docs/HANDOFF-MORNING-N78-2026-11-24.md`.
+
+Start by fetching the live keeper's `GET /morning`, `/ab`, `/status` and `/openapi.json`. Check dates in Europe/Sofia. Use the November 24 archived JSON in the handoff as a reference. The scheduled result at `/morning.result` verified `dir/dir` on every attempted leg. It used the configured mode and short probes. The separate loaded sweep at `/ab.antenna_sweep` scored only two of four modes. Treat “mode was applied,” “the link was measured,” and “this mode beat the control” as three claims that each need evidence.
+
+Build a coverage table for the unlocked baseline and every eligible high-band cell lock, including B1 `340@100`, B3 `434@1550`, B3 `340@1550`, and B7 `340@3350`. Include failed and skipped candidates with their reasons. For each profile identify the requested LTE/NR locks, the actual cells during both transfers, the verified antenna mode, and which of the four modes have a comparable loaded score. An LTE lock with NR automatic is a different tested profile from an LTE/NR pair lock. Use full PCI and channel identity.
+
+Find the largest gaps that could change the decision. In an authorized quiet window, use restore-only tests with matched iPerf endpoints, 4 reverse download streams, 1 upload stream, and fresh in-transfer radio evidence. Repeat the control where the margin or result is noisy. Rank by call readiness, loss, p95, and jitter under the keeper's policy, using signal as a tie-break and throughput as additional context. Keep the original locks and antenna mode recoverable across failure, Stop and restart. Preserve the WAN traffic guard. Apply no changes based on an incomplete comparison.
+
+Investigate concrete defects first, especially `Status=Complete` with blank speed and report, the B1 `434@100` probe failure if it recurs, and candidates that repeatedly fail discovery or post-BOOT verification. Explain what the data supports about antenna mode, cell selection and stability, and what would require another experiment. For any authorized code fix, reproduce it with a failing scenario, run the full gate, and verify the relevant live result through the standard workflow.
+
+Return a concise verdict for each profile, a prioritized list of real bugs or worthwhile experiments, and the safest next action. Identify any profile whose best n78 mode remains unverified. Keep the current saved mode until a repeatable gain supports a change.
