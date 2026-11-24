@@ -2235,7 +2235,11 @@ function keeper_ab_render(d)
         var serving = "LTE " + (active.lte || "unavailable") + " · 5G " + (active.nr || "idle or unavailable");
         var locks = "LTE " + (active.lte_lock === "none" ? "unlocked" : active.lte_lock) +
             " · 5G " + (active.nr_lock === "none" ? "unlocked" : active.nr_lock);
-        $("#keeper_ab_active").text(active.profile + " · Serving " + serving + " · Active locks " + locks);
+        var q = d.quality_ab, why = "";
+        if (q) why = " · " + (q.outage ? "Outage failover" : "Poor call quality") + (q.arm === "site" && q.alt ? " to LTE " + q.alt : "") +
+            " since " + (q.since || "?") + (q.phase === "keep" ? ", kept until " + (q.until || "?") + ", then back to your profile"
+                                                                : ", trial until about " + (q.until || "?")) + " (" + (q.why || "") + ")";
+        $("#keeper_ab_active").text(active.profile + why + " · Serving " + serving + " · Active locks " + locks);
     } else {
         $("#keeper_ab_active").text("Active profile unavailable");
     }

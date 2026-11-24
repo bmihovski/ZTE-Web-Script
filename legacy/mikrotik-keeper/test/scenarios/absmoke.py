@@ -44,7 +44,13 @@ assert preview["active"] == {"profile": "Current lock", "lte_lock": "340@100", "
 assert [(x["leg"], x["lte"], x["nr"]) for x in preview["plan"]] == [
     ("current lock", "340@100", "534@636576"), ("A high", "66@1550", "534@636576"),
     ("no lock", "none", "none"), ("A low", "394@3774", "534@156510"), ("B low", "112@6400", "534@156510")]
-assert not calls and not preview["running"]
+assert not calls and not preview["running"] and preview["quality_ab"] is None
+common.state({"quality_ab": {"phase": "keep", "arm": "site", "alt": "434@1550", "start": time.time() - 1800, "until": time.time() + 3600,
+                             "why": "A/B: no internet for 2 min while registered on 3350/340 (anchor SINR 1, 5G 12)"}})
+q = absmoke.status()
+assert q["active"]["profile"] == "Automatic quality A/B · alternate site" and q["quality_ab"]["outage"] and q["quality_ab"]["alt"] == "434@1550", q
+assert q["quality_ab"]["since"] and q["quality_ab"]["until"] and q["quality_ab"]["phase"] == "keep", q["quality_ab"]
+common.state({"quality_ab": None})
 seq = [dict(down_mbps=30, call_ok=1, loss_pct=0, lat_p95=20, jitter_ms=3),   # A high: p95 20 beats the no-lock 30
        dict(down_mbps=20, call_ok=1, loss_pct=0, lat_p95=30, jitter_ms=5),
        dict(down_mbps=25, call_ok=1, loss_pct=0, lat_p95=30, jitter_ms=5),   # no lock

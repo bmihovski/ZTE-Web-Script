@@ -11,7 +11,8 @@ CALL_REBOOT_GRACE_S = float(os.environ.get("CALL_REBOOT_GRACE_S", "900"))   # no
 _last, sent, _retry = {}, [], []
 _send_lock = threading.Lock()          # serialise actual sends: no interleaved "telegram alert failed" prints during a reboot storm          # _retry: messages that failed (no internet, modem rebooting) - sent again later
 # events (keeper.event "event" field) worth a message: regex -> alert kind
-RULES = [(r"lock .*removed|lock .* still set|lock .* missing", "lock"), (r"^(lte|5g) lock ", "lock"), (r"^reboot (queued|held)$", "reboot"),
+RULES = [(r"^lte lock A/B$", "ab"),         # the A/B result has its own kind: 'kept' comes ~21 min after the trial's lock change
+         (r"lock .*removed|lock .* still set|lock .* missing", "lock"), (r"^(lte|5g) lock ", "lock"), (r"^reboot (queued|held)$", "reboot"),
          (r"^no inform$", "silent"), (r"^inform back$", "back"), (r"^FOTA state$", "firmware"), (r"^night screen$", "night"), (r"^clock verified$", "clock"), (r"^capacity ceiling$", "sqm")]
 
 
@@ -89,6 +90,7 @@ if __name__ == "__main__":          # self-check (nothing is sent: _post replace
     TOKEN, CHAT = "x", "y"; out = []; _post = out.append
     assert on_event("ZTE", {"event": "lte lock removed", "why": "released LTE 340@100: no LTE service for 3 min"})
     assert not on_event("ZTE", {"event": "lte lock 340@100", "why": "restored"})              # same kind within 30 min
+    assert on_event("ZTE", {"event": "lte lock A/B", "to": "kept LTE 434@1550 (another site) for 3 h"})   # its own kind, not throttled by the lock
     assert on_event("ZTE", {"event": "reboot queued", "to": "no mobile service for 5 min"}) and not on_event("ZTE", {"event": "switch"})
     rows = [{"call_ok": "0" if i % 2 else "1", "lat_p95": "180", "jitter_ms": "40", "loss_pct": "0", "nr_cell": "no5G", "lte_cell": "100/340"} for i in range(15)]
     assert check_calls("ZTE", rows) and not check_calls("ZTE", rows)

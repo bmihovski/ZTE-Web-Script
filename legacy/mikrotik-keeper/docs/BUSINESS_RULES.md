@@ -264,6 +264,9 @@ at `/docs`.
   once-a-day wait), at most `SITE_OUTAGE_MAX_DAY` (6) in 24 h and 30 min apart: ~2 min detection + one reboot. It is kept
   `AB_KEEP_H` (3 h) when it reaches +15 pp, then unlocked is tried again (one reboot). A site that goes off the air needs no
   keeper: the modem reselects. Without informs (no WAN IP) the offline path below still applies; it does not move sites.
+  `GET /ab` -> `quality_ab` (phase, arm, alt, why, outage, since, until; null when none runs): the panel's active-profile line says
+  why and until when. The A/B result event (`lte lock A/B`) is its own Telegram kind (`ab`), so the trial's lock change does not
+  throttle the "kept" / "back" message.
 - **Overnight operation.** The router and modem can be powered off overnight or when no service is needed. There is no scheduled
   night screen, arm reminder, or Saturday confirmation test. Keep clock verification and ordinary outage recovery for cold boots.
   `LOCK_PAUSE` is optional for sites that need to release a lock while a cell is off. The production power-off setup leaves it disabled.

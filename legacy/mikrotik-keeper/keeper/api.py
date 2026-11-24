@@ -38,7 +38,7 @@ ROUTES = [   # method, path, summary, [(param, example, description)], capabilit
      "network's own 5G pair and internet quality (call-ready/loss/p95/jitter/download) per band", [], None),
     ("get", "/low-band", "Read-only: low-band A/B phase 1 - the last B8/B20 scan (serving cell, n28 pair, call-ready/loss/p95/jitter/down) "
      "against the current high-band no-lock quality, with the quality-policy verdict", [], None),
-    ("get", "/ab", "Current serving and locked cells, smoke plan, progress and last result", [], None),
+    ("get", "/ab", "Current serving and locked cells, smoke plan, progress, last result and an active quality A/B (why, until)", [], None),
     ("post", "/lte-lock", "Keep an LTE cell locked (guarded: released when lost, restored when back) or remove it", [("cell", "340@100", "PCI@EARFCN or none")], None),
     ("post", "/nr-lock", "Keep a 5G cell locked (guarded) or remove it", [("cell", "534@636576", "PCI@ARFCN or none")], None),
     ("post", "/antennas", "Antenna mode the keeper re-applies at every ZTE boot (overrides ANT_AUTO / ANT5 / ANT6)",

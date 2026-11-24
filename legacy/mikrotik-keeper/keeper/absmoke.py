@@ -435,9 +435,17 @@ def status():
         profile = "Unlocked"
     active = {"profile": profile, "lte_lock": managed[0], "nr_lock": managed[1],
               "lte": _spec(sample.get("lte_cell")), "nr": _spec(sample.get("nr_cell"))}
+    qab = None
+    if quality.get("phase") in ("trial", "keep"):            # why the keeper moved off your profile, and until when
+        keep = quality["phase"] == "keep"
+        end = quality.get("until") if keep else (quality.get("start") or 0) + guard.AB_TRIAL_MIN * 60
+        qab = {"phase": quality["phase"], "arm": quality.get("arm"), "alt": quality.get("alt"), "why": quality.get("why"),
+               "outage": "no internet" in str(quality.get("why") or ""),
+               "since": time.strftime("%H:%M", time.localtime(quality["start"])) if quality.get("start") else None,
+               "until": time.strftime("%H:%M", time.localtime(end)) if end else None}
     plan = (current["plan"] or []) if current["running"] else _plan(managed)
     profile = getattr(devices.current(), "profile", None)
-    return {"running": current["running"], "progress": current["progress"], "active": active,
+    return {"running": current["running"], "progress": current["progress"], "active": active, "quality_ab": qab,
             "plan": [dict(leg=name, lte=lte, nr=nr, lte_band=profile.low_band(lte) if profile else None) for name, lte, nr in plan],
             "stopping": bool(current["cancel"] and current["cancel"].is_set()),
             "restore_pending": bool(saved.get("ab_smoke_restore") or (saved.get("profile_restore") or {}).get("owner") == "smoke"),
