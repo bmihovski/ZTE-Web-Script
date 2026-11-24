@@ -129,7 +129,7 @@ The keeper measures, analyses and decides; the userscript only shows the results
   `LOCKTEST_SETTLE_S` (180) settle, then **the user's measurement strategy (2026-11-22v):** wait for the CA (`LOCKTEST_CA_WAIT_S` 60),
   raise the NSA 5G leg with a short download (`LOCKTEST_RAISE_S` 15), and run the full down/up (the modem's iperf3) **while the
   latency probe measures**. Daytime ZTE LTE tests collect call-ready, p95, jitter and loss during the two estimated transfer
-  intervals (`load_s`). The best complete score can apply a lock if it leads the unlocked baseline by at least five points and
+  intervals (`load_s`). The best complete score can apply a lock if it leads the unlocked baseline by at least five points in two loaded runs in a row and
   internet quality holds up. The later `LOCKTEST_MEASURE_MIN` samples provide stability evidence. `GET /lock-tests` shows the
   share of minutes on the locked cell (`on_target_pct`), anchor SINR/RSRP/RSRQ, CA combination, which 5G
   cells came with it and their SINR/RSRP/CA, call-ready %, latency, jitter. Rows carry `rat` (lte / nr), `nr_arfcn` (the ARFCN the 5G

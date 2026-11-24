@@ -51,6 +51,22 @@ assert missing["call_ok_pct"] == "" and missing["lat_p95"] == "", missing
 assert "incomplete down/up load probes" in missing["note"], missing
 assert brain.loaded_anchor_result(rows.values())[0]["lock"] == "434@1550"
 
+# one loaded run is noise: a 25 s window has two 10 s probe slices, so one slice = 25 call-ready points = 5 score points = the
+# promotion gain (2026-11-24). Auto-apply needs the same winner with the gain in the loaded run before.
+def run_rows(run, cand_call):
+    for lock, call in (("none", "75.0"), ("434@1550", cand_call)):
+        store.add(DATA, "lock_tests", {"time": run, "run": run, "rat": "lte", "lock": lock, "anchor": "" if lock == "none" else "1550/434",
+            "minutes": "12", "on_target_pct": "100.0", "call_ok_pct": call, "loss_pct": "0", "lat_p95": "60", "jitter_ms": "10",
+            "down_mbps": "150", "up_mbps": "28", "load_s": "50", "load_method": brain.LTE_LOAD_METHOD, "nr_arfcn": "636576", "mode": "as is"})
+brain.reg_st["dir"] = DATA
+run_rows("2020-01-01 10:00:00", "100.0")
+assert brain.loaded_anchor_result(r for r in store.rows(DATA, "lock_tests") if r.get("run") == "2020-01-01 10:00:00")[2]   # +5.0: one slice wins
+assert not brain.loaded_win_repeated("434@1550", "2020-01-01 10:00:00")                     # ... but no run before it
+run_rows("2020-01-01 11:00:00", "100.0")
+assert brain.loaded_win_repeated("434@1550", "2020-01-01 11:00:00") and not brain.loaded_win_repeated("340@1550", "2020-01-01 11:00:00")
+run_rows("2020-01-01 12:00:00", "75.0")
+assert not brain.loaded_win_repeated("434@1550", "2020-01-01 13:00:00")                     # the run before was a tie
+
 
 # the CA wait: a single carrier is not the CA (note, no error); two carriers is
 brain.HIST.clear(); locktest.LT_CA_WAIT_S = 0.2

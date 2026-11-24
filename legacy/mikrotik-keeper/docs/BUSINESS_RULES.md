@@ -194,6 +194,7 @@ at `/docs`.
   Smoke always restores the managed locks. Stop waits for any in-flight reboot and then restores them. A persisted restore request
   lets the guard retry that restoration after an interrupted run. The smoke holds the modem reservation until its result is published.
 - **Morning cell check** (`POST /morning?low=1|0`, `GET /morning`, `keeper/morning.py`, `MORNING` 08:00): the daily cell decision.
+  No catch-up at or after `MORNING_END` (09:00): its lock legs reboot, and 09:00-18:00 are call hours.
   One no-lock leg (full CA), then **band-lock discovery** (no reboot) for B1/B3/B7. Allow up to `MORNING_BAND_WAIT_S` (125) seconds
   for two samples after the band write. A neighbour needs two fresh usable RSRP readings (default at least −110 dBm), and the
   serving cell also needs usable signal. Discovery returns the readings and exclusion reasons. Each band queues up to
@@ -256,13 +257,22 @@ at `/docs`.
   one of the last `AB_QUIET_MIN` (5) samples carries >= `AB_CALL_BYTES` (4000 B/s) in the same direction - a
   Teams / Zoom call is steady (~5-12 kB/s, also down when muted), update / mail / browsing bursts are not (2026-11-20: up p50 0.6
   kB/s, steady >= 4 kB/s in 8.5 % of 5-min windows). The current minute must be idle as well. A missed trial is fine; a dropped call is not.
+- **Site failover from the unlocked baseline** (2026-11-24): with no LTE or 5G lock the A/B has one arm, another site. Its anchor is
+  the B cell, or else the B1/B3/B7 cell of another eNB that served as the anchor longest in the registry and was seen in the last
+  6 h, n78-paired cells first. The anchor SINR is no gate when unlocked. **Outage:** every probe failed for 2 min while the last 3
+  samples kept an LTE cell and were not call-ready (`guard.site_down`) -> the site trial starts at once (no window, call or
+  once-a-day wait), at most `SITE_OUTAGE_MAX_DAY` (6) in 24 h and 30 min apart: ~2 min detection + one reboot. It is kept
+  `AB_KEEP_H` (3 h) when it reaches +15 pp, then unlocked is tried again (one reboot). A site that goes off the air needs no
+  keeper: the modem reselects. Without informs (no WAN IP) the offline path below still applies; it does not move sites.
 - **Overnight operation.** The router and modem can be powered off overnight or when no service is needed. There is no scheduled
   night screen, arm reminder, or Saturday confirmation test. Keep clock verification and ordinary outage recovery for cold boots.
   `LOCK_PAUSE` is optional for sites that need to release a lock while a cell is off. The production power-off setup leaves it disabled.
   Historical night-mode results remain readable and are excluded from daytime decisions.
 - **Auto-apply** (`AUTO=on`, real load): a daytime ZTE LTE candidate needs a complete transfer score at least 5 points above that
   run's unlocked baseline, and its internet quality cannot be clearly worse under the call/loss/p95/jitter margins. The highest
-  eligible score wins. SINR and RSRP remain diagnostics. A missing or partial loaded baseline gives no decision. For a 5G test,
+  eligible score wins. SINR and RSRP remain diagnostics. A missing or partial loaded baseline gives no decision. The same candidate
+  must also have won with the gain in the loaded run before (`brain.loaded_win_repeated`): a 25 s window holds two 10 s probe slices,
+  so one slice is 25 call-ready points = 5 score points, exactly the gain (2026-11-24). A first win reports "wins this run". For a 5G test,
   the quality policy decides whether the winner clearly beats its baseline.
   a 5G winner is applied as the **pair** - the 5G cell and the LTE anchor it was measured with (an NSA cell is served only under some
   anchors, so the cell alone would not reproduce the result) - and the winning step's antenna mode is kept. The pair may move the LTE
@@ -324,6 +334,8 @@ at `/docs`.
   day, 2 needed, capped at the plan (`SQM_PLAN_DOWN`/`UP`, 200/30); without them `SQM_MAX_*`. Upload only with `CAPTEST_UP=1`.
   Calibration 2026-11-20: the modem's iperf3 (4 streams down / 1 up) reads ~76 % of the line down, ~95 % up (unshaped Ookla 205 / 28.8
   vs medians 156 / 27.5) -> `CAPTEST_SHARE_DOWN=1.15` (~179, ~87 % of the line), up stays 0.92.
+  Results of another setup class never count (`captest.setup_class`: the 5G band of `LTE|5G`, `lte` without 5G; a record without
+  a setup still counts): 2026-11-24 three B8 + n28 trial results (6-8 Mbit/s) held the 21:30 B7 + n78 ceiling at 72.8.
   When the 2 newest counted tests of the last `CAPTEST_FRESH_H` (3) hours, any period, are BOTH lower, the higher of the two wins
   (0.92 x it); ONE low test changes nothing but asks for a confirmation test `CAPTEST_CONFIRM_S` (600 s) later - inside the 1-h gap,
   within the daily budget, after 10 idle minutes, never in LOCK_PAUSE (2026-11-20 sweep: one peak-hour test swings +-25 %).

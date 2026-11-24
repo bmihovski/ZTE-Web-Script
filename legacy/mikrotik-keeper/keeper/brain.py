@@ -1028,6 +1028,18 @@ def loaded_anchor_result(rows):
     return best, base, round(best["score"] - base["score"], 1) >= LTE_SCORE_GAIN
 
 
+def loaded_win_repeated(lock, run):
+    """The loaded LTE run before `run` also chose `lock` with the promotion gain. A 25 s transfer window holds two 10 s probe slices,
+    so one slice moves call-ready by 25 points = 5 score points, exactly LTE_SCORE_GAIN (2026-11-24): one run alone is not a win."""
+    if not reg_st["dir"] or not lock or not run: return False
+    rows = [r for r in store.rows(reg_st["dir"], "lock_tests")
+            if r.get("rat", "lte") == "lte" and r.get("load_method") == LTE_LOAD_METHOD and r.get("run") and r["run"] < run]
+    prev = max((r["run"] for r in rows), default=None)
+    if not prev: return False
+    best, _, gain = loaded_anchor_result(r for r in rows if r["run"] == prev)
+    return bool(gain and best and best["lock"] == lock)
+
+
 def _anchor_choice(rk):
     rat = rk["rat"]
     rows = [r for r in [rk["baseline"], *rk["ranked"]] if r]

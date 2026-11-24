@@ -129,4 +129,39 @@ store.add(DATA, "lock_tests", {"time": "2026-11-18 10:00:00", "rat": "lte", "loc
     "lat_p95": "40", "jitter_ms": "5", "mode": "as is"})
 brain.REG["lte"]["1550/77"] = {"band": "B3", "rsrp": -90, "last": NOW, "seen_min": 300}
 assert guard.ab_alt("340@100", {}, NOW) == "121@6400", guard.ab_alt("340@100", {}, NOW)
+# --- unlocked (2026-11-24): no internet while registered -> another site at once (no call is possible), back to unlocked after it ---
+U = D7 + 86400; urow = dict(row, lte_site="1243/61", lte_cell="3350/340")
+common.state({"lte_lock": None, "nr_lock": None, "quality_ab": {"day": "x", "phase": "done"}})
+brain.HIST.clear(); fill(U - 30 * 60, 30, ok_every=1); m.st["sets"].clear(); guard.guard["reboots"] = []
+brain.REG["lte"].update({"3350/340": {"band": "B7", "rsrp": -90, "last": U, "anchor_min": 1452, "site": "1243/61"},
+                         "1550/434": {"band": "B3", "rsrp": -86, "last": U, "anchor_min": 58, "site": "1072/3"},
+                         "100/493": {"band": "B1", "rsrp": -90, "last": U, "anchor_min": 90, "site": "1580/83"},
+                         "6400/112": {"band": "B20", "rsrp": -78, "last": U, "anchor_min": 500, "site": "1589/183"}})
+brain.REG["nr"]["636576/534"] = {"anchors": {"3350/340": {}, "1550/434": {}}}
+assert guard._registry_alt("1243", U) == "434@1550"                              # n78 pair first; the low band never; not the home eNB
+lost = lambda t: brain.lat_buf.extend((t - 115 + 10 * i, None, "1.1.1.1") for i in range(12))
+assert guard.quality_ab(urow, U) is None                                          # internet fine
+for i in (1, 2, 3): brain.HIST[-i] = dict(brain.HIST[-i], call_ok="0")
+assert guard.quality_ab(urow, U) is None and not guard.site_down(U)               # bad minutes, probes answer: not an outage
+lost(U); assert guard.site_down(U)
+assert guard.quality_ab(urow, U) == "trial"; wait()
+ab = common.state()["quality_ab"]; assert ab["arms"] == ["site"] and ab["orig"] == {"lte": None, "nr": None} and ab["outages"] == [U], ab
+assert ab["alt"] == "434@1550" and sets() == [("LTE_LOCK_CELL_SET", "434@1550"), ("REBOOT_DEVICE", "")], (ab, sets())
+fill(U + 6 * 60, 15, ok_every=1)
+assert guard.quality_ab(urow, U + 21 * 60) == "kept" and common.state()["lte_lock"]["cell"] == "434@1550"
+assert guard.quality_ab(urow, U + 21 * 60 + 3 * 3600) == "restored"; wait()
+assert common.state()["lte_lock"] is None and sets()[-2:] == [("LTE_LOCK_CELL_SET", "0@0"), ("REBOOT_DEVICE", "")], sets()
+assert guard.lock_guard(urow, U + 4 * 3600) is None                               # nothing left for the guard to restore
+# still down after the move back: tried again (bounded: SITE_OUTAGE_MAX_DAY a day, 30 min apart), a busy lock change waits
+V = U + 4 * 3600; fill(V - 3 * 60, 3); lost(V)
+guard.guard["busy"] = True; assert guard.quality_ab(urow, V) is None; guard.guard["busy"] = False
+assert guard.quality_ab(urow, V) == "trial" and common.state()["quality_ab"]["outages"] == [U, V]; wait()
+common.state({"quality_ab": dict(common.state()["quality_ab"], phase="done", outages=[V] * guard.SITE_OUTAGE_MAX)})
+common.state({"lte_lock": None}); W = V + 3600; fill(W - 3 * 60, 3); lost(W)
+assert guard.quality_ab(urow, W) is None                                          # the day's outage trials are used up
+# a 5G lock alone is no unlocked baseline, and without another site there is nothing to try
+common.state({"quality_ab": None, "nr_lock": {"cell": "534@636576", "state": "active"}}); assert guard.quality_ab(urow, W) is None
+common.state({"nr_lock": None}); brain.REG["lte"]["1550/434"]["last"] = 0; brain.REG["lte"]["100/493"]["last"] = 0
+for r in store.rows(DATA, "lock_tests"): brain.REG["lte"].get(r["anchor"], {}).update(last=0)
+assert guard.quality_ab(urow, W) is None
 print("OK test_quality_ab")

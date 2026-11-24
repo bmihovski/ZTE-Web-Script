@@ -27,7 +27,7 @@ from keeper import VERSION, acs, alert, bandscan, brain, captest, common, device
 from keeper.common import E, event, log, state, stamp
 
 MORNING = E("MORNING", "08:00")                       # '' = off; at/after this HH:MM once a day (the missed day runs first thing)
-MORNING_END = E("MORNING_END", "12:00")               # no catch-up after this (a 23:00 start is the night, not the morning)
+MORNING_END = E("MORNING_END", "09:00")               # no catch-up after this: its lock legs reboot, 09:00-18:00 are call hours (2026-11-24)
 BANDS = [b for b in E("MORNING_BANDS", "1,3,7").replace(" ", "").split(",") if b]
 LOW = [b for b in E("MORNING_LOW_BANDS", "20,8").replace(" ", "").split(",") if b]
 LOW_SAT = E("MORNING_LOW_SATURDAY", "1") == "1"

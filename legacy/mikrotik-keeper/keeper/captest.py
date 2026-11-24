@@ -182,34 +182,46 @@ def valid(r, d):
     return bool(m) and float(m.group(1)) >= 1
 
 
-def counted_results(hist, slot, d):
-    """The last KEEP results of `slot` that count for a ceiling (no diagnostic, no TR-143 file test, no pre-v2 iperf3 record)."""
+def setup_class(key):
+    """The 5G band of a setup key ('3350/340|636576/534' -> 'n78'), 'lte' without a 5G cell, None without a key. The capacity
+    follows the 5G band, so results of another class never set this setup's ceiling (2026-11-24: three B8 + n28 trial results of
+    6-8 Mbit/s held the 21:30 ceiling at 72.8 while B7 + n78 measured ~160)."""
+    if not key: return None
+    return brain.nr_band_of(str(key).split("|")[-1].split("/")[0]) or "lte"
+
+
+def counted_results(hist, slot, d, setup=None):
+    """The last KEEP results of `slot` that count for a ceiling (no diagnostic, no TR-143 file test, no pre-v2 iperf3 record).
+    With `setup` (the current setup key): not the results measured on another setup class (setup_class); a record without a
+    setup (older, or measured before the first sample) still counts."""
+    cls = setup_class(setup)
     return [r[d] for r in hist if r.get("slot") == slot and r.get(d) and valid(r, d) and not r.get("url") and not r.get("diag")
-            and not (str(r.get("server", "")).startswith("iperf3") and not r.get("v"))][-KEEP:]
+            and not (str(r.get("server", "")).startswith("iperf3") and not r.get("v"))
+            and (cls is None or not r.get("setup") or setup_class(r["setup"]) == cls)][-KEEP:]
 
 
-def fresh(hist, d, now, n=2):
+def fresh(hist, d, now, n=2, setup=None):
     """The newest `n` counted results of any slot within FRESH_H of `now` (Mbit/s), newest first."""
     out = []
     for r in reversed(hist):
         try: t = time.mktime(time.strptime(r["time"][:19], "%Y-%m-%d %H:%M:%S"))
         except (KeyError, TypeError, ValueError): continue
         if now - t > FRESH_H * 3600: break
-        if counted_results([r], r.get("slot"), d): out.append(r[d])
+        if counted_results([r], r.get("slot"), d, setup): out.append(r[d])
         if len(out) == n: break
     return out
 
 
-def ceilings(hist, slot, now=None):
+def ceilings(hist, slot, now=None, setup=None):
     """{"down": Mbit/s, "up": Mbit/s} for `slot` from its last KEEP results: SHARE_D[d] x median, capped at the plan; {} without data.
     With `now`: when the 2 newest results of the last FRESH_H hours (any slot) are BOTH lower, the higher of the two wins - one
     rainy-day test is 1 of 5 in the median (2026-11-18), but ONE peak-hour test swings +-25 % (2026-11-20: Sofia 110 -> 178 in
     10 min), so a single low one only asks for a confirmation test (CONFIRM_S later). A higher one only joins the median."""
     out = {}
     for d in ("down", "up"):
-        xs = counted_results(hist, slot, d)
+        xs = counted_results(hist, slot, d, setup)
         if len(xs) >= MIN_TESTS: out[d] = round(min(PLAN[d], SHARE_D[d] * statistics.median(xs)), 1)
-        fs = fresh(hist, d, now) if now and d in out else []
+        fs = fresh(hist, d, now, setup=setup) if now and d in out else []
         if len(fs) == 2 and all(SHARE_D[d] * f < out[d] for f in fs): out[d] = round(min(PLAN[d], SHARE_D[d] * max(fs)), 1)
     return out
 
@@ -217,13 +229,14 @@ def ceilings(hist, slot, now=None):
 def explain(now=None):
     """Per direction, in words: the limit now and why, the ceiling and where it comes from (tests / env / climb), what is next."""
     now = now or time.time(); hist = state().get("captest_hist") or []; slot = slot_of(now); last = sqm.st.get("last") or {}
-    out = {}
+    out = {}; setup = st.get("seen_key")
     for d in ("down", "up"):
-        xs = counted_results(hist, slot, d); learned = ceilings(hist, slot).get(d); low = ceilings(hist, slot, now).get(d)
+        xs = counted_results(hist, slot, d, setup); learned = ceilings(hist, slot, setup=setup).get(d); low = ceilings(hist, slot, now, setup).get(d)
         if d == "up" and not UP: src = "upload learning off (CAPTEST_UP=0): SQM_MAX_UP %g" % sqm.MAX["up"]
         elif learned and low is not None and low < learned:
-            src = "two fresh tests (< %g h) measured less %s: %g x %g = %g, below the %s period's %g" % (FRESH_H, fresh(hist, d, now), SHARE_D[d], max(fresh(hist, d, now)), low, slot, learned)
-        elif learned: src = "learned for the %s period: %g x the median %g of %d tests %s" % (slot, SHARE_D[d], statistics.median(xs), len(xs), xs)
+            fs = fresh(hist, d, now, setup=setup)
+            src = "two fresh tests (< %g h) measured less %s: %g x %g = %g, below the %s period's %g" % (FRESH_H, fs, SHARE_D[d], max(fs), low, slot, learned)
+        elif learned: src = "learned for the %s period (%s): %g x the median %g of %d tests %s" % (slot, setup_class(setup) or "any setup", SHARE_D[d], statistics.median(xs), len(xs), xs)
         else: src = "not learned yet for the %s period (%d of %d tests): SQM_MAX_%s %g" % (slot, len(xs), MIN_TESTS, d.upper(), sqm.MAX[d])
         c = (sqm.st.get("climb") or {}).get(d) or {}
         climb = ("climbed x%g (+%d %%) above it - busy at the ceiling with clean latency" % (c["x"], round((c["x"] - 1) * 100)) if c.get("x", 1) > 1
@@ -238,7 +251,7 @@ def explain(now=None):
 def ceiling(d, now):
     """The SQM ceiling for direction `d` now: learned for this period of the day, else the env SQM_MAX_* (sqm.MAX)."""
     if d == "up" and not UP: return sqm.MAX["up"]                                    # upload: your SQM_MAX_UP
-    c = ceilings(state().get("captest_hist") or [], slot_of(now), now).get(d)
+    c = ceilings(state().get("captest_hist") or [], slot_of(now), now, st.get("seen_key")).get(d)
     return max(sqm.MIN[d], c) if c else sqm.MAX[d]
 
 
@@ -592,14 +605,14 @@ def run_iperf(now, servers, secs, conn, reverse, slot=None, diag=None, protect=F
                 if usp: break
             rec.update(up=usp, up_how=(uwhy if u == srv else utried[-1]) if usp else "; ".join(utried))
         applied = lambda c: {k: x for k, x in c.items() if k == "down" or UP}       # the upload ceiling only with CAPTEST_UP=1
-        before = applied(ceilings(state().get("captest_hist") or [], slot))
+        before = applied(ceilings(state().get("captest_hist") or [], slot, setup=rec.get("setup")))
         hist = ((state().get("captest_hist") or []) + [rec])[-80:]
         state({"captest_hist": hist, "captest_last": {"rec": rec, "raw": {"iperf3_reads": reads[-12:]}}})
         log("capacity test (iperf3 %s): %s" % (srv, "; ".join("%s %s Mbit/s - %s" % (d, rec[d], rec[d + "_how"]) for d in ("down", "up") if rec.get(d + "_how"))))
         event({"event": "capacity test", "to": "down %s%s Mbit/s (iperf3)" % (rec["down"], " / up %s" % rec["up"] if "up_how" in rec else ""),
                "why": "%s slot %s: %s%s" % (srv, slot, rec.get("down_how") or rec.get("up_how"), "; up: %s" % rec["up_how"] if rec.get("up_how") and rec.get("down_how") else "")})
-        after = applied(ceilings(hist, slot))
-        learned = ceilings(hist, slot).get("down")
+        after = applied(ceilings(hist, slot, setup=rec.get("setup")))
+        learned = ceilings(hist, slot, setup=rec.get("setup")).get("down")
         if not diag and rec.get("down") and learned and SHARE_D["down"] * rec["down"] < learned and not str(rec.get("trigger") or "").startswith("confirm"):
             st["confirm"] = {"at": time.time() + CONFIRM_S, "why": "confirm a low result: down %s Mbit/s (%g x = %g < the %s period's %g)"
                              % (rec["down"], SHARE_D["down"], round(SHARE_D["down"] * rec["down"], 1), slot, learned)}
@@ -640,9 +653,9 @@ def info(now=None):
             "server_list": "ok %s" % st["servers_day"] if st["servers"] else "not fetched yet / failed (fallback %s)" % HOST,
             "last": state().get("captest_last"), "recent": hist[-20:],
             "ceiling_now": {d: ceiling(d, now) for d in ("down", "up")},
-            "ceilings_by_period": {s: ceilings(hist, s) for s in SLOTS},
+            "ceilings_by_period": {s: ceilings(hist, s, setup=st.get("seen_key")) for s in SLOTS},
             "shaper_ceiling_now": (sqm.st.get("last") or {}).get("ceiling"), "climb": sqm.st.get("climb"), "climbs": sqm.st.get("climbs"),
-            "explain": explain(now), "counted_by_period": {s: {d: len(counted_results(hist, s, d)) for d in ("down", "up")} for s in SLOTS},
+            "explain": explain(now), "counted_by_period": {s: {d: len(counted_results(hist, s, d, st.get("seen_key"))) for d in ("down", "up")} for s in SLOTS},
             "trigger": {"pending": st.get("want"), "setup_now": st.get("seen_key"), "setup_tested": state().get("captest_setup"),
                         "today": trig_today(now), "max_a_day": TRIG_MAX}}
 
@@ -664,7 +677,7 @@ def week_text(now):
     return "\n".join([
         "capacity week to %s: %d tests (%d extra) - down %s, up %s Mbit/s" % (time.strftime("%Y-%m-%d", time.localtime(now)), len(wk),
             len([r for r in wk if r.get("trigger")]), rng([r["down"] for r in wk if r.get("down")]), rng([r["up"] for r in wk if r.get("up")])),
-        "ceilings down/up: " + " · ".join("%s %s/%s" % (s, g(c.get("down")), g(c.get("up"))) for s in SLOTS for c in [ceilings(hist, s)]),
+        "ceilings down/up: " + " · ".join("%s %s/%s" % (s, g(c.get("down")), g(c.get("up"))) for s in SLOTS for c in [ceilings(hist, s, setup=st.get("seen_key"))]),
         "shaper: %d busy min (>= 50 %% of the limit), %d at the ceiling; latency median idle %s / busy %s / at the ceiling %s ms; %d min with a cut; "
         "climbs since start: %d" % (len([r for r in rows if load(r) >= 0.5]), len([r for r in rows if load(r) >= 0.9]), dly(idle),
             dly(lambda r: load(r) >= 0.5), dly(lambda r: load(r) >= 0.9),

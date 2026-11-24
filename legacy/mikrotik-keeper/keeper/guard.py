@@ -8,6 +8,7 @@ State per lock in the state file: `{"cell": "340@100", "state": "pending|active|
 Env: LOCK_NOSERVICE_MIN (3), LOCK_BAD_MIN (10), NR_LOCK_LOST_MIN (10), LOCK_RETRY_H (1), NR_BACK_MIN (3), LOCK_MAX_REBOOTS_DAY (4),
 OFFLINE_RELEASE_MIN (8: no inform + no internet with an LTE lock -> released on the web page, see offline_release),
 QUALITY_AB (1) / AB_BAD_PCT (70) / AB_WINDOW_MIN (30) / AB_TRIAL_MIN (20) / AB_KEEP_H (3): bad calls with good signal on an idle link -> try unlocked once a day (quality_ab),
+SITE_OUTAGE_MAX_DAY (6): no internet while registered -> try another site (eNB) at most this many times in 24 h, >= 30 min apart (quality_ab),
 LOCK_PAUSE (e.g. "23:30-08:00": the LTE lock is released before this window and restored after it, once its cell is back - for a
 cell the operator switches off at night; measured 2026-10-28 / 29: B1 340@100 gone ~00:59-01:03 until ~06:00, a 3-min outage each
 night). The env's window is authoritative; 23:30-08:00 is the current one.
@@ -29,6 +30,8 @@ QUALITY_AB = E("QUALITY_AB", "1") == "1"                     # bad calls with go
 # 2026-11-20, 2 PCs + 2 phones: up p50 0.6 kB/s, steady >= 4 kB/s in 8.5 % of 5-min windows (all under 3 kB/s only 26 %)
 AB_QUIET_MIN, AB_CALL_BYTES = int(E("AB_QUIET_MIN", "5")), float(E("AB_CALL_BYTES", "4000"))
 AB_BAD_PCT, AB_WINDOW_MIN, AB_TRIAL_MIN, AB_KEEP_H = float(E("AB_BAD_PCT", "70")), int(E("AB_WINDOW_MIN", "30")), int(E("AB_TRIAL_MIN", "20")), float(E("AB_KEEP_H", "3"))
+SITE_OUTAGE_MAX = int(E("SITE_OUTAGE_MAX_DAY", "6"))       # outage trials of another site per 24 h (each one reboot, ~4-5 min down)
+SITE_OUTAGE_GAP_S = 1800                                       # ... at least this long after the previous A/B start
 OFFLINE_RELEASE_MIN = float(E("OFFLINE_RELEASE_MIN", "8"))   # no inform AND no internet this long with an LTE lock held -> release it over the LAN
 KEYS = {"lte": "lte_lock", "nr": "nr_lock"}
 SPEC_RE = r"\d{1,3}@\d{1,6}"      # PCI@EARFCN, e.g. 434@1550 (one cell - the MC889 keeps only the first cell of a list)
@@ -75,7 +78,7 @@ def pause_end(now):
 def lock_do(changes, why, count=True):
     """Apply `{"lte": spec|'none', "nr": spec|'none'}` together in the background (one reboot / one script).
     count=False: not counted against LOCK_MAX_REBOOTS_DAY (bounded callers: the once-a-day quality A/B)."""
-    if guard["busy"]: return
+    if guard["busy"]: return False
     guard["busy"] = True
     what = " + ".join("%s lock %s" % ("lte" if k == "lte" else "5g", "removed" if v == "none" else v) for k, v in sorted(changes.items()))
     def run():
@@ -90,6 +93,7 @@ def lock_do(changes, why, count=True):
         finally:
             guard["busy"] = False
     threading.Thread(target=run, daemon=True).start()
+    return True
 
 
 LOCK_RECONCILE_SETTLE = float(E("LOCK_RECONCILE_SETTLE_S", "120"))   # after a keeper lock change the modem reboots; its lock read-back is stale until ~this long
@@ -211,7 +215,23 @@ def ab_alt(cur, row, now):
     for r in rk:
         e = brain.REG["lte"].get(r.get("anchor") or "") or {}
         if r["lock"] != cur and _site(r) and _site(r) != here and now - e.get("last", 0) <= 6 * 3600: return r["lock"]
-    return None
+    return _registry_alt(here, now)
+
+
+def _registry_alt(here, now):
+    """No lock-tested anchor on another site: the B1/B3/B7 cell of another eNB that served as the anchor longest and was seen in the
+    last 6 h, cells with an n78 pair first (a low band needs the band-restricted profile). Radio history only - for an outage or a
+    20-min trial, where any working site beats the current one; the trial result decides what is kept."""
+    n78 = {a for c, e in (brain.REG.get("nr") or {}).items() if brain.nr_band_of(c.split("/")[0]) == "n78" for a in (e.get("anchors") or {})}
+    best = None
+    for cell, e in (brain.REG.get("lte") or {}).items():
+        if (not _site(e) or _site(e) == here or (brain.f(e.get("anchor_min")) or 0) <= 0 or now - (e.get("last") or 0) > 6 * 3600
+                or brain.band_of(cell.split("/")[0]) not in ("B1", "B3", "B7")): continue
+        key = (cell in n78, brain.f(e.get("anchor_min")) or 0, brain.f(e.get("rsrp")) or -200)
+        if best is None or key > best[0]: best = (key, cell)
+    if not best: return None
+    earfcn, pci = best[1].split("/")
+    return "%s@%s" % (pci, earfcn)
 
 
 def _ab_apply(ab, arm, now):
@@ -227,11 +247,28 @@ def _ab_apply(ab, arm, now):
 
 def _ab_restore(ab, now):
     """Your locks back: pending -> the guard's next idle minute writes both legs at once, ONE reboot. Not 'released': each leg then
-    waited for its own 'back' check and got its own reboot (2026-11-17: 17:23:53 the 5G, 17:26:53 the LTE). A lock changed by hand stays."""
+    waited for its own 'back' check and got its own reboot (2026-11-17: 17:23:53 the 5G, 17:26:53 the LTE). A lock changed by hand stays.
+    You were unlocked: the trial lock is removed now (the guard keeps no lock to restore). False = not started (a lock change runs)."""
+    if not any(ab["orig"].values()):
+        w = state().get("lte_lock")
+        if w and w.get("ab"):
+            if not lock_do({"lte": "none"}, "A/B over - back to unlocked", count=False): return False
+            state({"lte_lock": None})
+        return True
     for k, o in ab["orig"].items():
         w = state().get(KEYS[k])
         if o and w and w.get("ab"):
             state({KEYS[k]: {x: v for x, v in dict(o, state="pending", requested=now, reason="A/B over").items() if x not in ("released_at", "retry_at")}})
+    return True
+
+
+def site_down(now, rows=None):
+    """No internet while the modem stays registered: every probe of the last 2 min failed and the last 3 samples have an LTE cell
+    and are not call-ready. The serving site's backhaul or what is behind it - the modem keeps the strongest cell, so only a lock
+    to another site moves it (a site that goes off the air is left by the modem itself)."""
+    rows = (list(brain.HIST) if rows is None else list(rows))[-3:]
+    return (len(rows) == 3 and brain.no_internet(now)
+            and all(r.get("lte_cell") not in (None, "", "/") and str(r.get("call_ok")) == "0" for r in rows))
 
 
 def quiet(rows=None, row=None):
@@ -248,15 +285,19 @@ def quality_ab(row, now=None):
     radio, so likely the site's backhaul. Trials of AB_TRIAL_MIN each (one reboot each, at an idle minute):
       1. the best tested anchor on another site (ab_alt), 5G unlocked;  2. everything unlocked (the modem's own choice).
     Trial 1 already >= 90 % and +15 pp -> no trial 2. The best trial clearly better (+15 pp) -> kept AB_KEEP_H, then your locks
-    come back; none better -> your locks back now and a 'provider-wide' note. Returns 'trial' / 'kept' / 'restored' / None."""
+    come back; none better -> your locks back now and a 'provider-wide' note. Unlocked (no LTE or 5G lock): trial 1 only, and the
+    anchor's SINR is no gate (B7 340@3350 serves at ~1 dB). An outage (site_down: no internet while registered) starts it at once,
+    with no window, call or once-a-day wait, up to SITE_OUTAGE_MAX_DAY times in 24 h, 30 min apart; after AB_KEEP_H the home
+    site is tried again. Returns 'trial' / 'kept' / 'restored' / None."""
     now = now or time.time(); ab = state().get("quality_ab") or {}; day = time.strftime("%Y-%m-%d", time.localtime(now))
     ph = ab.get("phase")
-    if ph in ("trial", "keep") and not all((state().get(KEYS[k]) or {}).get("ab") for k, o in ab["orig"].items() if o):
+    if ph in ("trial", "keep") and not all((state().get(KEYS[k]) or {}).get("ab") for k in ([k for k, o in ab["orig"].items() if o] or ["lte"])):
         _ab_restore(ab, now)                                       # you changed a lock: stop, the other one goes back to yours
         state({"quality_ab": dict(ab, phase="done", result="stopped: locks changed by hand")}); return None
     if ph == "keep":
         if now < ab["until"] or not quiet(row=row): return None                  # a call on the line: your locks come back after it
-        _ab_restore(ab, now); state({"quality_ab": dict(ab, phase="done")})
+        if not _ab_restore(ab, now): return None
+        state({"quality_ab": dict(ab, phase="done")})
         event({"event": "lte lock A/B", "to": "back to your locks", "why": "%g h on %s are over" % (AB_KEEP_H, ARMS[ab["arm"]])})
         return "restored"
     if ph == "trial":
@@ -279,27 +320,37 @@ def quality_ab(row, now=None):
             log("quality A/B: kept %s - %s" % (ARMS[best], txt))
             event({"event": "lte lock A/B", "to": "kept %s for %g h" % ("LTE %s (another site)" % ab["alt"] if best == "site" else "unlocked", AB_KEEP_H), "why": txt})
             return "kept"
-        _ab_restore(ab, now); state({"quality_ab": dict(ab, res=res, phase="done", result="restored")})
+        if not _ab_restore(ab, now): return None
+        state({"quality_ab": dict(ab, res=res, phase="done", result="restored")})
         log("quality A/B: no better - %s" % txt)
         event({"event": "lte lock A/B", "to": "locks restored", "why": txt + " - neither another site nor the modem's own choice helps:"
                " the provider's side, nothing to fix from here"})
         return "restored"
-    if not QUALITY_AB or state().get("dev") or ab.get("day") == day or common.busy() or not common.clock_ok() or pause_end(now): return None
-    w = state().get("lte_lock")
-    if not w or w.get("state") != "active" or (brain.f(row.get("uptime_s")) or 0) < 600: return None
+    if not QUALITY_AB or state().get("dev") or common.busy() or not common.clock_ok() or pause_end(now): return None
+    w, nrw = state().get("lte_lock"), state().get("nr_lock")
+    if (w.get("state") != "active" if w else nrw) or (brain.f(row.get("uptime_s")) or 0) < 600: return None   # unlocked = both locks off
     if len([t for t in guard["reboots"] if now - t < 86400]) >= LOCK_MAX_REBOOTS_DAY: return None      # the restore needs one
-    rows = list(brain.HIST)[-AB_WINDOW_MIN:]
-    ok = brain.share(rows)
-    if len(rows) < AB_WINDOW_MIN - 5 or ok is None or ok >= AB_BAD_PCT: return None
-    if sum(1 for r in rows if brain.idle(r)) < 0.8 * len(rows) or not brain.idle(row): return None      # our own traffic: the SQM's job
-    if not quiet(row=row): return None                                                                  # a call: never reboot under it
-    lte, nr = brain.med([brain.f(r.get("lte_sinr")) for r in rows]), brain.med([brain.f(r.get("nr_sinr")) for r in rows])
-    if lte is None or lte < brain.MIN_SINR or (nr is not None and nr < brain.MIN_SINR): return None     # weak signal: the guard's job
-    nrw = state().get("nr_lock")
-    alt = ab_alt(w["cell"], row, now)
-    ab = {"day": day, "phase": "trial", "before": ok, "alt": alt, "arms": (["site"] if alt else []) + ["free"],
-          "orig": {"lte": w, "nr": nrw if (nrw or {}).get("state") == "active" else None},
-          "why": "A/B: call-ready %s%% in %d min with good signal (anchor SINR %s, 5G %s) on an idle link" % (ok, len(rows), lte, nr)}
+    outages = [t for t in ab.get("outages") or [] if now - t < 86400]
+    if site_down(now):                          # no internet while registered: another site now, a call is impossible anyway
+        if len(outages) >= SITE_OUTAGE_MAX or now - (ab.get("start") or 0) < SITE_OUTAGE_GAP_S: return None
+        rows = list(brain.HIST)[-3:]; outages.append(now)
+        lte, nr = brain.med([brain.f(r.get("lte_sinr")) for r in rows]), brain.med([brain.f(r.get("nr_sinr")) for r in rows])
+        why = "A/B: no internet for 2 min while registered on %s (anchor SINR %s, 5G %s)" % (row.get("lte_cell"), lte, nr)
+    else:
+        if ab.get("day") == day: return None
+        rows = list(brain.HIST)[-AB_WINDOW_MIN:]
+        ok = brain.share(rows)
+        if len(rows) < AB_WINDOW_MIN - 5 or ok is None or ok >= AB_BAD_PCT: return None
+        if sum(1 for r in rows if brain.idle(r)) < 0.8 * len(rows) or not brain.idle(row): return None      # our own traffic: the SQM's job
+        if not quiet(row=row): return None                                                                  # a call: never reboot under it
+        lte, nr = brain.med([brain.f(r.get("lte_sinr")) for r in rows]), brain.med([brain.f(r.get("nr_sinr")) for r in rows])
+        if lte is None or (w and lte < brain.MIN_SINR) or (nr is not None and nr < brain.MIN_SINR): return None   # weak signal: the guard's job
+        why = "A/B: call-ready %s%% in %d min with good signal (anchor SINR %s, 5G %s) on an idle link" % (ok, len(rows), lte, nr)
+    alt = ab_alt(w["cell"] if w else "none", row, now)
+    arms = (["site"] if alt else []) + (["free"] if w else [])          # unlocked already is the modem's own choice
+    if not arms: return None
+    ab = {"day": day, "phase": "trial", "before": brain.share(rows) or 0.0, "alt": alt, "arms": arms, "outages": outages,
+          "orig": {"lte": w, "nr": nrw if w and (nrw or {}).get("state") == "active" else None}, "why": why}
     state({"quality_ab": _ab_apply(ab, ab["arms"][0], now)})
     return "trial"
 

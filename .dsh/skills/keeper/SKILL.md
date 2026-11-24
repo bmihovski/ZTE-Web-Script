@@ -101,7 +101,8 @@ the docstrings and this skill in sync.
 - **Daytime ZTE LTE lock tests:** settle for CA, use a short download to raise NSA 5G, then measure call-ready/p95/jitter/loss in
   the modem's two successful iperf transfer intervals (`load_method=iperf_phases`). `load_s` is their combined estimated duration
   from the Enable acknowledgements. The later idle samples provide stability evidence. A lock needs a complete score at least
-  5 points over the same run's unlocked baseline and no clear internet-quality regression. SINR and RSRP are diagnostic.
+  5 points over the same run's unlocked baseline and no clear internet-quality regression, in two loaded runs in a row (one 10 s
+  probe slice = 5 points). SINR and RSRP are diagnostic.
   The `5g` score component reflects the band. B8/B20 read p95 ~40 ms and 100% call-ready idle, then p95 139 ms, jitter 69 ms and
   0% call-ready under load (2026-11-21).
 - **Pair lookups convert the key:** the pair DB is keyed `earfcn/pci` (`1550/434`, the sample format); a lock spec is
@@ -132,6 +133,9 @@ the docstrings and this skill in sync.
 - **iPerf freshness:** after the Enable acknowledgement, accept a new LastTest in the requested direction on a completed
   transfer, or a genuine running-to-terminal transition. A bare Enable alongside old `Complete` is insufficient. A fresh
   terminal result with a blank speed and report remains unscored.
+- **Capacity ceilings per setup class:** a period's ceiling counts only results of the current setup's 5G band (`captest.setup_class`).
+- **Site failover:** unlocked, no internet for 2 min while registered -> a 20-min trial lock on another eNB (B cell, else the registry),
+  kept 3 h on +15 pp, then unlocked again; at most `SITE_OUTAGE_MAX_DAY` (6) a day. The morning check never catches up after 09:00.
 - Patching a function in tests hides its real body; add a real-body test.
 - The ZTE web has ONE session: an open page logs the keeper out; the antenna set retries 3× with a re-login, and the boot apply
   waits for the web (`CPE_READY_*`).

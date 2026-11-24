@@ -68,6 +68,14 @@ _G = {"slot": "18:30", "down": 150.0, "down_how": "full load 5.0 s"}
 assert c.ceilings([_G, _G, dict(_G, diag={"conn": 1}, down=5.0)], "18:30")["down"] == 138.0   # diagnostics don't count
 G = {"slot": "18:30", "down": 150.0, "down_how": "full load 5.0 s"}
 assert c.ceilings([G, dict(G, url="http://x/y", down=10.0)], "18:30") == {} and c.ceilings([G, G], "18:30")["down"] == 138.0   # diagnostics don't count
+# a setup class (its 5G band) never sets another class's ceiling (2026-11-24: B8 + n28 trial results of 6-8 Mbit/s held the 21:30
+# B7 + n78 ceiling at 72.8 while that setup measured ~160)
+N78, N28 = "3350/340|636576/534", "3774/112|156510/534"
+mix = [dict(G, setup=N28, down=7.0), dict(G, setup=N28, down=8.0), dict(G, setup=N78, down=160.0), dict(G, setup=N78, down=165.0), dict(G, down=6.4)]
+assert c.ceilings(mix, "18:30")["down"] == 7.4                                    # without a setup: every result, as before
+assert c.ceilings(mix, "18:30", setup="1550/434|636576/534")["down"] == 147.2     # same 5G band, other anchor, no setup: count
+assert c.ceilings(mix, "18:30", setup=N28)["down"] == 6.4 and c.ceilings(mix[:2] + mix[2:3], "18:30", setup=N78) == {}
+assert c.setup_class("3350/340|-") == "lte" and c.setup_class(None) is None and c.setup_class(N28) == "n28"
 # the modem's CPU while its iperf3 runs (2026-11-20: the modem reads ~76 % of the line down - is its CPU the limit?): read with the
 # test's values, the max goes into the result's 'how'
 c.st.update(running=True, base=c.IP3, cpu=[])

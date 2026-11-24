@@ -539,11 +539,13 @@ def lock_test(plan, align=False, night=False, rat="lte", anchor=None, heading=""
                     except (ValueError, TypeError): fresh = False
                     lines = ["%s daytime lock test" % common.device_name(), "* best " + dd(best)] + (["  unlocked baseline: " + dd(base).split(": ", 1)[1]] if base else [])
                     applied = None
-                    if gain and fresh and brain.AUTO == "on" and best["lock"] != cur and (not needs_scope or scope_complete):
+                    repeated = not lte_loaded or (gain and brain.loaded_win_repeated(best["lock"], lt["run"]))   # one loaded run is noise
+                    if gain and fresh and repeated and brain.AUTO == "on" and best["lock"] != cur and (not needs_scope or scope_complete):
                         try: guard.lock_request(best["lock"]); applied = best["lock"]
                         except Exception as e: lines.append("auto-apply failed: %r" % e)
-                    if applied: lines.append("-> AUTO-APPLIED %s (beats the unlocked baseline under load)" % applied)
+                    if applied: lines.append("-> AUTO-APPLIED %s (beats the unlocked baseline under load%s)" % (applied, ", second run in a row" if lte_loaded else ""))
                     elif gain and best["lock"] == cur: lines.append("-> best is already your lock %s" % cur)
+                    elif gain and not repeated: lines.append("-> %s wins this run; auto-apply needs the same win in the next loaded run" % best["lock"])
                     elif gain: lines.append("-> %s wins%s -> review to apply" % (best["lock"], "" if fresh else " (older result)"))
                     else: lines.append("-> no candidate clearly beats unlocked - no lock needed")
                     alert.report("\n".join(lines))

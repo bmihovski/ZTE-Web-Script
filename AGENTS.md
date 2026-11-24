@@ -78,6 +78,8 @@ Durable project memory. Read this first; the details live in the keeper docs.
   `incomplete` when any mode is unscored. Each unscored mode reports the reason.
 - **iPerf result freshness:** accept completion after this transfer's Enable acknowledgement, with a new timestamp in the
   requested direction or a witnessed running-to-terminal transition. Keep fresh blank modem results as unscored diagnostics.
+- **Decisions need repeat evidence:** a loaded LTE lock auto-applies only after two consecutive winning runs; capacity ceilings count
+  only the current setup class. Unlocked service fails over to another site when the internet is down while registered.
 - **Measurement reset:** put `data/.reset-measurements` on the container mount while idle and restart. Startup clears measurements
   and learned ranking caches, compacts SQLite, and consumes the marker. Keep managed locks, antenna settings, site notes, app
   lists and SQM inputs. Minute samples store typed cell identifiers and numeric metrics with a compact payload for other fields.
