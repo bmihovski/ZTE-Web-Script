@@ -96,4 +96,30 @@ legs.extend([first, b2, b3])
 rc, out = run([write(doc, tmp)])
 assert status_of(out, "R3") == "PASS", out
 
+# fixture: R5 PASS and R6 PASS
+rc, out = run([write(load(), tmp)])
+assert status_of(out, "R5") == "PASS", out
+assert status_of(out, "R6") == "PASS", out
+
+# a.lte set to 434@1550 -> R5 FAIL
+doc = load()
+doc["morning"]["result"]["a"]["lte"] = "434@1550"
+rc, out = run([write(doc, tmp)])
+assert rc == 1, out
+assert status_of(out, "R5") == "FAIL", out
+
+# restored.lte 340@1550 -> R6 FAIL
+doc = load()
+doc["morning"]["result"]["restored"]["lte"] = "340@1550"
+rc, out = run([write(doc, tmp)])
+assert rc == 1, out
+assert status_of(out, "R6") == "FAIL", out
+
+# status.time before result.time -> R6 WARN, still exits 0
+doc = load()
+doc["status"]["time"] = "2026-11-24 08:00:00"
+rc, out = run([write(doc, tmp)])
+assert rc == 0, out
+assert status_of(out, "R6") == "WARN", out
+
 print("OK test_morning_audit")

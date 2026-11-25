@@ -104,6 +104,112 @@ def check_r4(result):
     return ("FAIL" if problems else "PASS", "; ".join(problems) or "5G gate and errors consistent")
 
 
+def q(leg):
+    """Quality tuple for a leg, copied from keeper/brain.py quality_values (signal excluded)."""
+    call_ok = leg.get("call_ok")
+    call = 100 if call_ok == 1 else (call_ok or 0)
+    loss = leg.get("loss_pct")
+    p95 = leg.get("lat_p95")
+    jitter = leg.get("jitter_ms")
+    return (call, -999 if loss is None else -loss, -9999 if p95 is None else -p95, -9999 if jitter is None else -jitter)
+
+
+def clearly_better(a, b):
+    """First differing metric beyond its margin decides: call 5, loss 1.0, p95 10, jitter 10 - else False."""
+    (ac, al, ap, aj), (bc, bl, bp, bj) = a, b
+    if abs(ac - bc) >= 5:
+        return ac > bc
+    if abs(al - bl) >= 1.0:
+        return al > bl
+    if abs(ap - bp) >= 10:
+        return ap > bp
+    if abs(aj - bj) >= 10:
+        return aj > bj
+    return False
+
+
+def eligible_legs(result):
+    """Legs with band, role first/second, ok and has5g; per band keep the first leg of each role in list order."""
+    by_band = {}
+    for l in legs_of(result):
+        if not l.get("band"):
+            continue
+        if l.get("role") not in ("first", "second"):
+            continue
+        if not (l.get("ok") and l.get("has5g")):
+            continue
+        b = str(l["band"])
+        slot = by_band.setdefault(b, {})
+        if l["role"] not in slot:
+            slot[l["role"]] = l
+    return by_band
+
+
+def check_r5(result):
+    problems = []
+    by_band = eligible_legs(result)
+    primaries, backups = [], []
+    for b in sorted(by_band):
+        slot = by_band[b]
+        primary = slot.get("first") or slot.get("second")
+        primaries.append(primary)
+        if "first" in slot and "second" in slot:
+            backups.append(slot["second"])
+    a = max(primaries, key=q) if primaries else None
+    b = None
+    if a is not None:
+        cands = [l for l in backups if l.get("lte") != a.get("lte")]
+        b = max(cands, key=q) if cands else None
+    a_lte = (a.get("lte") if a else None) or "none"
+    b_lte = (b.get("lte") if b else None) or "none"
+    got_a = ((result.get("a") or {}).get("lte")) or "none"
+    got_b = ((result.get("b") or {}).get("lte")) or "none"
+    if got_a != a_lte:
+        problems.append(f"a.lte {got_a!r} != recomputed {a_lte!r}")
+    if got_b != b_lte:
+        problems.append(f"b.lte {got_b!r} != recomputed {b_lte!r}")
+    return ("FAIL" if problems else "PASS", "; ".join(problems) or "A/B match the recomputed pick")
+
+
+def check_r6(doc, result):
+    problems = []
+    by_band = eligible_legs(result)
+    primaries, backups = [], []
+    for b in sorted(by_band):
+        slot = by_band[b]
+        primary = slot.get("first") or slot.get("second")
+        primaries.append(primary)
+        if "first" in slot and "second" in slot:
+            backups.append(slot["second"])
+    a = max(primaries, key=q) if primaries else None
+    b = None
+    if a is not None:
+        cands = [l for l in backups if l.get("lte") != a.get("lte")]
+        b = max(cands, key=q) if cands else None
+    no_lock = [l for l in legs_of(result) if l.get("leg") == "no lock"]
+    no_lock = no_lock[0] if no_lock else None
+    cand = [l for l in ([no_lock, a, b] if no_lock else [a, b]) if l and l.get("ok") and l.get("has5g")]
+    if not cand:
+        restored = "none"
+    else:
+        best = max(cand, key=q)
+        if best is no_lock or (no_lock and no_lock.get("ok") and not clearly_better(q(best), q(no_lock))):
+            restored = "none"
+        else:
+            restored = best.get("lte")
+    got = ((result.get("restored") or {}).get("lte")) or "none"
+    if got != restored:
+        problems.append(f"restored.lte {got!r} != recomputed {restored!r}")
+    status = doc.get("status") or {}
+    st_time = str(status.get("time") or "")
+    r_time = str(result.get("time") or "")
+    if not problems and (st_time > r_time) and status.get("nr_cell"):
+        return "PASS", f"restored {restored!r} matches; status after the run with 5G"
+    if problems:
+        return "FAIL", "; ".join(problems)
+    return "WARN", "status taken before the run ended, or no 5G now"
+
+
 def check_r8(result):
     problems = []
     for l in legs_of(result):
@@ -132,7 +238,10 @@ def audit(doc, router_log=None, n=2):
     add("R3", s, d, "Morning cell check")
     s, d = check_r4(result)
     add("R4", s, d, "5G gate")
-    # R5/R6 added in a later step
+    s, d = check_r5(result)
+    add("R5", s, d, "A/B pick")
+    s, d = check_r6(doc, result)
+    add("R6", s, d, "Restore")
     s, d = check_r8(result)
     add("R8", s, d, "Data measurements")
 
