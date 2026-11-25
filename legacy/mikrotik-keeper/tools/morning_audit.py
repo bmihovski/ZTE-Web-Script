@@ -104,13 +104,20 @@ def check_r4(result):
     return ("FAIL" if problems else "PASS", "; ".join(problems) or "5G gate and errors consistent")
 
 
+def metric(v):
+    """'' and None both mean missing -> None; anything else is a float."""
+    if v is None or v == "":
+        return None
+    return float(v)
+
+
 def q(leg):
     """Quality tuple for a leg, copied from keeper/brain.py quality_values (signal excluded)."""
     call_ok = leg.get("call_ok")
-    call = 100 if call_ok == 1 else (call_ok or 0)
-    loss = leg.get("loss_pct")
-    p95 = leg.get("lat_p95")
-    jitter = leg.get("jitter_ms")
+    call = 100 if call_ok == 1 else (metric(call_ok) or 0)
+    loss = metric(leg.get("loss_pct"))
+    p95 = metric(leg.get("lat_p95"))
+    jitter = metric(leg.get("jitter_ms"))
     return (call, -999 if loss is None else -loss, -9999 if p95 is None else -p95, -9999 if jitter is None else -jitter)
 
 
@@ -223,7 +230,7 @@ def check_r8(result):
     return ("FAIL" if problems else "PASS", "; ".join(problems) or "every ok leg has its measurements")
 
 
-ROUTER_RE = re.compile(r"zte-keeper: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (.*)$")
+ROUTER_RE = re.compile(r" ?zte-keeper: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (.*)$")
 
 
 def parse_router_log(path):
@@ -245,7 +252,8 @@ def check_r7(doc, result, router_log):
     in_win = [(t, m) for t, m in lines if started <= t <= ended]
     reboots = [t for t, m in in_win if "reboot accepted" in m]
     boots = [t for t, m in in_win if "boot inform" in m and "1 BOOT" in m]
-    expected = 2 + sum(1 for l in legs_of(result) if l.get("lte") not in (None, "", "none"))
+    locked = sum(1 for l in legs_of(result) if l.get("lte") not in (None, "", "none"))
+    expected = 2 + locked
     unanswered = []
     for i, t in enumerate(reboots):
         nxt = reboots[i + 1] if i + 1 < len(reboots) else ended
@@ -257,11 +265,13 @@ def check_r7(doc, result, router_log):
         problems.append(f"{len(reboots)} reboots, expected at most {expected}")
     if unanswered and not failed_leg:
         problems.append(f"reboots with no boot before the next reboot: {unanswered}")
-    router = {"reboots": len(reboots), "boots": len(boots), "expected_max": expected, "unanswered": unanswered}
+    router = {"reboots": len(reboots), "boots": len(boots), "expected_max": expected, "locked": locked, "unanswered": unanswered}
     if problems:
         return "FAIL", router, "; ".join(problems)
     if unanswered:
         return "PASS", router, f"{len(unanswered)} reboot(s) without a boot, explained by a failed leg"
+    if locked > 0 and len(reboots) < locked:
+        return "WARN", router, f"router log covers {len(reboots)} of {locked} lock reboots"
     return "PASS", router, f"{len(reboots)} reboots, {len(boots)} boots, within the expected {expected}"
 
 

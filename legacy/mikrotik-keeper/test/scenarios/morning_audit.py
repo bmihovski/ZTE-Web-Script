@@ -122,7 +122,7 @@ rc, out = run([write(doc, tmp)])
 assert rc == 0, out
 assert status_of(out, "R6") == "WARN", out
 
-# R7: 3 reboots each followed by a boot inside the window -> PASS, router counts 3/3
+# R7: 3 reboots each followed by a boot inside the window -> WARN (3 < 5 locked)
 log = os.path.join(tmp, "router.log")
 with open(log, "w") as f:
     for i in (1, 2, 3):
@@ -131,7 +131,7 @@ with open(log, "w") as f:
 audit_path = os.path.join(tmp, "audit.json")
 rc, out = run([write(load(), tmp), "--router-log", log, "--out", audit_path])
 assert rc == 0, out
-assert status_of(out, "R7") == "PASS", out
+assert status_of(out, "R7") == "WARN", out
 with open(audit_path) as f:
     audit = json.load(f)
 assert audit["router"]["reboots"] == 3, audit["router"]
@@ -146,6 +146,36 @@ with open(log, "w") as f:
 rc, out = run([write(load(), tmp), "--router-log", log])
 assert rc == 1, out
 assert status_of(out, "R7") == "FAIL", out
+
+# B7 #1 3350/340 leg with lat_p95 "" -> no traceback, R5 FAIL (A is no longer 340@3350)
+doc = load()
+for l in doc["morning"]["result"]["legs"]:
+    if l["leg"] == "B7 #1 3350/340":
+        l["lat_p95"] = ""
+doc["morning"]["result"]["a"]["lte"] = "340@3350"
+rc, out = run([write(doc, tmp)])
+assert rc == 1, out
+assert status_of(out, "R5") == "FAIL", out
+
+# R7: log with only 2026-11-25 lines (outside the run window) -> WARN, 0 of 5 lock reboots
+with open(log, "w") as f:
+    for i in (1, 2):
+        f.write(f" 2026-11-25 08:0{i}:00 container,info,debug zte-keeper: 2026-11-25 08:0{i}:00 reboot accepted by the ZTE\n")
+        f.write(f" 2026-11-25 08:0{i}:30 container,info,debug zte-keeper: 2026-11-25 08:0{i}:30 ZTE boot inform ['1 BOOT', 'M Reboot']\n")
+rc, out = run([write(load(), tmp), "--router-log", log])
+assert rc == 0, out
+assert status_of(out, "R7") == "WARN", out
+assert "0 of 5 lock reboots" in out, out
+
+# R7: 5 in-window reboots each followed by a boot, no leading space -> PASS
+with open(log, "w") as f:
+    for i in range(5):
+        mm = 1 + i
+        f.write(f"2026-11-24 08:{mm:02d}:00 container,info,debug zte-keeper: 2026-11-24 08:{mm:02d}:00 reboot accepted by the ZTE\n")
+        f.write(f"2026-11-24 08:{mm:02d}:30 container,info,debug zte-keeper: 2026-11-24 08:{mm:02d}:30 ZTE boot inform ['1 BOOT', 'M Reboot']\n")
+rc, out = run([write(load(), tmp), "--router-log", log])
+assert rc == 0, out
+assert status_of(out, "R7") == "PASS", out
 
 # no --router-log -> R7 SKIP
 rc, out = run([write(load(), tmp)])
