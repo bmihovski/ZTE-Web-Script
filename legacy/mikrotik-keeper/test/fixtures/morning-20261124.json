@@ -1,0 +1,1780 @@
+{
+  "morning": {
+    "running": null,
+    "stage": "done",
+    "trigger": "scheduled",
+    "result": {
+      "trigger": "scheduled",
+      "time": "2026-11-24 08:26:54",
+      "started": "2026-11-24 08:00:52",
+      "seconds": 1562.2,
+      "version": "2026-11-23j",
+      "apply": true,
+      "complete": true,
+      "fallback": null,
+      "discoveries": [
+        {
+          "band": "1",
+          "serving": "100/340",
+          "candidates": [
+            "434@100"
+          ],
+          "nr": "636576/534",
+          "error": "",
+          "rsrp": -80.5,
+          "sinr": 5.0,
+          "samples": 2,
+          "rejected": {
+            "493@100": "one usable reading",
+            "500@100": "one usable reading",
+            "202@100": "one usable reading"
+          },
+          "signals": {
+            "493@100": [
+              -92.0
+            ],
+            "434@100": [
+              -94.0,
+              -91.0
+            ],
+            "500@100": [
+              -95.0
+            ],
+            "202@100": [
+              -90.0
+            ]
+          }
+        },
+        {
+          "band": "3",
+          "serving": "1550/434",
+          "candidates": [
+            "340@1550",
+            "66@1550"
+          ],
+          "nr": "636576/534",
+          "error": "",
+          "rsrp": -87.0,
+          "sinr": -0.5,
+          "samples": 2,
+          "rejected": {},
+          "signals": {
+            "340@1550": [
+              -87.0,
+              -89.0
+            ],
+            "66@1550": [
+              -89.0,
+              -89.0
+            ],
+            "112@1550": [
+              -91.0,
+              -92.0
+            ]
+          }
+        },
+        {
+          "band": "7",
+          "serving": "3350/340",
+          "candidates": [],
+          "nr": "636576/534",
+          "error": "",
+          "rsrp": -89.5,
+          "sinr": 3.5,
+          "samples": 2,
+          "rejected": {
+            "434@3350": "one usable reading",
+            "112@3350": "one usable reading",
+            "36@3350": "one usable reading"
+          },
+          "signals": {
+            "434@3350": [
+              -93.0
+            ],
+            "112@3350": [
+              -97.0
+            ],
+            "36@3350": [
+              -93.0
+            ]
+          }
+        }
+      ],
+      "legs": [
+        {
+          "leg": "no lock",
+          "band": null,
+          "role": "",
+          "lte": "none",
+          "nr": "none",
+          "time": "2026-11-24 08:00:52",
+          "ok": true,
+          "error": "",
+          "has5g": true,
+          "antenna_mode": {
+            "auto": "0",
+            "ant5": "4",
+            "ant6": "4",
+            "source": "kept",
+            "boot": 1,
+            "verified": true
+          },
+          "down_mbps": 29.89,
+          "call_ok": 1,
+          "loss_pct": 0.0,
+          "lat_p95": 18.9,
+          "jitter_ms": 1.8,
+          "health": {
+            "sim": true,
+            "registered": true,
+            "signal": true,
+            "data": true,
+            "detail": "SIM Valid, network Yettel BG, cell 3350/340, RSRP -89, ppp_connected"
+          },
+          "observed_nr": "636576/534",
+          "seconds": 101.7
+        },
+        {
+          "leg": "B1 #1 100/340",
+          "band": "1",
+          "role": "first",
+          "lte": "340@100",
+          "nr": "534@636576",
+          "time": "2026-11-24 08:08:11",
+          "ok": true,
+          "error": "",
+          "has5g": true,
+          "antenna_mode": {
+            "auto": "0",
+            "ant5": "4",
+            "ant6": "4",
+            "source": "kept",
+            "boot": 2,
+            "verified": true
+          },
+          "down_mbps": 22.44,
+          "call_ok": 1,
+          "loss_pct": 0.0,
+          "lat_p95": 21.5,
+          "jitter_ms": 3.6,
+          "health": {
+            "sim": true,
+            "registered": true,
+            "signal": true,
+            "data": true,
+            "detail": "SIM Valid, network Yettel BG, cell 100/340, RSRP -80, ppp_connected"
+          },
+          "observed_nr": "636576/534",
+          "seconds": 189.4
+        },
+        {
+          "leg": "B1 #2 434@100",
+          "band": "1",
+          "role": "second",
+          "lte": "434@100",
+          "nr": "none",
+          "time": "2026-11-24 08:11:21",
+          "ok": false,
+          "error": "no internet during the probe",
+          "has5g": true,
+          "antenna_mode": {
+            "auto": "0",
+            "ant5": "4",
+            "ant6": "4",
+            "source": "kept",
+            "boot": 3,
+            "verified": true
+          },
+          "down_mbps": null,
+          "call_ok": 0,
+          "loss_pct": 100.0,
+          "lat_p95": "",
+          "jitter_ms": "",
+          "health": {
+            "sim": true,
+            "registered": true,
+            "signal": true,
+            "data": true,
+            "detail": "SIM Valid, network Yettel BG, cell 100/434, RSRP -93, ppp_connected"
+          },
+          "https_error": "URLError(gaierror(-3, 'Try again'))",
+          "failure": "no_internet",
+          "observed_nr": "636576/534",
+          "seconds": 190.8
+        },
+        {
+          "leg": "B3 #1 1550/434",
+          "band": "3",
+          "role": "first",
+          "lte": "434@1550",
+          "nr": "534@636576",
+          "time": "2026-11-24 08:14:32",
+          "ok": true,
+          "error": "",
+          "has5g": true,
+          "antenna_mode": {
+            "auto": "0",
+            "ant5": "4",
+            "ant6": "4",
+            "source": "kept",
+            "boot": 4,
+            "verified": true
+          },
+          "down_mbps": 37.66,
+          "call_ok": 1,
+          "loss_pct": 0.0,
+          "lat_p95": 20.7,
+          "jitter_ms": 1.7,
+          "health": {
+            "sim": true,
+            "registered": true,
+            "signal": true,
+            "data": true,
+            "detail": "SIM Valid, network Yettel BG, cell 1550/434, RSRP -88, ppp_connected"
+          },
+          "observed_nr": "636576/534",
+          "seconds": 190.0
+        },
+        {
+          "leg": "B3 #2 340@1550",
+          "band": "3",
+          "role": "second",
+          "lte": "340@1550",
+          "nr": "534@636576",
+          "time": "2026-11-24 08:17:42",
+          "ok": true,
+          "error": "",
+          "has5g": true,
+          "antenna_mode": {
+            "auto": "0",
+            "ant5": "4",
+            "ant6": "4",
+            "source": "kept",
+            "boot": 5,
+            "verified": true
+          },
+          "down_mbps": 36.98,
+          "call_ok": 1,
+          "loss_pct": 0.0,
+          "lat_p95": 17.5,
+          "jitter_ms": 1.4,
+          "health": {
+            "sim": true,
+            "registered": true,
+            "signal": true,
+            "data": true,
+            "detail": "SIM Valid, network Yettel BG, cell 1550/340, RSRP -89, ppp_connected"
+          },
+          "observed_nr": "636576/534",
+          "seconds": 191.5
+        },
+        {
+          "leg": "B7 #1 3350/340",
+          "band": "7",
+          "role": "first",
+          "lte": "340@3350",
+          "nr": "534@636576",
+          "time": "2026-11-24 08:20:53",
+          "ok": true,
+          "error": "",
+          "has5g": true,
+          "antenna_mode": {
+            "auto": "0",
+            "ant5": "4",
+            "ant6": "4",
+            "source": "kept",
+            "boot": 6,
+            "verified": true
+          },
+          "down_mbps": 36.11,
+          "call_ok": 1,
+          "loss_pct": 0.0,
+          "lat_p95": 19.3,
+          "jitter_ms": 2.2,
+          "health": {
+            "sim": true,
+            "registered": true,
+            "signal": true,
+            "data": true,
+            "detail": "SIM Valid, network Yettel BG, cell 3350/340, RSRP -90, ppp_connected"
+          },
+          "observed_nr": "636576/534",
+          "seconds": 191.3
+        }
+      ],
+      "a": {
+        "leg": "B7 #1 3350/340",
+        "band": "7",
+        "role": "first",
+        "lte": "340@3350",
+        "nr": "534@636576",
+        "time": "2026-11-24 08:20:53",
+        "ok": true,
+        "error": "",
+        "has5g": true,
+        "antenna_mode": {
+          "auto": "0",
+          "ant5": "4",
+          "ant6": "4",
+          "source": "kept",
+          "boot": 6,
+          "verified": true
+        },
+        "down_mbps": 36.11,
+        "call_ok": 1,
+        "loss_pct": 0.0,
+        "lat_p95": 19.3,
+        "jitter_ms": 2.2,
+        "health": {
+          "sim": true,
+          "registered": true,
+          "signal": true,
+          "data": true,
+          "detail": "SIM Valid, network Yettel BG, cell 3350/340, RSRP -90, ppp_connected"
+        },
+        "observed_nr": "636576/534",
+        "seconds": 191.3
+      },
+      "b": {
+        "leg": "B3 #2 340@1550",
+        "band": "3",
+        "role": "second",
+        "lte": "340@1550",
+        "nr": "534@636576",
+        "time": "2026-11-24 08:17:42",
+        "ok": true,
+        "error": "",
+        "has5g": true,
+        "antenna_mode": {
+          "auto": "0",
+          "ant5": "4",
+          "ant6": "4",
+          "source": "kept",
+          "boot": 5,
+          "verified": true
+        },
+        "down_mbps": 36.98,
+        "call_ok": 1,
+        "loss_pct": 0.0,
+        "lat_p95": 17.5,
+        "jitter_ms": 1.4,
+        "health": {
+          "sim": true,
+          "registered": true,
+          "signal": true,
+          "data": true,
+          "detail": "SIM Valid, network Yettel BG, cell 1550/340, RSRP -89, ppp_connected"
+        },
+        "observed_nr": "636576/534",
+        "seconds": 191.5
+      },
+      "decision": null,
+      "coverage": null,
+      "restored": {
+        "lte": "none",
+        "nr": "none"
+      },
+      "up": 27.3,
+      "any_5g": true,
+      "verdict": "modem good"
+    },
+    "trial": {
+      "trigger": "comparison failed: B7 #2 36@3350: no matching post-BOOT band/cell readback within 180 s: no BOOT inform; ending the run to restore the original configuration",
+      "time": "2026-11-23 18:35:38",
+      "started": "2026-11-23 17:54:30",
+      "seconds": 2467.8,
+      "version": "2026-11-23e",
+      "apply": false,
+      "complete": false,
+      "fallback": null,
+      "discoveries": [
+        {
+          "band": "1",
+          "serving": "100/340",
+          "candidates": [
+            "434@100",
+            "202@100"
+          ],
+          "nr": "636576/534",
+          "error": "",
+          "rsrp": -81.5,
+          "sinr": 5.0,
+          "samples": 2,
+          "rejected": {
+            "34@100": "one usable reading"
+          },
+          "signals": {
+            "34@100": [
+              -92.0
+            ],
+            "202@100": [
+              -91.0,
+              -89.0
+            ],
+            "434@100": [
+              -87.0,
+              -90.0
+            ]
+          }
+        },
+        {
+          "band": "3",
+          "serving": "1550/434",
+          "candidates": [
+            "340@1550",
+            "66@1550"
+          ],
+          "nr": "636576/534",
+          "error": "",
+          "rsrp": -88.0,
+          "sinr": -0.5,
+          "samples": 2,
+          "rejected": {
+            "500@1550": "one usable reading",
+            "112@1550": "one usable reading"
+          },
+          "signals": {
+            "340@1550": [
+              -87.0,
+              -89.0
+            ],
+            "66@1550": [
+              -88.0,
+              -90.0
+            ],
+            "500@1550": [
+              -94.0
+            ],
+            "112@1550": [
+              -93.0
+            ]
+          }
+        },
+        {
+          "band": "7",
+          "serving": "3350/340",
+          "candidates": [
+            "36@3350"
+          ],
+          "nr": "636576/534",
+          "error": "",
+          "rsrp": -91.5,
+          "sinr": 1.0,
+          "samples": 2,
+          "rejected": {
+            "112@3350": "one usable reading"
+          },
+          "signals": {
+            "36@3350": [
+              -98.0,
+              -95.0
+            ],
+            "112@3350": [
+              -98.0
+            ]
+          }
+        }
+      ],
+      "legs": [
+        {
+          "leg": "no lock",
+          "band": null,
+          "role": "",
+          "lte": "none",
+          "nr": "none",
+          "time": "2026-11-23 17:54:30",
+          "ok": true,
+          "error": "",
+          "has5g": true,
+          "antenna_mode": {
+            "auto": "0",
+            "ant5": "4",
+            "ant6": "4",
+            "source": "kept",
+            "boot": 0,
+            "verified": true
+          },
+          "down_mbps": 23.95,
+          "call_ok": 1,
+          "loss_pct": 0.0,
+          "lat_p95": 33.4,
+          "jitter_ms": 4.7,
+          "health": {
+            "sim": true,
+            "registered": true,
+            "signal": true,
+            "data": true,
+            "detail": "SIM Valid, network Yettel BG, cell 3350/340, RSRP -90, ppp_connected"
+          },
+          "observed_nr": "636576/534",
+          "radio": {
+            "verified": true,
+            "samples_per_transfer": [
+              2,
+              2
+            ],
+            "observations": [
+              {
+                "time": 1795449362.4997833,
+                "boots": 0,
+                "LockLTEBand": "1,2,3,4,5,7,8,12,17,20,25,26,28,30,32,34,38,39,40,41,42,46,48",
+                "LockLTECell": "",
+                "LockNr5gCell": "",
+                "lte_cell": "3350/340",
+                "nr_cell": "636576/534",
+                "lte_ca": "B7/3350/340:-91/0@20 B1/100/340:-98/8@20 B3/1550/340:-91/8@20 B20/6400/121:-83/6@10",
+                "nr_sinr": "13",
+                "nr_rsrp": "-78",
+                "nr_rsrq": "-12"
+              },
+              {
+                "time": 1795449375.3861217,
+                "boots": 0,
+                "LockLTEBand": "1,2,3,4,5,7,8,12,17,20,25,26,28,30,32,34,38,39,40,41,42,46,48",
+                "LockLTECell": "",
+                "LockNr5gCell": "",
+                "lte_cell": "3350/340",
+                "nr_cell": "636576/534",
+                "lte_ca": "B7/3350/340:-92/1@20 B1/100/340:-100/8@20 B3/1550/340:-93/5@20 B20/6400/121:-85/6@10",
+                "nr_sinr": "13",
+                "nr_rsrp": "-78",
+                "nr_rsrq": "-12"
+              },
+              {
+                "time": 1795449402.1232162,
+                "boots": 0,
+                "LockLTEBand": "1,2,3,4,5,7,8,12,17,20,25,26,28,30,32,34,38,39,40,41,42,46,48",
+                "LockLTECell": "",
+                "LockNr5gCell": "",
+                "lte_cell": "3350/340",
+                "nr_cell": "636576/534",
+                "lte_ca": "B7/3350/340:-90/0@20 B1/100/340:-96/8@20 B3/1550/340:-92/8@20 B20/6400/121:-87/5@10",
+                "nr_sinr": "13",
+                "nr_rsrp": "-78",
+                "nr_rsrq": "-12"
+              },
+              {
+                "time": 1795449411.3863924,
+                "boots": 0,
+                "LockLTEBand": "1,2,3,4,5,7,8,12,17,20,25,26,28,30,32,34,38,39,40,41,42,46,48",
+                "LockLTECell": "",
+                "LockNr5gCell": "",
+                "lte_cell": "3350/340",
+                "nr_cell": "636576/534",
+                "lte_ca": "B7/3350/340:-90/0@20 B1/100/340:-100/8@20 B3/1550/340:-91/8@20 B20/6400/121:-85/5@10",
+                "nr_sinr": "14",
+                "nr_rsrp": "-76",
+                "nr_rsrq": "-12"
+              }
+            ]
+          },
+          "transfer_seconds": [
+            25.0,
+            25.0
+          ],
+          "load_method": "iperf_phases",
+          "load_s": 50.0,
+          "load_down_mbps": 152.0,
+          "load_up_mbps": 27.9,
+          "load_how": "down 37.19.203.1:5201, up 37.19.203.1:5201",
+          "observed_anchor": "3350/340",
+          "nr_samples": {
+            "636576/534": 3
+          },
+          "radio_samples": 3,
+          "on_target_pct": 100.0,
+          "nr_pct": 100.0,
+          "transfer_radio_samples": 4,
+          "transfer_radio_matches": 4,
+          "load_call_pct": 100.0,
+          "load_loss_pct": 0.0,
+          "load_p95": 82.6,
+          "load_jitter_ms": 14.6,
+          "seconds": 150.6,
+          "score": 86.9,
+          "comparable_server": true,
+          "load_comparable": true
+        },
+        {
+          "leg": "B1 #1 100/340",
+          "band": "1",
+          "role": "first",
+          "lte": "340@100",
+          "nr": "534@636576",
+          "time": "2026-11-23 18:03:11",
+          "ok": true,
+          "error": "",
+          "has5g": true,
+          "antenna_mode": {
+            "auto": "0",
+            "ant5": "4",
+            "ant6": "4",
+            "source": "kept",
+            "boot": 1,
+            "verified": true
+          },
+          "down_mbps": 26.47,
+          "call_ok": 1,
+          "loss_pct": 0.0,
+          "lat_p95": 36.6,
+          "jitter_ms": 8.8,
+          "health": {
+            "sim": true,
+            "registered": true,
+            "signal": true,
+            "data": true,
+            "detail": "SIM Valid, network Yettel BG, cell 100/340, RSRP -81, ppp_connected"
+          },
+          "observed_nr": "636576/534",
+          "radio": {
+            "verified": true,
+            "samples_per_transfer": [
+              1,
+              2
+            ],
+            "observations": [
+              {
+                "time": 1795450014.7328386,
+                "boots": 1,
+                "LockLTEBand": "1,2,3,4,5,7,8,12,17,20,25,26,28,30,32,34,38,39,40,41,42,46,48",
+                "LockLTECell": "340,100",
+                "LockNr5gCell": "534,636576,78,30",
+                "lte_cell": "100/340",
+                "nr_cell": "636576/534",
+                "lte_ca": "B1/100/340:-82/5@20 B3/1550/340:-94/8@20",
+                "nr_sinr": "13",
+                "nr_rsrp": "-80",
+                "nr_rsrq": "-12"
+              },
+              {
+                "time": 1795450051.215904,
+                "boots": 1,
+                "LockLTEBand": "1,2,3,4,5,7,8,12,17,20,25,26,28,30,32,34,38,39,40,41,42,46,48",
+                "LockLTECell": "340,100",
+                "LockNr5gCell": "534,636576,78,30",
+                "lte_cell": "100/340",
+                "nr_cell": "636576/534",
+                "lte_ca": "B1/100/340:-81/5@20 B3/1550/340:-90/8@20",
+                "nr_sinr": "12",
+                "nr_rsrp": "-79",
+                "nr_rsrq": "-12"
+              },
+              {
+                "time": 1795450061.2404475,
+                "boots": 1,
+                "LockLTEBand": "1,2,3,4,5,7,8,12,17,20,25,26,28,30,32,34,38,39,40,41,42,46,48",
+                "LockLTECell": "340,100",
+                "LockNr5gCell": "534,636576,78,30",
+                "lte_cell": "100/340",
+                "nr_cell": "636576/534",
+                "lte_ca": "B1/100/340:-82/5@20 B3/1550/340:-90/8@20",
+                "nr_sinr": "12",
+                "nr_rsrp": "-80",
+                "nr_rsrq": "-12"
+              }
+            ]
+          },
+          "transfer_seconds": [
+            25.0,
+            25.0
+          ],
+          "load_method": "iperf_phases",
+          "load_s": 50.0,
+          "load_down_mbps": 154.0,
+          "load_up_mbps": 28.9,
+          "load_how": "down 37.19.203.1:5201, up 37.19.203.1:5201",
+          "observed_anchor": "100/340",
+          "nr_samples": {
+            "636576/534": 3
+          },
+          "radio_samples": 3,
+          "on_target_pct": 100.0,
+          "nr_pct": 100.0,
+          "transfer_radio_samples": 3,
+          "transfer_radio_matches": 3,
+          "load_call_pct": 50.0,
+          "load_loss_pct": 0.0,
+          "load_p95": 105.6,
+          "load_jitter_ms": 21.9,
+          "seconds": 279.4,
+          "score": 74.7,
+          "comparable_server": true,
+          "load_comparable": true
+        },
+        {
+          "leg": "B1 #2 434@100",
+          "band": "1",
+          "role": "second",
+          "lte": "434@100",
+          "nr": "none",
+          "time": "2026-11-23 18:07:51",
+          "ok": false,
+          "error": "LTE 434@100 attached; no 5G within 90 s",
+          "has5g": false,
+          "failure": "no_5g",
+          "seconds": 185.8
+        },
+        {
+          "leg": "B1 #3 202@100",
+          "band": "1",
+          "role": "second",
+          "lte": "202@100",
+          "nr": "534@636576",
+          "time": "2026-11-23 18:10:57",
+          "ok": true,
+          "error": "",
+          "has5g": true,
+          "antenna_mode": {
+            "auto": "0",
+            "ant5": "4",
+            "ant6": "4",
+            "source": "kept",
+            "boot": 3,
+            "verified": true
+          },
+          "down_mbps": 30.41,
+          "call_ok": 1,
+          "loss_pct": 0.0,
+          "lat_p95": 35.3,
+          "jitter_ms": 7.1,
+          "health": {
+            "sim": true,
+            "registered": true,
+            "signal": true,
+            "data": true,
+            "detail": "SIM Valid, network Yettel BG, cell 100/202, RSRP -93, ppp_connected"
+          },
+          "observed_nr": "636576/534",
+          "radio": {
+            "verified": true,
+            "samples_per_transfer": [
+              2,
+              2
+            ],
+            "observations": [
+              {
+                "time": 1795450471.9435954,
+                "boots": 3,
+                "LockLTEBand": "1,2,3,4,5,7,8,12,17,20,25,26,28,30,32,34,38,39,40,41,42,46,48",
+                "LockLTECell": "202,100",
+                "LockNr5gCell": "534,636576,78,30",
+                "lte_cell": "100/202",
+                "nr_cell": "636576/534",
+                "lte_ca": "B1/100/202:-92/-6@20 B3/1550/202:-94/5@20",
+                "nr_sinr": "13",
+                "nr_rsrp": "-79",
+                "nr_rsrq": "-12"
+              },
+              {
+                "time": 1795450483.1440852,
+                "boots": 3,
+                "LockLTEBand": "1,2,3,4,5,7,8,12,17,20,25,26,28,30,32,34,38,39,40,41,42,46,48",
+                "LockLTECell": "202,100",
+                "LockNr5gCell": "534,636576,78,30",
+                "lte_cell": "100/202",
+                "nr_cell": "636576/534",
+                "lte_ca": "B1/100/202:-91/-7@20 B3/1550/202:-93/5@20",
+                "nr_sinr": "13",
+                "nr_rsrp": "-79",
+                "nr_rsrq": "-12"
+              },
+              {
+                "time": 1795450510.6181698,
+                "boots": 3,
+                "LockLTEBand": "1,2,3,4,5,7,8,12,17,20,25,26,28,30,32,34,38,39,40,41,42,46,48",
+                "LockLTECell": "202,100",
+                "LockNr5gCell": "534,636576,78,30",
+                "lte_cell": "100/202",
+                "nr_cell": "636576/534",
+                "lte_ca": "B1/100/202:-93/-7@20 B3/1550/202:-92/5@20",
+                "nr_sinr": "11",
+                "nr_rsrp": "-80",
+                "nr_rsrq": "-12"
+              },
+              {
+                "time": 1795450520.9228418,
+                "boots": 3,
+                "LockLTEBand": "1,2,3,4,5,7,8,12,17,20,25,26,28,30,32,34,38,39,40,41,42,46,48",
+                "LockLTECell": "202,100",
+                "LockNr5gCell": "534,636576,78,30",
+                "lte_cell": "100/202",
+                "nr_cell": "636576/534",
+                "lte_ca": "B1/100/202:-92/-6@20 B3/1550/202:-93/5@20",
+                "nr_sinr": "12",
+                "nr_rsrp": "-79",
+                "nr_rsrq": "-12"
+              }
+            ]
+          },
+          "transfer_seconds": [
+            25.0,
+            25.0
+          ],
+          "load_method": "iperf_phases",
+          "load_s": 50.0,
+          "load_down_mbps": 157.0,
+          "load_up_mbps": 28.4,
+          "load_how": "down 37.19.203.1:5201, up 37.19.203.1:5201",
+          "observed_anchor": "100/202",
+          "nr_samples": {
+            "636576/534": 3
+          },
+          "radio_samples": 3,
+          "on_target_pct": 100.0,
+          "nr_pct": 100.0,
+          "transfer_radio_samples": 4,
+          "transfer_radio_matches": 4,
+          "load_call_pct": 100.0,
+          "load_loss_pct": 0.0,
+          "load_p95": 74.3,
+          "load_jitter_ms": 16.0,
+          "seconds": 273.6,
+          "score": 87.9,
+          "comparable_server": true,
+          "load_comparable": true
+        },
+        {
+          "leg": "B3 #1 1550/434",
+          "band": "3",
+          "role": "first",
+          "lte": "434@1550",
+          "nr": "534@636576",
+          "time": "2026-11-23 18:15:30",
+          "ok": true,
+          "error": "",
+          "has5g": true,
+          "antenna_mode": {
+            "auto": "0",
+            "ant5": "4",
+            "ant6": "4",
+            "source": "kept",
+            "boot": 4,
+            "verified": true
+          },
+          "down_mbps": 32.66,
+          "call_ok": 1,
+          "loss_pct": 0.0,
+          "lat_p95": 34.7,
+          "jitter_ms": 5.7,
+          "health": {
+            "sim": true,
+            "registered": true,
+            "signal": true,
+            "data": true,
+            "detail": "SIM Valid, network Yettel BG, cell 1550/434, RSRP -89, ppp_connected"
+          },
+          "observed_nr": "636576/534",
+          "radio": {
+            "verified": true,
+            "samples_per_transfer": [
+              1,
+              2
+            ],
+            "observations": [
+              {
+                "time": 1795450742.2748516,
+                "boots": 4,
+                "LockLTEBand": "1,2,3,4,5,7,8,12,17,20,25,26,28,30,32,34,38,39,40,41,42,46,48",
+                "LockLTECell": "434,1550",
+                "LockNr5gCell": "534,636576,78,30",
+                "lte_cell": "1550/434",
+                "nr_cell": "636576/534",
+                "lte_ca": "B3/1550/434:-89/-2@20 B1/100/434:-96/6@20 B7/3350/434:-107/6@20",
+                "nr_sinr": "14",
+                "nr_rsrp": "-79",
+                "nr_rsrq": "-12"
+              },
+              {
+                "time": 1795450780.8832176,
+                "boots": 4,
+                "LockLTEBand": "1,2,3,4,5,7,8,12,17,20,25,26,28,30,32,34,38,39,40,41,42,46,48",
+                "LockLTECell": "434,1550",
+                "LockNr5gCell": "534,636576,78,30",
+                "lte_cell": "1550/434",
+                "nr_cell": "636576/534",
+                "lte_ca": "B3/1550/434:-88/-3@20 B1/100/434:-97/5@20 B7/3350/434:-103/5@20",
+                "nr_sinr": "12",
+                "nr_rsrp": "-79",
+                "nr_rsrq": "-12"
+              },
+              {
+                "time": 1795450790.9033036,
+                "boots": 4,
+                "LockLTEBand": "1,2,3,4,5,7,8,12,17,20,25,26,28,30,32,34,38,39,40,41,42,46,48",
+                "LockLTECell": "434,1550",
+                "LockNr5gCell": "534,636576,78,30",
+                "lte_cell": "1550/434",
+                "nr_cell": "636576/534",
+                "lte_ca": "B3/1550/434:-89/-4@20 B1/100/434:-98/5@20 B7/3350/434:-105/5@20",
+                "nr_sinr": "12",
+                "nr_rsrp": "-79",
+                "nr_rsrq": "-12"
+              }
+            ]
+          },
+          "transfer_seconds": [
+            25.0,
+            25.0
+          ],
+          "load_method": "iperf_phases",
+          "load_s": 50.0,
+          "load_down_mbps": 157.0,
+          "load_up_mbps": 27.8,
+          "load_how": "down 37.19.203.1:5201, up 37.19.203.1:5201",
+          "observed_anchor": "1550/434",
+          "nr_samples": {
+            "636576/534": 3
+          },
+          "radio_samples": 3,
+          "on_target_pct": 100.0,
+          "nr_pct": 100.0,
+          "transfer_radio_samples": 3,
+          "transfer_radio_matches": 3,
+          "load_call_pct": 100.0,
+          "load_loss_pct": 0.0,
+          "load_p95": 84.8,
+          "load_jitter_ms": 18.0,
+          "seconds": 270.3,
+          "score": 86.7,
+          "comparable_server": true,
+          "load_comparable": true
+        },
+        {
+          "leg": "B3 #2 340@1550",
+          "band": "3",
+          "role": "second",
+          "lte": "340@1550",
+          "nr": "534@636576",
+          "time": "2026-11-23 18:20:00",
+          "ok": true,
+          "error": "",
+          "has5g": true,
+          "antenna_mode": {
+            "auto": "0",
+            "ant5": "4",
+            "ant6": "4",
+            "source": "kept",
+            "boot": 5,
+            "verified": true
+          },
+          "down_mbps": 24.78,
+          "call_ok": 1,
+          "loss_pct": 0.0,
+          "lat_p95": 32.8,
+          "jitter_ms": 6.4,
+          "health": {
+            "sim": true,
+            "registered": true,
+            "signal": true,
+            "data": true,
+            "detail": "SIM Valid, network Yettel BG, cell 1550/340, RSRP -90, ppp_connected"
+          },
+          "observed_nr": "636576/534",
+          "radio": {
+            "verified": true,
+            "samples_per_transfer": [
+              2,
+              2
+            ],
+            "observations": [
+              {
+                "time": 1795451012.8736637,
+                "boots": 5,
+                "LockLTEBand": "1,2,3,4,5,7,8,12,17,20,25,26,28,30,32,34,38,39,40,41,42,46,48",
+                "LockLTECell": "340,1550",
+                "LockNr5gCell": "534,636576,78,30",
+                "lte_cell": "1550/340",
+                "nr_cell": "636576/534",
+                "lte_ca": "B3/1550/340:-89/-4@20 B1/100/340:-95/8@20",
+                "nr_sinr": "13",
+                "nr_rsrp": "-79",
+                "nr_rsrq": "-12"
+              },
+              {
+                "time": 1795451023.6807504,
+                "boots": 5,
+                "LockLTEBand": "1,2,3,4,5,7,8,12,17,20,25,26,28,30,32,34,38,39,40,41,42,46,48",
+                "LockLTECell": "340,1550",
+                "LockNr5gCell": "534,636576,78,30",
+                "lte_cell": "1550/340",
+                "nr_cell": "636576/534",
+                "lte_ca": "B3/1550/340:-89/-2@20 B1/100/340:-96/8@20",
+                "nr_sinr": "14",
+                "nr_rsrp": "-78",
+                "nr_rsrq": "-12"
+              },
+              {
+                "time": 1795451051.7847698,
+                "boots": 5,
+                "LockLTEBand": "1,2,3,4,5,7,8,12,17,20,25,26,28,30,32,34,38,39,40,41,42,46,48",
+                "LockLTECell": "340,1550",
+                "LockNr5gCell": "534,636576,78,30",
+                "lte_cell": "1550/340",
+                "nr_cell": "636576/534",
+                "lte_ca": "B3/1550/340:-90/-2@20 B1/100/340:-97/8@20",
+                "nr_sinr": "11",
+                "nr_rsrp": "-80",
+                "nr_rsrq": "-12"
+              },
+              {
+                "time": 1795451061.7738793,
+                "boots": 5,
+                "LockLTEBand": "1,2,3,4,5,7,8,12,17,20,25,26,28,30,32,34,38,39,40,41,42,46,48",
+                "LockLTECell": "340,1550",
+                "LockNr5gCell": "534,636576,78,30",
+                "lte_cell": "1550/340",
+                "nr_cell": "636576/534",
+                "lte_ca": "B3/1550/340:-90/-3@20 B1/100/340:-96/8@20",
+                "nr_sinr": "11",
+                "nr_rsrp": "-79",
+                "nr_rsrq": "-12"
+              }
+            ]
+          },
+          "transfer_seconds": [
+            25.0,
+            25.0
+          ],
+          "load_method": "iperf_phases",
+          "load_s": 50.0,
+          "load_down_mbps": 156.0,
+          "load_up_mbps": 28.5,
+          "load_how": "down 37.19.203.1:5201, up 37.19.203.1:5201",
+          "observed_anchor": "1550/340",
+          "nr_samples": {
+            "636576/534": 3
+          },
+          "radio_samples": 3,
+          "on_target_pct": 100.0,
+          "nr_pct": 100.0,
+          "transfer_radio_samples": 4,
+          "transfer_radio_matches": 4,
+          "load_call_pct": 100.0,
+          "load_loss_pct": 0.0,
+          "load_p95": 64.6,
+          "load_jitter_ms": 10.8,
+          "seconds": 270.8,
+          "score": 89.4,
+          "comparable_server": true,
+          "load_comparable": true
+        },
+        {
+          "leg": "B7 #1 3350/340",
+          "band": "7",
+          "role": "first",
+          "lte": "340@3350",
+          "nr": "534@636576",
+          "time": "2026-11-23 18:24:31",
+          "ok": true,
+          "error": "",
+          "has5g": true,
+          "antenna_mode": {
+            "auto": "0",
+            "ant5": "4",
+            "ant6": "4",
+            "source": "kept",
+            "boot": 6,
+            "verified": true
+          },
+          "down_mbps": 36.8,
+          "call_ok": 1,
+          "loss_pct": 0.0,
+          "lat_p95": 34.3,
+          "jitter_ms": 4.2,
+          "health": {
+            "sim": true,
+            "registered": true,
+            "signal": true,
+            "data": true,
+            "detail": "SIM Valid, network Yettel BG, cell 3350/340, RSRP -91, ppp_connected"
+          },
+          "observed_nr": "636576/534",
+          "load_retries": [
+            "local traffic 0.41 down / 9.33 up Mbit/s"
+          ],
+          "radio": {
+            "verified": true,
+            "samples_per_transfer": [
+              2,
+              2
+            ],
+            "observations": [
+              {
+                "time": 1795451382.8628879,
+                "boots": 6,
+                "LockLTEBand": "1,2,3,4,5,7,8,12,17,20,25,26,28,30,32,34,38,39,40,41,42,46,48",
+                "LockLTECell": "340,3350",
+                "LockNr5gCell": "534,636576,78,30",
+                "lte_cell": "3350/340",
+                "nr_cell": "636576/534",
+                "lte_ca": "B7/3350/340:-91/0@20 B1/100/340:-95/9@20 B3/1550/340:-89/7@20 B20/6400/121:-85/6@10",
+                "nr_sinr": "13",
+                "nr_rsrp": "-78",
+                "nr_rsrq": "-12"
+              },
+              {
+                "time": 1795451394.4692216,
+                "boots": 6,
+                "LockLTEBand": "1,2,3,4,5,7,8,12,17,20,25,26,28,30,32,34,38,39,40,41,42,46,48",
+                "LockLTECell": "340,3350",
+                "LockNr5gCell": "534,636576,78,30",
+                "lte_cell": "3350/340",
+                "nr_cell": "636576/534",
+                "lte_ca": "B7/3350/340:-91/0@20 B1/100/340:-100/9@20 B3/1550/340:-92/7@20 B20/6400/121:-84/6@10",
+                "nr_sinr": "12",
+                "nr_rsrp": "-78",
+                "nr_rsrq": "-12"
+              },
+              {
+                "time": 1795451421.8249185,
+                "boots": 6,
+                "LockLTEBand": "1,2,3,4,5,7,8,12,17,20,25,26,28,30,32,34,38,39,40,41,42,46,48",
+                "LockLTECell": "340,3350",
+                "LockNr5gCell": "534,636576,78,30",
+                "lte_cell": "3350/340",
+                "nr_cell": "636576/534",
+                "lte_ca": "B7/3350/340:-91/0@20 B1/100/340:-99/9@20 B3/1550/340:-90/7@20 B20/6400/121:-85/6@10",
+                "nr_sinr": "12",
+                "nr_rsrp": "-80",
+                "nr_rsrq": "-12"
+              },
+              {
+                "time": 1795451431.8258197,
+                "boots": 6,
+                "LockLTEBand": "1,2,3,4,5,7,8,12,17,20,25,26,28,30,32,34,38,39,40,41,42,46,48",
+                "LockLTECell": "340,3350",
+                "LockNr5gCell": "534,636576,78,30",
+                "lte_cell": "3350/340",
+                "nr_cell": "636576/534",
+                "lte_ca": "B7/3350/340:-90/2@20 B1/100/340:-95/9@20 B3/1550/340:-92/7@20 B20/6400/121:-85/6@10",
+                "nr_sinr": "11",
+                "nr_rsrp": "-79",
+                "nr_rsrq": "-12"
+              }
+            ]
+          },
+          "transfer_seconds": [
+            25.0,
+            25.0
+          ],
+          "load_method": "iperf_phases",
+          "load_s": 50.0,
+          "load_down_mbps": 152.0,
+          "load_up_mbps": 28.4,
+          "load_how": "down 37.19.203.1:5201, up 37.19.203.1:5201",
+          "observed_anchor": "3350/340",
+          "nr_samples": {
+            "636576/534": 4
+          },
+          "radio_samples": 4,
+          "on_target_pct": 100.0,
+          "nr_pct": 100.0,
+          "transfer_radio_samples": 4,
+          "transfer_radio_matches": 4,
+          "load_call_pct": 75.0,
+          "load_loss_pct": 0.0,
+          "load_p95": 76.9,
+          "load_jitter_ms": 20.7,
+          "seconds": 370.0,
+          "score": 81.2,
+          "comparable_server": true,
+          "load_comparable": true
+        },
+        {
+          "leg": "B7 #2 36@3350",
+          "band": "7",
+          "role": "second",
+          "lte": "36@3350",
+          "nr": "none",
+          "time": "2026-11-23 18:30:41",
+          "ok": false,
+          "error": "no matching post-BOOT band/cell readback within 180 s: no BOOT inform",
+          "has5g": false,
+          "seconds": 183.7
+        }
+      ],
+      "a": {},
+      "b": {},
+      "decision": {
+        "lte": "340@1550",
+        "score": 89.4,
+        "baseline": 86.9,
+        "gain": false,
+        "verdict": "unlocked"
+      },
+      "coverage": {
+        "baseline": true,
+        "requested_bands": [
+          "1",
+          "3",
+          "7"
+        ],
+        "missing_bands": []
+      },
+      "restored": {
+        "lte": "none",
+        "nr": "none"
+      },
+      "up": null,
+      "any_5g": true,
+      "verdict": "modem good"
+    }
+  },
+  "status": {
+    "verdict": "good",
+    "call_ready": true,
+    "time": "2026-11-24 08:48:51",
+    "nr_cell": "636576/534",
+    "nr_sinr": "11",
+    "nr_rsrp": "-79",
+    "nr_rsrq": "-12",
+    "lte_anchor": "B7 3350/340 SINR 2.0",
+    "lte_ca": "B7/3350/340:-90/2@20 B1/100/340:-94/8@20 B3/1550/340:-93/8@20 B20/6400/121:-83/6@10",
+    "latency": {
+      "lat_p50": 20.7,
+      "lat_p95": 39.2,
+      "lat_max": 43.4,
+      "jitter_ms": 7.9,
+      "loss_pct": 0.0,
+      "call_ok": 1
+    },
+    "uptime_s": "1469",
+    "temps": "15/14/19/18",
+    "fota": "version_idle YETTEL_BG_MC889V2.0.0B07",
+    "auto": "on",
+    "capacity": {
+      "carriers": [
+        {
+          "carrier": "B7 3350/340",
+          "bw_mhz": 20.0,
+          "sinr": 2.0,
+          "mbps_layer": 16.4,
+          "layers": 2
+        },
+        {
+          "carrier": "B1 100/340",
+          "bw_mhz": 20.0,
+          "sinr": 8.0,
+          "mbps_layer": 34.4,
+          "layers": 2
+        },
+        {
+          "carrier": "B3 1550/340",
+          "bw_mhz": 20.0,
+          "sinr": 8.0,
+          "mbps_layer": 34.4,
+          "layers": 2
+        },
+        {
+          "carrier": "B20 6400/121",
+          "bw_mhz": 10.0,
+          "sinr": 6.0,
+          "mbps_layer": 13.9,
+          "layers": 2
+        },
+        {
+          "carrier": "n 636576/534",
+          "bw_mhz": 100,
+          "sinr": 11.0,
+          "mbps_layer": 167.2,
+          "layers": 4
+        }
+      ],
+      "est_down_mbps": 867,
+      "note": "estimate before load: TR 36.942 x bandwidth x layers (assumed 2 LTE / 4 n78); upload not estimated (no uplink SINR)"
+    },
+    "pending": null,
+    "config": {
+      "device": "zte",
+      "lock_test": null,
+      "lock_test_rat": "lte",
+      "lock_test_anchor": null,
+      "quality_ab_phase": null,
+      "lte_lock": null,
+      "nr_lock": null,
+      "fast_mode": false,
+      "busy": null,
+      "inform_s": 60,
+      "clock": {
+        "verified": true,
+        "modem_skew_s": -1.6054821014404297,
+        "unverified_since": "2026-11-23 18:54:55"
+      },
+      "manages": "MC889",
+      "sqm": {
+        "on": true,
+        "now": {
+          "time": "08:49:18",
+          "rate": {
+            "up": 0.085888,
+            "down": 0.085368
+          },
+          "ceiling": {
+            "up": 24.8,
+            "down": 72.8
+          },
+          "why": {
+            "up": "idle, limit parked at the ceiling 24.8 (latency +0.0 ms)",
+            "down": "idle, limit parked at the ceiling 72.8 (latency +0.0 ms)"
+          },
+          "delay_ms": 0.0,
+          "limit": {
+            "up": 24.8,
+            "down": 72.8
+          },
+          "cpu": [
+            1,
+            1,
+            0,
+            2
+          ],
+          "cpu_max_since_start": 100,
+          "cpu_spikes": [
+            "11-24 08:10 core 100 %: no profile data (raw: [{\".section\": \"0\", \"name\": \"total\", \"usage\": \"0\"}, {\".section\": \"1\", \"name\": \"total\", \"usage\": \"0\"}]); keeper 3 %",
+            "11-24 08:23 core 100 %: no profile data (raw: [{\".section\": \"0\", \"name\": \"total\", \"usage\": \"0\"}, {\".section\": \"1\", \"name\": \"total\", \"usage\": \"0\"}]); keeper 1 %",
+            "11-24 08:35 core 100 %: no profile data (raw: [{\".section\": \"0\", \"name\": \"total\", \"usage\": \"0\"}, {\".section\": \"1\", \"name\": \"total\", \"usage\": \"0\"}]); keeper 1 %",
+            "11-24 08:47 core 100 %: no profile data (raw: [{\".section\": \"0\", \"name\": \"total\", \"usage\": \"0\"}, {\".section\": \"1\", \"name\": \"total\", \"usage\": \"0\"}]); keeper 1 %"
+          ],
+          "useless_cut_streaks": 0
+        },
+        "changes": 4,
+        "error": null
+      },
+      "alerts": {
+        "on": true,
+        "last": [
+          {
+            "time": "2026-11-23 18:54",
+            "kind": "start",
+            "text": "ZTE keeper started (v 2026-11-23j) - after a router reboot / power cut / deploy"
+          },
+          {
+            "time": "2026-11-24 07:04",
+            "kind": "clock",
+            "text": "ZTE: clock verified (the router's clock was 728 min behind (booted without NTP, e.g. after a power cut) - confirmed by the modem's time (it agrees now); LOCK_PAUSE / night screen waited; records stamped 2026-11-23 18:54:55 to at most 18:56:36 carry that wrong time)"
+          },
+          {
+            "time": "2026-11-24 08:26",
+            "kind": "report",
+            "text": "Morning check (scheduled): modem good\nno lock: HTTPS 29.89 Mbit/s, call 1, p95 18.9, jitter 1.8, 5G\nB1 #1 100/340: HTTPS 22.44 Mbit/s, call 1, p95 21.5, jitter 3.6, 5G\nB1 #2 434@100: no internet during the probe\nB3 #1 1550/434: HTTPS 37.66 Mbit/s, call 1, p95 20.7, jitter 1.7, 5G\nB3 #2 340@1550: HTTPS 36.98 Mbit/s, call 1, p95 17.5, jitter 1.4, 5G\nB7 #1 3350/340: HTTPS 36.11 Mbit/s, call 1, p95 19.3, jitter 2.2, 5G\nA: 340@3350 (5G yes), B: 340@1550 (5G yes)\nrestored: none / none, up 27.3 Mbit/s"
+          },
+          {
+            "time": "2026-11-24 08:40",
+            "kind": "report",
+            "text": "Loaded n78 sweep starts in 20 seconds. Close ZTE Helper, the modem web page and the ZTE Android app. Wait for the keeper to say you can reopen them."
+          },
+          {
+            "time": "2026-11-24 08:48",
+            "kind": "report",
+            "text": "Loaded n78 sweep finished (incomplete). 2/4 modes scored.\nYou can reopen ZTE Helper, the modem web page and the ZTE Android app."
+          }
+        ]
+      },
+      "auto_actions": "on",
+      "min_sinr": 3.0,
+      "preferred_nr": [],
+      "max_reboots_day": 3,
+      "call_limits": {
+        "p95_ms": 150.0,
+        "jitter_ms": 30.0,
+        "loss_pct": 3.4
+      },
+      "dev": false,
+      "antennas": {
+        "auto": "0",
+        "ant5": "4",
+        "ant6": "4"
+      },
+      "antennas_effective": {
+        "auto": "0",
+        "ant5": "4",
+        "ant6": "4"
+      },
+      "antennas_source": "kept",
+      "antennas_cell": null,
+      "antennas_env": {
+        "auto": "0",
+        "ant5": "4",
+        "ant6": "4"
+      },
+      "sweep_days": 0.0,
+      "sweep_running": false,
+      "last_sweep": 1793637597.5802329,
+      "lte_lock_fmt": {
+        "lock": "{pci},{earfcn}",
+        "unlock": ""
+      },
+      "zte_locks_raw": {
+        "LockLTECell": "",
+        "LockNr5gCell": "",
+        "LockLTEBand": "1,2,3,4,5,7,8,12,17,20,25,26,28,30,32,34,38,39,40,41,42,46,48",
+        "LockNr5gNSABand": "1,2,3,5,7,8,20,28,38,41,50,51,66,70,71,74,75,76,77,78,79,80,81,82,83,84"
+      },
+      "profile_restore_pending": false,
+      "checkin_days": 0.0,
+      "lock_upgrades": true,
+      "tr143": {
+        "supported": true,
+        "n": 162,
+        "names": [
+          "Device.IP.Diagnostics.",
+          "Device.IP.Diagnostics.IPv4PingSupported",
+          "Device.IP.Diagnostics.IPv6PingSupported",
+          "Device.IP.Diagnostics.IPv4TraceRouteSupported",
+          "Device.IP.Diagnostics.IPv6TraceRouteSupported",
+          "Device.IP.Diagnostics.IPv4DownloadDiagnosticsSupported",
+          "Device.IP.Diagnostics.IPv6DownloadDiagnosticsSupported",
+          "Device.IP.Diagnostics.IPv4UploadDiagnosticsSupported",
+          "Device.IP.Diagnostics.IPv6UploadDiagnosticsSupported",
+          "Device.IP.Diagnostics.IPv4UDPEchoDiagnosticsSupported",
+          "Device.IP.Diagnostics.IPv6UDPEchoDiagnosticsSupported",
+          "Device.IP.Diagnostics.DownloadDiagnostics.",
+          "Device.IP.Diagnostics.DownloadDiagnostics.DiagnosticsState",
+          "Device.IP.Diagnostics.DownloadDiagnostics.Interface",
+          "Device.IP.Diagnostics.DownloadDiagnostics.DownloadURL",
+          "Device.IP.Diagnostics.DownloadDiagnostics.DSCP",
+          "Device.IP.Diagnostics.DownloadDiagnostics.EthernetPriority",
+          "Device.IP.Diagnostics.DownloadDiagnostics.ROMTime",
+          "Device.IP.Diagnostics.DownloadDiagnostics.BOMTime",
+          "Device.IP.Diagnostics.DownloadDiagnostics.EOMTime",
+          "Device.IP.Diagnostics.DownloadDiagnostics.TestBytesReceived",
+          "Device.IP.Diagnostics.DownloadDiagnostics.TotalBytesReceived",
+          "Device.IP.Diagnostics.DownloadDiagnostics.TCPOpenRequestTime",
+          "Device.IP.Diagnostics.DownloadDiagnostics.TCPOpenResponseTime",
+          "Device.IP.Diagnostics.DownloadDiagnostics.DownloadTransports",
+          "Device.IP.Diagnostics.DownloadDiagnostics.DownloadDiagnosticMaxConnections",
+          "Device.IP.Diagnostics.DownloadDiagnostics.IPAddressUsed",
+          "Device.IP.Diagnostics.DownloadDiagnostics.TotalBytesSent",
+          "Device.IP.Diagnostics.DownloadDiagnostics.DownloadDiagnosticsMaxIncrementalResult",
+          "Device.IP.Diagnostics.DownloadDiagnostics.TimeBasedTestDuration",
+          "Device.IP.Diagnostics.DownloadDiagnostics.TimeBasedTestMeasurementInterval",
+          "Device.IP.Diagnostics.DownloadDiagnostics.TimeBasedTestMeasurementOffset",
+          "Device.IP.Diagnostics.DownloadDiagnostics.ProtocolVersion",
+          "Device.IP.Diagnostics.DownloadDiagnostics.NumberOfConnections",
+          "Device.IP.Diagnostics.DownloadDiagnostics.TestBytesReceivedUnderFullLoading",
+          "Device.IP.Diagnostics.DownloadDiagnostics.TotalBytesReceivedUnderFullLoading",
+          "Device.IP.Diagnostics.DownloadDiagnostics.TotalBytesSentUnderFullLoading",
+          "Device.IP.Diagnostics.DownloadDiagnostics.PeriodOfFullLoading",
+          "Device.IP.Diagnostics.DownloadDiagnostics.PerConnectionResultNumberOfEntries",
+          "Device.IP.Diagnostics.DownloadDiagnostics.EnablePerConnectionResults",
+          "Device.IP.Diagnostics.DownloadDiagnostics.IncrementalResultNumberOfEntries",
+          "Device.IP.Diagnostics.DownloadDiagnostics.IncrementalResult.",
+          "Device.IP.Diagnostics.DownloadDiagnostics.PerConnectionResult.",
+          "Device.IP.Diagnostics.IPPing.",
+          "Device.IP.Diagnostics.IPPing.DiagnosticsState",
+          "Device.IP.Diagnostics.IPPing.Interface",
+          "Device.IP.Diagnostics.IPPing.Host",
+          "Device.IP.Diagnostics.IPPing.NumberOfRepetitions",
+          "Device.IP.Diagnostics.IPPing.Timeout",
+          "Device.IP.Diagnostics.IPPing.DataBlockSize",
+          "Device.IP.Diagnostics.IPPing.DSCP",
+          "Device.IP.Diagnostics.IPPing.SuccessCount",
+          "Device.IP.Diagnostics.IPPing.FailureCount",
+          "Device.IP.Diagnostics.IPPing.AverageResponseTime",
+          "Device.IP.Diagnostics.IPPing.MinimumResponseTime",
+          "Device.IP.Diagnostics.IPPing.MaximumResponseTime",
+          "Device.IP.Diagnostics.IPPing.ProtocolVersion",
+          "Device.IP.Diagnostics.IPPing.IPAddressUsed",
+          "Device.IP.Diagnostics.Iperf3.",
+          "Device.IP.Diagnostics.Iperf3.Enable",
+          "Device.IP.Diagnostics.Iperf3.Mode",
+          "Device.IP.Diagnostics.Iperf3.ServerAddress",
+          "Device.IP.Diagnostics.Iperf3.ServerPort",
+          "Device.IP.Diagnostics.Iperf3.ClientProtocol",
+          "Device.IP.Diagnostics.Iperf3.DurationTestTime",
+          "Device.IP.Diagnostics.Iperf3.Reverse",
+          "Device.IP.Diagnostics.Iperf3.Parallel",
+          "Device.IP.Diagnostics.Iperf3.Omit",
+          "Device.IP.Diagnostics.Iperf3.OmitNum",
+          "Device.IP.Diagnostics.Iperf3.UplinkSpeed",
+          "Device.IP.Diagnostics.Iperf3.DownlinkSpeed",
+          "Device.IP.Diagnostics.Iperf3.UplinkLastTest",
+          "Device.IP.Diagnostics.Iperf3.DownlinkLastTest",
+          "Device.IP.Diagnostics.Iperf3.Status",
+          "Device.IP.Diagnostics.Iperf3.OutputReport",
+          "Device.IP.Diagnostics.Iperf3.Report",
+          "Device.IP.Diagnostics.Iperf3.LANTrafficBlock",
+          "Device.IP.Diagnostics.TraceRoute.",
+          "Device.IP.Diagnostics.TraceRoute.DiagnosticsState",
+          "Device.IP.Diagnostics.TraceRoute.Interface",
+          "Device.IP.Diagnostics.TraceRoute.Host",
+          "Device.IP.Diagnostics.TraceRoute.NumberOfTries",
+          "Device.IP.Diagnostics.TraceRoute.Timeout",
+          "Device.IP.Diagnostics.TraceRoute.DataBlockSize",
+          "Device.IP.Diagnostics.TraceRoute.DSCP",
+          "Device.IP.Diagnostics.TraceRoute.MaxHopCount",
+          "Device.IP.Diagnostics.TraceRoute.ResponseTime",
+          "Device.IP.Diagnostics.TraceRoute.RouteHopsNumberOfEntries",
+          "Device.IP.Diagnostics.TraceRoute.ProtocolVersion",
+          "Device.IP.Diagnostics.TraceRoute.IPAddressUsed",
+          "Device.IP.Diagnostics.TraceRoute.RouteHops.",
+          "Device.IP.Diagnostics.TraceRoute.RouteHops.1.",
+          "Device.IP.Diagnostics.TraceRoute.RouteHops.1.Host",
+          "Device.IP.Diagnostics.TraceRoute.RouteHops.1.HostAddress",
+          "Device.IP.Diagnostics.TraceRoute.RouteHops.1.ErrorCode",
+          "Device.IP.Diagnostics.TraceRoute.RouteHops.1.RTTimes",
+          "Device.IP.Diagnostics.UDPEchoConfig.",
+          "Device.IP.Diagnostics.UDPEchoConfig.Enable",
+          "Device.IP.Diagnostics.UDPEchoConfig.Interface",
+          "Device.IP.Diagnostics.UDPEchoConfig.SourceIPAddress",
+          "Device.IP.Diagnostics.UDPEchoConfig.UDPPort",
+          "Device.IP.Diagnostics.UDPEchoConfig.EchoPlusEnabled",
+          "Device.IP.Diagnostics.UDPEchoConfig.EchoPlusSupported",
+          "Device.IP.Diagnostics.UDPEchoConfig.PacketsReceived",
+          "Device.IP.Diagnostics.UDPEchoConfig.PacketsResponded",
+          "Device.IP.Diagnostics.UDPEchoConfig.BytesReceived",
+          "Device.IP.Diagnostics.UDPEchoConfig.BytesResponded",
+          "Device.IP.Diagnostics.UDPEchoConfig.TimeFirstPacketReceived",
+          "Device.IP.Diagnostics.UDPEchoConfig.TimeLastPacketReceived",
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.",
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.DiagnosticsState",
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.Interface",
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.Host",
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.Port",
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.NumberOfRepetitions",
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.Timeout",
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.DataBlockSize",
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.DSCP",
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.InterTransmissionTime",
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.ProtocolVersion",
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.IPAddressUsed",
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.SuccessCount",
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.FailureCount",
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.AverageResponseTime",
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.MinimumResponseTime",
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.MaximumResponseTime",
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.EnableIndividualPacketResults",
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.IndividualPacketResultNumberOfEntries",
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.UDPEchoDiagnosticsMaxResults",
+          "Device.IP.Diagnostics.UploadDiagnostics.",
+          "Device.IP.Diagnostics.UploadDiagnostics.DiagnosticsState",
+          "Device.IP.Diagnostics.UploadDiagnostics.Interface",
+          "Device.IP.Diagnostics.UploadDiagnostics.UploadURL",
+          "Device.IP.Diagnostics.UploadDiagnostics.DSCP",
+          "Device.IP.Diagnostics.UploadDiagnostics.EthernetPriority",
+          "Device.IP.Diagnostics.UploadDiagnostics.TestFileLength",
+          "Device.IP.Diagnostics.UploadDiagnostics.ROMTime",
+          "Device.IP.Diagnostics.UploadDiagnostics.BOMTime",
+          "Device.IP.Diagnostics.UploadDiagnostics.EOMTime",
+          "Device.IP.Diagnostics.UploadDiagnostics.TotalBytesSent",
+          "Device.IP.Diagnostics.UploadDiagnostics.TCPOpenRequestTime",
+          "Device.IP.Diagnostics.UploadDiagnostics.TCPOpenResponseTime",
+          "Device.IP.Diagnostics.UploadDiagnostics.IPAddressUsed",
+          "Device.IP.Diagnostics.UploadDiagnostics.TestBytesSent",
+          "Device.IP.Diagnostics.UploadDiagnostics.TotalBytesReceived",
+          "Device.IP.Diagnostics.UploadDiagnostics.UploadTransports",
+          "Device.IP.Diagnostics.UploadDiagnostics.UploadDiagnosticsMaxConnections",
+          "Device.IP.Diagnostics.UploadDiagnostics.UploadDiagnosticsMaxIncrementalResult",
+          "Device.IP.Diagnostics.UploadDiagnostics.TimeBasedTestDuration",
+          "Device.IP.Diagnostics.UploadDiagnostics.TimeBasedTestMeasurementInterval"
+        ],
+        "writable": {
+          "Device.IP.Diagnostics.": false,
+          "Device.IP.Diagnostics.IPv4PingSupported": false,
+          "Device.IP.Diagnostics.IPv6PingSupported": false,
+          "Device.IP.Diagnostics.IPv4TraceRouteSupported": false,
+          "Device.IP.Diagnostics.IPv6TraceRouteSupported": false,
+          "Device.IP.Diagnostics.IPv4DownloadDiagnosticsSupported": false,
+          "Device.IP.Diagnostics.IPv6DownloadDiagnosticsSupported": false,
+          "Device.IP.Diagnostics.IPv4UploadDiagnosticsSupported": false,
+          "Device.IP.Diagnostics.IPv6UploadDiagnosticsSupported": false,
+          "Device.IP.Diagnostics.IPv4UDPEchoDiagnosticsSupported": false,
+          "Device.IP.Diagnostics.IPv6UDPEchoDiagnosticsSupported": false,
+          "Device.IP.Diagnostics.DownloadDiagnostics.": false,
+          "Device.IP.Diagnostics.DownloadDiagnostics.DiagnosticsState": true,
+          "Device.IP.Diagnostics.DownloadDiagnostics.Interface": true,
+          "Device.IP.Diagnostics.DownloadDiagnostics.DownloadURL": true,
+          "Device.IP.Diagnostics.DownloadDiagnostics.DSCP": true,
+          "Device.IP.Diagnostics.DownloadDiagnostics.EthernetPriority": true,
+          "Device.IP.Diagnostics.DownloadDiagnostics.ROMTime": false,
+          "Device.IP.Diagnostics.DownloadDiagnostics.BOMTime": false,
+          "Device.IP.Diagnostics.DownloadDiagnostics.EOMTime": false,
+          "Device.IP.Diagnostics.DownloadDiagnostics.TestBytesReceived": false,
+          "Device.IP.Diagnostics.DownloadDiagnostics.TotalBytesReceived": false,
+          "Device.IP.Diagnostics.DownloadDiagnostics.TCPOpenRequestTime": false,
+          "Device.IP.Diagnostics.DownloadDiagnostics.TCPOpenResponseTime": false,
+          "Device.IP.Diagnostics.DownloadDiagnostics.DownloadTransports": false,
+          "Device.IP.Diagnostics.DownloadDiagnostics.DownloadDiagnosticMaxConnections": false,
+          "Device.IP.Diagnostics.DownloadDiagnostics.IPAddressUsed": false,
+          "Device.IP.Diagnostics.DownloadDiagnostics.TotalBytesSent": false,
+          "Device.IP.Diagnostics.DownloadDiagnostics.DownloadDiagnosticsMaxIncrementalResult": false,
+          "Device.IP.Diagnostics.DownloadDiagnostics.TimeBasedTestDuration": true,
+          "Device.IP.Diagnostics.DownloadDiagnostics.TimeBasedTestMeasurementInterval": true,
+          "Device.IP.Diagnostics.DownloadDiagnostics.TimeBasedTestMeasurementOffset": true,
+          "Device.IP.Diagnostics.DownloadDiagnostics.ProtocolVersion": true,
+          "Device.IP.Diagnostics.DownloadDiagnostics.NumberOfConnections": true,
+          "Device.IP.Diagnostics.DownloadDiagnostics.TestBytesReceivedUnderFullLoading": false,
+          "Device.IP.Diagnostics.DownloadDiagnostics.TotalBytesReceivedUnderFullLoading": false,
+          "Device.IP.Diagnostics.DownloadDiagnostics.TotalBytesSentUnderFullLoading": false,
+          "Device.IP.Diagnostics.DownloadDiagnostics.PeriodOfFullLoading": false,
+          "Device.IP.Diagnostics.DownloadDiagnostics.PerConnectionResultNumberOfEntries": false,
+          "Device.IP.Diagnostics.DownloadDiagnostics.EnablePerConnectionResults": true,
+          "Device.IP.Diagnostics.DownloadDiagnostics.IncrementalResultNumberOfEntries": false,
+          "Device.IP.Diagnostics.DownloadDiagnostics.IncrementalResult.": false,
+          "Device.IP.Diagnostics.DownloadDiagnostics.PerConnectionResult.": false,
+          "Device.IP.Diagnostics.IPPing.": false,
+          "Device.IP.Diagnostics.IPPing.DiagnosticsState": true,
+          "Device.IP.Diagnostics.IPPing.Interface": true,
+          "Device.IP.Diagnostics.IPPing.Host": true,
+          "Device.IP.Diagnostics.IPPing.NumberOfRepetitions": true,
+          "Device.IP.Diagnostics.IPPing.Timeout": true,
+          "Device.IP.Diagnostics.IPPing.DataBlockSize": true,
+          "Device.IP.Diagnostics.IPPing.DSCP": true,
+          "Device.IP.Diagnostics.IPPing.SuccessCount": false,
+          "Device.IP.Diagnostics.IPPing.FailureCount": false,
+          "Device.IP.Diagnostics.IPPing.AverageResponseTime": false,
+          "Device.IP.Diagnostics.IPPing.MinimumResponseTime": false,
+          "Device.IP.Diagnostics.IPPing.MaximumResponseTime": false,
+          "Device.IP.Diagnostics.IPPing.ProtocolVersion": true,
+          "Device.IP.Diagnostics.IPPing.IPAddressUsed": false,
+          "Device.IP.Diagnostics.Iperf3.": false,
+          "Device.IP.Diagnostics.Iperf3.Enable": true,
+          "Device.IP.Diagnostics.Iperf3.Mode": false,
+          "Device.IP.Diagnostics.Iperf3.ServerAddress": true,
+          "Device.IP.Diagnostics.Iperf3.ServerPort": true,
+          "Device.IP.Diagnostics.Iperf3.ClientProtocol": true,
+          "Device.IP.Diagnostics.Iperf3.DurationTestTime": true,
+          "Device.IP.Diagnostics.Iperf3.Reverse": true,
+          "Device.IP.Diagnostics.Iperf3.Parallel": true,
+          "Device.IP.Diagnostics.Iperf3.Omit": true,
+          "Device.IP.Diagnostics.Iperf3.OmitNum": true,
+          "Device.IP.Diagnostics.Iperf3.UplinkSpeed": false,
+          "Device.IP.Diagnostics.Iperf3.DownlinkSpeed": false,
+          "Device.IP.Diagnostics.Iperf3.UplinkLastTest": false,
+          "Device.IP.Diagnostics.Iperf3.DownlinkLastTest": false,
+          "Device.IP.Diagnostics.Iperf3.Status": false,
+          "Device.IP.Diagnostics.Iperf3.OutputReport": true,
+          "Device.IP.Diagnostics.Iperf3.Report": false,
+          "Device.IP.Diagnostics.Iperf3.LANTrafficBlock": true,
+          "Device.IP.Diagnostics.TraceRoute.": false,
+          "Device.IP.Diagnostics.TraceRoute.DiagnosticsState": true,
+          "Device.IP.Diagnostics.TraceRoute.Interface": true,
+          "Device.IP.Diagnostics.TraceRoute.Host": true,
+          "Device.IP.Diagnostics.TraceRoute.NumberOfTries": true,
+          "Device.IP.Diagnostics.TraceRoute.Timeout": true,
+          "Device.IP.Diagnostics.TraceRoute.DataBlockSize": true,
+          "Device.IP.Diagnostics.TraceRoute.DSCP": true,
+          "Device.IP.Diagnostics.TraceRoute.MaxHopCount": true,
+          "Device.IP.Diagnostics.TraceRoute.ResponseTime": false,
+          "Device.IP.Diagnostics.TraceRoute.RouteHopsNumberOfEntries": false,
+          "Device.IP.Diagnostics.TraceRoute.ProtocolVersion": true,
+          "Device.IP.Diagnostics.TraceRoute.IPAddressUsed": false,
+          "Device.IP.Diagnostics.TraceRoute.RouteHops.": false,
+          "Device.IP.Diagnostics.TraceRoute.RouteHops.1.": false,
+          "Device.IP.Diagnostics.TraceRoute.RouteHops.1.Host": false,
+          "Device.IP.Diagnostics.TraceRoute.RouteHops.1.HostAddress": false,
+          "Device.IP.Diagnostics.TraceRoute.RouteHops.1.ErrorCode": false,
+          "Device.IP.Diagnostics.TraceRoute.RouteHops.1.RTTimes": false,
+          "Device.IP.Diagnostics.UDPEchoConfig.": false,
+          "Device.IP.Diagnostics.UDPEchoConfig.Enable": true,
+          "Device.IP.Diagnostics.UDPEchoConfig.Interface": true,
+          "Device.IP.Diagnostics.UDPEchoConfig.SourceIPAddress": true,
+          "Device.IP.Diagnostics.UDPEchoConfig.UDPPort": true,
+          "Device.IP.Diagnostics.UDPEchoConfig.EchoPlusEnabled": true,
+          "Device.IP.Diagnostics.UDPEchoConfig.EchoPlusSupported": false,
+          "Device.IP.Diagnostics.UDPEchoConfig.PacketsReceived": false,
+          "Device.IP.Diagnostics.UDPEchoConfig.PacketsResponded": false,
+          "Device.IP.Diagnostics.UDPEchoConfig.BytesReceived": false,
+          "Device.IP.Diagnostics.UDPEchoConfig.BytesResponded": false,
+          "Device.IP.Diagnostics.UDPEchoConfig.TimeFirstPacketReceived": false,
+          "Device.IP.Diagnostics.UDPEchoConfig.TimeLastPacketReceived": false,
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.": false,
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.DiagnosticsState": true,
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.Interface": true,
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.Host": true,
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.Port": true,
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.NumberOfRepetitions": true,
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.Timeout": true,
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.DataBlockSize": true,
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.DSCP": true,
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.InterTransmissionTime": true,
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.ProtocolVersion": true,
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.IPAddressUsed": false,
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.SuccessCount": false,
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.FailureCount": false,
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.AverageResponseTime": false,
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.MinimumResponseTime": false,
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.MaximumResponseTime": false,
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.EnableIndividualPacketResults": true,
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.IndividualPacketResultNumberOfEntries": false,
+          "Device.IP.Diagnostics.UDPEchoDiagnostics.UDPEchoDiagnosticsMaxResults": false,
+          "Device.IP.Diagnostics.UploadDiagnostics.": false,
+          "Device.IP.Diagnostics.UploadDiagnostics.DiagnosticsState": true,
+          "Device.IP.Diagnostics.UploadDiagnostics.Interface": true,
+          "Device.IP.Diagnostics.UploadDiagnostics.UploadURL": true,
+          "Device.IP.Diagnostics.UploadDiagnostics.DSCP": true,
+          "Device.IP.Diagnostics.UploadDiagnostics.EthernetPriority": true,
+          "Device.IP.Diagnostics.UploadDiagnostics.TestFileLength": true,
+          "Device.IP.Diagnostics.UploadDiagnostics.ROMTime": false,
+          "Device.IP.Diagnostics.UploadDiagnostics.BOMTime": false,
+          "Device.IP.Diagnostics.UploadDiagnostics.EOMTime": false,
+          "Device.IP.Diagnostics.UploadDiagnostics.TotalBytesSent": false,
+          "Device.IP.Diagnostics.UploadDiagnostics.TCPOpenRequestTime": false,
+          "Device.IP.Diagnostics.UploadDiagnostics.TCPOpenResponseTime": false,
+          "Device.IP.Diagnostics.UploadDiagnostics.IPAddressUsed": false,
+          "Device.IP.Diagnostics.UploadDiagnostics.TestBytesSent": false,
+          "Device.IP.Diagnostics.UploadDiagnostics.TotalBytesReceived": false,
+          "Device.IP.Diagnostics.UploadDiagnostics.UploadTransports": false,
+          "Device.IP.Diagnostics.UploadDiagnostics.UploadDiagnosticsMaxConnections": false,
+          "Device.IP.Diagnostics.UploadDiagnostics.UploadDiagnosticsMaxIncrementalResult": false,
+          "Device.IP.Diagnostics.UploadDiagnostics.TimeBasedTestDuration": true,
+          "Device.IP.Diagnostics.UploadDiagnostics.TimeBasedTestMeasurementInterval": true,
+          "Device.IP.Diagnostics.UploadDiagnostics.TimeBasedTestMeasurementOffset": true,
+          "Device.IP.Diagnostics.UploadDiagnostics.ProtocolVersion": true,
+          "Device.IP.Diagnostics.UploadDiagnostics.NumberOfConnections": true,
+          "Device.IP.Diagnostics.UploadDiagnostics.TestBytesSentUnderFullLoading": false,
+          "Device.IP.Diagnostics.UploadDiagnostics.TotalBytesReceivedUnderFullLoading": false,
+          "Device.IP.Diagnostics.UploadDiagnostics.TotalBytesSentUnderFullLoading": false,
+          "Device.IP.Diagnostics.UploadDiagnostics.PeriodOfFullLoading": false,
+          "Device.IP.Diagnostics.UploadDiagnostics.PerConnectionResultNumberOfEntries": false,
+          "Device.IP.Diagnostics.UploadDiagnostics.EnablePerConnectionResults": true,
+          "Device.IP.Diagnostics.UploadDiagnostics.IncrementalResultNumberOfEntries": false,
+          "Device.IP.Diagnostics.UploadDiagnostics.IncrementalResult.": false,
+          "Device.IP.Diagnostics.UploadDiagnostics.PerConnectionResult.": false
+        },
+        "time": "2026-11-24 07:13:53"
+      },
+      "watchdog": {
+        "values": {
+          "enabled": false,
+          "host": "9.9.9.9",
+          "pings": 4,
+          "gap_s": 20,
+          "timeout_s": 5,
+          "reboot": true
+        },
+        "time": "2026-11-24 08:25:46"
+      },
+      "web_settings": {
+        "values": {
+          "connection_mode": "",
+          "roaming": false,
+          "ps_restart": true,
+          "power_save": null,
+          "mtu": 1500,
+          "mss": 1460,
+          "thermal": null,
+          "thermal_led": null,
+          "upnp": true,
+          "net_select_mode": "auto_select",
+          "net_select": "WL_AND_5G",
+          "nr_band_lock": "1,2,3,5,7,8,20,28,38,41,50,51,66,70,71,74,75,76,77,78,79,80,81,82,83,84",
+          "ppp_status": "ppp_connected",
+          "modem_main_state": "modem_init_complete"
+        },
+        "time": "2026-11-24 08:25:46"
+      },
+      "web_warnings": [
+        "PS no-service restart is ON (ps_no_service_restart_flag=1): the modem restarts the data session (and may reboot) when service is lost - a candidate for the 'endless reboots'; test it off",
+        "UPnP is ON (upnpEnabled=1): no SSDP answer was seen, but the LAN exposure is on; keep it off"
+      ]
+    },
+    "findings_24h": [
+      "WARN: call-ready 91.2% of minutes (latency p95 45.8 ms, jitter 8.9 ms, loss 4.25%)",
+      "WARN: calls at risk at 08,12,13,14,18 h (under 90% call-ready minutes)",
+      "INFO: Radio-only LTE lock test candidate 340@1550. The estimated capacity is ~34.4 Mbit/s per layer on B3 1550/340 and ~14.1 Mbit/s per layer on the usual anchor B7 3350/340. A loaded comparison would establish internet quality.",
+      "INFO: B20 (800 MHz, 10 MHz wide): 6400/112 is 8 dB stronger than the used 6400/121, but its SINR/load are unknown (strong but far or busy cells often have poor SINR) - only a lock test would tell; low band, low priority"
+    ]
+  },
+  "live_version": "2026-11-23j"
+}
