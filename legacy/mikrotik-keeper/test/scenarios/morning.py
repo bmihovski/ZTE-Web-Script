@@ -328,6 +328,16 @@ assert z.calls == [("none", "none"), ("434@1550", "534@636576")], z.calls
 assert not trial["complete"] and trial["restored"] == {"lte": "none", "nr": "none"}, trial
 assert trial["coverage"]["missing_bands"] == ["3", "20", "8"] and len(trial["legs"]) == 2, trial
 
+# A scheduled leg whose lock gets no BOOT inform (no attach) must count a reachability strike, then still end the run.
+try:
+    morning._leg("B1 #2 434@100", "434@100", "534@636576", band="1", role="second")
+except RuntimeError as e:
+    assert "no BOOT inform" in str(e), e
+else:
+    raise AssertionError("a failed lock write must end the run")
+assert len(state().get("morning_dead", {}).get("434@100", [])) == 1, state().get("morning_dead")
+state({"profile_rollback": None})
+
 # The scheduled path must confirm the mode before using an unlocked n78 baseline.
 z.locks_apply = lambda *_: "unchanged"
 seen = []
@@ -352,4 +362,18 @@ result = state()["morning"]
 assert not result["complete"] and len(result["legs"]) == 1 and result["restored"] == {"lte": "none", "nr": "none"}, result
 assert "antenna readback mismatch" in result["legs"][0]["error"], result
 assert result["verdict"] == "inconclusive", result
+# A run that ends on a pending rollback still names A/B from its verified legs, and commits nothing.
+z.antennas.verify_morning = verify_morning
+brain.internet_test = lambda **kwargs: {"down_mbps": 30, "call_ok": 1}
+morning._discover = lambda band: {"band": band, "serving": "100/340", "candidates": ["434@100"], "nr": "", "error": ""}
+def ended_band(d, compare):
+    morning.st["legs"].append({"leg": "B%s #1 100/340" % d["band"], "band": d["band"], "role": "first", "ok": True,
+                               "has5g": True, "lte": "100/340", "down_mbps": 36.69, "call_ok": 1})
+    raise RuntimeError("B1 #2 434@100: no BOOT inform; ending the run to restore the original configuration")
+morning._test_band = ended_band
+lock_before = state().get("lte_lock")
+morning._run(low=False, notify=False)
+result = state()["morning"]
+assert not result["complete"] and result["a"].get("lte") == "100/340", result
+assert result["restored"] == {"lte": "none", "nr": "none"} and state().get("lte_lock") == lock_before, result
 print("OK test_morning")

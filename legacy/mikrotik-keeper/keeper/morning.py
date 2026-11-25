@@ -325,6 +325,8 @@ def _leg(name, lte, nr, band=None, role="", compare=False):
                         raise RuntimeError(res["antenna_mode_error"])
     except Exception as e:
         res.update(ok=False, error=str(e))
+        if "no BOOT inform" in str(e):
+            res["failure"] = "no_attach"   # the ZTE sends no BOOT inform when the locked cell does not attach: a MORNING_DEAD_N strike
     finally:
         stop.set()
     res["seconds"] = round(time.time() - t0, 1); st["legs"].append(res)
@@ -579,6 +581,7 @@ def _run(low=None, notify=True, trigger="manual", apply=True, bands=None, cell=N
         complete = True
     except Exception as e:
         st["why"] = "%s failed: %s" % (st["why"], e); log("morning check failed: %s" % e)
+        a, b = _ab(st["legs"])[:2]  # verified legs still name A/B; best stays None, so nothing is committed
     finally:
         st["stage"] = "restore"
         try:
