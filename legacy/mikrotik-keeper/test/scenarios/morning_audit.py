@@ -122,4 +122,58 @@ rc, out = run([write(doc, tmp)])
 assert rc == 0, out
 assert status_of(out, "R6") == "WARN", out
 
+# R7: 3 reboots each followed by a boot inside the window -> PASS, router counts 3/3
+log = os.path.join(tmp, "router.log")
+with open(log, "w") as f:
+    for i in (1, 2, 3):
+        f.write(f" 2026-11-24 08:0{i}:00 container,info,debug zte-keeper: 2026-11-24 08:0{i}:00 reboot accepted by the ZTE\n")
+        f.write(f" 2026-11-24 08:0{i}:30 container,info,debug zte-keeper: 2026-11-24 08:0{i}:30 ZTE boot inform ['1 BOOT', 'M Reboot']\n")
+audit_path = os.path.join(tmp, "audit.json")
+rc, out = run([write(load(), tmp), "--router-log", log, "--out", audit_path])
+assert rc == 0, out
+assert status_of(out, "R7") == "PASS", out
+with open(audit_path) as f:
+    audit = json.load(f)
+assert audit["router"]["reboots"] == 3, audit["router"]
+assert audit["router"]["boots"] == 3, audit["router"]
+
+# expected+1 reboots -> R7 FAIL (expected = 2 + 5 legs with lte != none = 7)
+with open(log, "w") as f:
+    for i in range(8):
+        mm = 1 + i
+        f.write(f" 2026-11-24 08:{mm:02d}:00 container,info,debug zte-keeper: 2026-11-24 08:{mm:02d}:00 reboot accepted by the ZTE\n")
+        f.write(f" 2026-11-24 08:{mm:02d}:30 container,info,debug zte-keeper: 2026-11-24 08:{mm:02d}:30 ZTE boot inform ['1 BOOT', 'M Reboot']\n")
+rc, out = run([write(load(), tmp), "--router-log", log])
+assert rc == 1, out
+assert status_of(out, "R7") == "FAIL", out
+
+# no --router-log -> R7 SKIP
+rc, out = run([write(load(), tmp)])
+assert rc == 0, out
+assert status_of(out, "R7") == "SKIP", out
+
+# verify-report: report naming every leg label with only numbers from the audit -> exit 0
+rc, out = run([write(load(), tmp), "--out", audit_path])
+assert rc == 0, out
+with open(audit_path) as f:
+    audit_text = f.read()
+labels = [l["leg"] for l in json.loads(audit_text)["legs"]]
+report = os.path.join(tmp, "report.md")
+with open(report, "w") as f:
+    f.write("# morning\n" + "\n".join(labels) + "\n")
+p = subprocess.run([sys.executable, TOOL, "--verify-report", report, audit_path], capture_output=True, text=True)
+assert p.returncode == 0, p.stdout + p.stderr
+
+# dropping one leg label -> exit 1
+with open(report, "w") as f:
+    f.write("# morning\n" + "\n".join(labels[1:]) + "\n")
+p = subprocess.run([sys.executable, TOOL, "--verify-report", report, audit_path], capture_output=True, text=True)
+assert p.returncode == 1, p.stdout + p.stderr
+
+# adding the number 123.45 -> exit 1
+with open(report, "w") as f:
+    f.write("# morning\n" + "\n".join(labels) + "\n123.45\n")
+p = subprocess.run([sys.executable, TOOL, "--verify-report", report, audit_path], capture_output=True, text=True)
+assert p.returncode == 1, p.stdout + p.stderr
+
 print("OK test_morning_audit")

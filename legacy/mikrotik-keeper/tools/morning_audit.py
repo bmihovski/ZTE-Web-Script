@@ -223,6 +223,68 @@ def check_r8(result):
     return ("FAIL" if problems else "PASS", "; ".join(problems) or "every ok leg has its measurements")
 
 
+ROUTER_RE = re.compile(r"zte-keeper: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (.*)$")
+
+
+def parse_router_log(path):
+    lines = []
+    with open(path) as f:
+        for line in f:
+            m = ROUTER_RE.search(line)
+            if m:
+                lines.append((m.group(1), m.group(2)))
+    return lines
+
+
+def check_r7(doc, result, router_log):
+    if not router_log:
+        return "SKIP", {}, "no --router-log given"
+    lines = parse_router_log(router_log)
+    started = str(result.get("started") or "")
+    ended = str(result.get("time") or "")
+    in_win = [(t, m) for t, m in lines if started <= t <= ended]
+    reboots = [t for t, m in in_win if "reboot accepted" in m]
+    boots = [t for t, m in in_win if "boot inform" in m and "1 BOOT" in m]
+    expected = 2 + sum(1 for l in legs_of(result) if l.get("lte") not in (None, "", "none"))
+    unanswered = []
+    for i, t in enumerate(reboots):
+        nxt = reboots[i + 1] if i + 1 < len(reboots) else ended
+        if not any(t <= bt < nxt for bt in boots):
+            unanswered.append(t)
+    failed_leg = any(not l.get("ok") for l in legs_of(result))
+    problems = []
+    if len(reboots) > expected:
+        problems.append(f"{len(reboots)} reboots, expected at most {expected}")
+    if unanswered and not failed_leg:
+        problems.append(f"reboots with no boot before the next reboot: {unanswered}")
+    router = {"reboots": len(reboots), "boots": len(boots), "expected_max": expected, "unanswered": unanswered}
+    if problems:
+        return "FAIL", router, "; ".join(problems)
+    if unanswered:
+        return "PASS", router, f"{len(unanswered)} reboot(s) without a boot, explained by a failed leg"
+    return "PASS", router, f"{len(reboots)} reboots, {len(boots)} boots, within the expected {expected}"
+
+
+def verify_report(report_path, audit_path):
+    with open(audit_path) as f:
+        audit_text = f.read()
+    audit = json.loads(audit_text)
+    with open(report_path) as f:
+        report = f.read()
+    problems = []
+    for c in audit.get("checks") or []:
+        if c.get("status") in ("FAIL", "WARN") and c["id"] not in report:
+            problems.append(f"check {c['id']} is {c['status']} but not named in the report")
+    for l in audit.get("legs") or []:
+        label = l.get("leg")
+        if label and label not in report:
+            problems.append(f"leg {label!r} not named in the report")
+    for num in re.findall(r"\d+(?:\.\d+)?", report):
+        if num not in audit_text:
+            problems.append(f"number {num} in the report does not occur in the audit JSON")
+    return problems
+
+
 def audit(doc, router_log=None, n=2):
     result = (doc.get("morning") or {}).get("result") or {}
     checks = []
@@ -242,6 +304,8 @@ def audit(doc, router_log=None, n=2):
     add("R5", s, d, "A/B pick")
     s, d = check_r6(doc, result)
     add("R6", s, d, "Restore")
+    s, router, d = check_r7(doc, result, router_log)
+    add("R7", s, d, "Router log")
     s, d = check_r8(result)
     add("R8", s, d, "Data measurements")
 
@@ -259,7 +323,7 @@ def audit(doc, router_log=None, n=2):
         "result_time": result.get("time"),
         "checks": checks,
         "legs": legs,
-        "router": {},
+        "router": router,
     }
 
 
@@ -267,7 +331,16 @@ def main(argv):
     args = argv[1:]
     if not args:
         print("usage: morning_audit.py MORNING.json [--router-log FILE] [--candidates N] [--out AUDIT.json]")
+        print("       morning_audit.py --verify-report REPORT.md AUDIT.json")
         return 2
+    if args[0] == "--verify-report":
+        if len(args) != 3:
+            print("usage: morning_audit.py --verify-report REPORT.md AUDIT.json")
+            return 2
+        problems = verify_report(args[1], args[2])
+        for p in problems:
+            print(p)
+        return 1 if problems else 0
     source = args[0]
     router_log = None
     n = 2
