@@ -206,4 +206,39 @@ with open(report, "w") as f:
 p = subprocess.run([sys.executable, TOOL, "--verify-report", report, audit_path], capture_output=True, text=True)
 assert p.returncode == 1, p.stdout + p.stderr
 
+# raw shape: the fixture's morning object saved alone (no live_version, no status)
+# -> R1 PASS with "version not checked", R2-R5 and R8 PASS, R6 PASS with "no status given"
+doc = load()
+morning_obj = doc["morning"]
+raw_path = os.path.join(tmp, "raw.json")
+with open(raw_path, "w") as f:
+    json.dump(morning_obj, f)
+rc, out = run([raw_path])
+assert rc == 0, out
+assert status_of(out, "R1") == "PASS", out
+assert "version not checked" in out, out
+for cid in ("R2", "R3", "R4", "R5", "R8"):
+    assert status_of(out, cid) == "PASS", (cid, out)
+assert status_of(out, "R6") == "PASS", out
+assert "no status given" in out, out
+
+# same raw file plus --status pointing to the fixture's status saved alone -> R6 PASS
+status_path = os.path.join(tmp, "status.json")
+with open(status_path, "w") as f:
+    json.dump(doc["status"], f)
+rc, out = run([raw_path, "--status", status_path])
+assert rc == 0, out
+assert status_of(out, "R6") == "PASS", out
+
+# R7: 2 in-window reboots and 1 boot -> WARN (2 < 5 locked legs)
+log = os.path.join(tmp, "router2.log")
+with open(log, "w") as f:
+    for i in (1, 2):
+        f.write(f" 2026-11-24 08:0{i}:00 container,info,debug zte-keeper: 2026-11-24 08:0{i}:00 reboot accepted by the ZTE\n")
+    f.write(" 2026-11-24 08:01:30 container,info,debug zte-keeper: 2026-11-24 08:01:30 ZTE boot inform ['1 BOOT', 'M Reboot']\n")
+rc, out = run([write(load(), tmp), "--router-log", log])
+assert rc == 0, out
+assert status_of(out, "R7") == "WARN", out
+assert "2 of 5 lock reboots" in out, out
+
 print("OK test_morning_audit")

@@ -31,6 +31,7 @@ def discoveries_of(result):
 
 def check_r1(doc, result):
     problems = []
+    version_note = "version matches"
     if result.get("complete") is not True:
         problems.append("complete is not true")
     if result.get("trigger") == "scheduled":
@@ -42,9 +43,12 @@ def check_r1(doc, result):
             hh, mm = int(m.group(1)), int(m.group(2))
             if not (8 <= hh < 9):
                 problems.append(f"started {started} outside [08:00, 09:00)")
-    if result.get("version") != doc.get("live_version"):
-        problems.append(f"version {result.get('version')!r} != live_version {doc.get('live_version')!r}")
-    return ("FAIL" if problems else "PASS", "; ".join(problems) or "run complete, on schedule, version matches")
+    if doc.get("live_version") is not None:
+        if result.get("version") != doc.get("live_version"):
+            problems.append(f"version {result.get('version')!r} != live_version {doc.get('live_version')!r}")
+    else:
+        version_note = "version not checked"
+    return ("FAIL" if problems else "PASS", "; ".join(problems) or f"run complete, on schedule, {version_note}")
 
 
 def check_r2(result):
@@ -207,13 +211,15 @@ def check_r6(doc, result):
     got = ((result.get("restored") or {}).get("lte")) or "none"
     if got != restored:
         problems.append(f"restored.lte {got!r} != recomputed {restored!r}")
-    status = doc.get("status") or {}
-    st_time = str(status.get("time") or "")
-    r_time = str(result.get("time") or "")
-    if not problems and (st_time > r_time) and status.get("nr_cell"):
-        return "PASS", f"restored {restored!r} matches; status after the run with 5G"
+    status = doc.get("status")
     if problems:
         return "FAIL", "; ".join(problems)
+    if not status:
+        return "PASS", f"restored {restored!r} matches; no status given"
+    st_time = str(status.get("time") or "")
+    r_time = str(result.get("time") or "")
+    if st_time > r_time and status.get("nr_cell"):
+        return "PASS", f"restored {restored!r} matches; status after the run with 5G"
     return "WARN", "status taken before the run ended, or no 5G now"
 
 
@@ -268,10 +274,10 @@ def check_r7(doc, result, router_log):
     router = {"reboots": len(reboots), "boots": len(boots), "expected_max": expected, "locked": locked, "unanswered": unanswered}
     if problems:
         return "FAIL", router, "; ".join(problems)
-    if unanswered:
-        return "PASS", router, f"{len(unanswered)} reboot(s) without a boot, explained by a failed leg"
     if locked > 0 and len(reboots) < locked:
         return "WARN", router, f"router log covers {len(reboots)} of {locked} lock reboots"
+    if unanswered:
+        return "PASS", router, f"{len(unanswered)} reboot(s) without a boot, explained by a failed leg"
     return "PASS", router, f"{len(reboots)} reboots, {len(boots)} boots, within the expected {expected}"
 
 
@@ -296,7 +302,10 @@ def verify_report(report_path, audit_path):
 
 
 def audit(doc, router_log=None, n=2):
-    result = (doc.get("morning") or {}).get("result") or {}
+    if "result" in doc:
+        result = doc["result"]
+    else:
+        result = (doc.get("morning") or {}).get("result") or {}
     checks = []
 
     def add(cid, status, detail, rule):
@@ -355,6 +364,7 @@ def main(argv):
     router_log = None
     n = 2
     out = None
+    status_file = None
     i = 1
     while i < len(args):
         a = args[i]
@@ -364,11 +374,16 @@ def main(argv):
             n = int(args[i + 1]); i += 2
         elif a == "--out":
             out = args[i + 1]; i += 2
+        elif a == "--status":
+            status_file = args[i + 1]; i += 2
         else:
             print(f"unknown argument: {a}")
             return 2
     with open(source) as f:
         doc = json.load(f)
+    if status_file:
+        with open(status_file) as f:
+            doc["status"] = json.load(f)
     result = audit(doc, router_log=router_log, n=n)
     result["source"] = source
     text = json.dumps(result, indent=2)
